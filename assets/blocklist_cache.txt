@@ -1,0 +1,24 @@
+# AdGuard DNS filter snapshot (merged, normalized)
+# Generated for Spotify DX — cached at build time and refreshed from
+# https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt on startup.
+0.0.0.0 advertising.com
+0.0.0.0 ads.com
+0.0.0.0 adservice.google.com
+0.0.0.0 ads.connexity.net
+0.0.0.0 ads.pubmatic.com
+0.0.0.0 adsense.google.com
+0.0.0.0 adsrvr.org
+0.0.0.0 adclick.g.doubleclick.net
+0.0.0.0 ad.doubleclick.net
+0.0.0.0 analytics.google.com
+0.0.0.0 googlesyndication.com
+0.0.0.0 googleadservices.com
+0.0.0.0 securepubads.g.doubleclick.net
+0.0.0.0 pagead2.googlesyndication.com
+0.0.0.0 pixel.facebook.com
+0.0.0.0 ads.spotify.com
+0.0.0.0 adeventtracker.spotify.com
+0.0.0.0 prod-b.wg.spotify.com
+0.0.0.0 audio-ads.spotifycdn.com
+0.0.0.0 ads-fa.spotifycdn.com
+0.0.0.0 bans.spotify.com

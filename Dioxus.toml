@@ -1,0 +1,57 @@
+[application]
+
+# App is the root component of your dioxus app
+app = "src/main.rs"
+
+# Web asset directory
+asset_dir = "assets"
+
+# Whether to include the default stylesheet for your app
+default_stylesheet = false
+
+name = "Spotify DX"
+default_platform = "desktop"
+
+[web.app]
+
+title = "Spotify DX"
+
+[desktop]
+
+# Specify the package name. Only used on Windows (MSI) so far
+product_name = "Spotify DX"
+
+# Main window icon
+# icon = "assets/icon.ico"
+
+# The asset root directory for desktop
+# assets_dir = "public"
+
+# Enable the file engine which allows the asset macro to work on desktop
+file_engine = true
+
+# This will only be used when using the dx build/package command
+# on windows with the msi format.
+# It must be an UUID formatted string, and generated once.
+# you can use the `uuidgen` command to generate a new one
+# e.g. 1e7c5852-5d35-4b93-b8ce-313bfdc76b41
+# bundle_id = ""
+
+filename = "spotify-dx"
+
+[mobile]
+
+# The minimum SDK version supported by your app.
+# e.g. 16
+min_sdk_version = 24
+
+# The bundle identifier for your app
+bundle_id = "com.spotifydx.app"
+
+# Android package name
+package = "com.spotifydx.app"
+
+[server]
+
+# The port that the server listens on.
+port = 8080
