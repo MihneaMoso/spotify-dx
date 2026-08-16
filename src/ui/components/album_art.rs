@@ -2,11 +2,12 @@ use dioxus::prelude::*;
 
 use crate::spotify::client;
 
-/// Colored placeholder shown while artwork loads.
+/// Colored placeholder shown while artwork loads. Biased toward the cool blue
+/// family so placeholders sit naturally on the blue-tinted surfaces.
 pub fn color_from_seed(seed: &str) -> String {
     let hash = fnv1a(seed);
-    let hue = hash % 360;
-    let (r, g, b) = hsl_to_rgb(hue, 42, 30);
+    let hue = (hash % 120) + 200; // 200°–320°: blue → indigo → violet
+    let (r, g, b) = hsl_to_rgb(hue, 55, 26);
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 

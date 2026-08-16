@@ -2,7 +2,7 @@ use crate::player::playback_sdk;
 use crate::player::playback_sdk::SdkState;
 use crate::state::{AUTH_STATE, PLAYER_STATE};
 use anyhow::Context as _;
-use dioxus::signals::Readable;
+use dioxus::prelude::ReadableExt;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
@@ -33,21 +33,7 @@ pub fn init() -> anyhow::Result<()> {
 
     let desktop = dioxus::desktop::window();
 
-    #[cfg(target_os = "linux")]
-    let builder = {
-        use dioxus::desktop::tao::platform::unix::WindowExtUnix;
-        use wry::WebViewBuilderExtUnix as _;
-        let vbox = desktop
-            .window
-            .default_vbox()
-            .context("had no gtk container to host the hidden webview")?;
-        WebViewBuilder::new_gtk(vbox)
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    let mut builder = WebViewBuilder::new(&desktop.window);
-
-    let webview = builder
+    let builder = WebViewBuilder::new()
         .with_html(playback_sdk::SDK_HTML)
         // Never visible: 1×1, pushed far off-screen.
         .with_bounds(Rect {
@@ -55,8 +41,24 @@ pub fn init() -> anyhow::Result<()> {
             size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(1.0, 1.0)),
         })
         .with_visible(false)
-        .with_ipc_handler(handle_ipc)
-        .build()
+        .with_ipc_handler(handle_ipc);
+
+    #[cfg(target_os = "linux")]
+    let webview = {
+        use dioxus::desktop::tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix as _;
+        let vbox = desktop
+            .window
+            .default_vbox()
+            .context("had no gtk container to host the hidden webview")?;
+        builder
+            .build_gtk(vbox)
+            .context("failed to build the hidden webview")?
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let webview = builder
+        .build(&desktop.window)
         .context("failed to build the hidden webview")?;
 
     WEBVIEW.with(move |cell| *cell.borrow_mut() = Some(webview));

@@ -8,7 +8,7 @@ mod toast;
 mod track_row;
 
 pub use album_art::AlbumArt;
-pub use app_layout::AppLayout;
+pub use app_layout::{AppLayout, SidebarResizer};
 pub use card::MediaCard;
 pub use nav::{BottomNav, SideNav};
 pub use player_bar::PlayerBar;

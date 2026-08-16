@@ -43,7 +43,7 @@ pub fn skip_back(size: i32) -> Element {
 }
 
 pub fn shuffle(size: i32, active: bool) -> Element {
-    let color = if active { "#1db954" } else { "currentColor" };
+    let color = if active { "#60a5fa" } else { "currentColor" };
     rsx! {
         svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "{color}",
             path { d: "M10.6 9.5 7.1 6 4 9.1 2.9 8 6 4.9 3.5 2.4 4.6 1.3 9.4 6.1 8.3 7.2 7.1 6z M2 11l.6 1L4 9.9 5.4 8.4 4.4 7.4z" }
@@ -54,7 +54,7 @@ pub fn shuffle(size: i32, active: bool) -> Element {
 }
 
 pub fn repeat(size: i32, active: bool) -> Element {
-    let color = if active { "#1db954" } else { "currentColor" };
+    let color = if active { "#60a5fa" } else { "currentColor" };
     rsx! {
         svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "{color}",
             path { d: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" }
@@ -63,7 +63,7 @@ pub fn repeat(size: i32, active: bool) -> Element {
 }
 
 pub fn heart(size: i32, active: bool) -> Element {
-    let color = if active { "#1db954" } else { "currentColor" };
+    let color = if active { "#60a5fa" } else { "currentColor" };
     rsx! {
         svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "{color}",
             path { d: "M12 21s-8-4.6-10-9.3C.9 8.4 3.4 5 7 5c2 0 3.4 1 5 2.8C13.6 6 15 5 17 5c3.6 0 6.1 3.4 5 6.7C20 16.4 12 21 12 21z" }

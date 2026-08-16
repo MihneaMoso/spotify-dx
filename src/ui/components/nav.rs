@@ -1,12 +1,13 @@
 use dioxus::prelude::*;
 
 use crate::state::ADBLOCK_STATS;
+use crate::ui::components::SidebarResizer;
 use crate::ui::icons::{home, library, search};
 use crate::ui::router::Route;
 
 /// Desktop/wide layout left rail. Not shown on narrow/mobile viewports.
 #[component]
-pub fn SideNav() -> Element {
+pub fn SideNav(resizing: Signal<bool>, onresize: EventHandler<f64>) -> Element {
     let blocked = ADBLOCK_STATS.read().blocked;
     let cached = ADBLOCK_STATS.read().cached_entries;
 
@@ -40,6 +41,7 @@ pub fn SideNav() -> Element {
             if crate::state::is_blocker_ready() {
                 div { class: "nav-ready", "Blocker active" }
             }
+            SidebarResizer { resizing, onresize }
         }
     }
 }

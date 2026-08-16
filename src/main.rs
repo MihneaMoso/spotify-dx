@@ -53,9 +53,17 @@ fn main() {
     let window = WindowBuilder::new()
         .with_title("Spotify DX")
         .with_inner_size(LogicalSize::new(1200.0, 780.0))
-        .with_min_inner_size(LogicalSize::new(400.0, 600.0));
+        .with_min_inner_size(LogicalSize::new(400.0, 600.0))
+        // Frameless: hides the GTK title bar ("Spotify DX" + window buttons)
+        // so the webview is the whole window. The app renders its own chrome.
+        .with_decorations(false);
 
-    let config = Config::new().with_window(window);
+    let config = Config::new()
+        .with_window(window)
+        // No native menu bar: this app is a pure webview shell, so an OS menu
+        // would only duplicate/replace the in-app chrome.
+        .with_menu(None)
+        .with_disable_context_menu(true);
     dioxus::LaunchBuilder::desktop().with_cfg(config).launch(App);
 }
 

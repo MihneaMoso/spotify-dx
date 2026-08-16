@@ -11,11 +11,11 @@ pub fn Login() -> Element {
     rsx! {
         div { class: "login-page",
             div { class: "login-card",
-div { class: "login-brand",
-                div { class: "brand-mark", "SDX" }
-                h1 { "Spotify DX" }
-                p { "Your library, your feed, no surprises." }
-            }
+                div { class: "login-brand",
+                    div { class: "brand-mark", "SDX" }
+                    h1 { "Spotify DX" }
+                    p { "Your library, your feed, no surprises." }
+                }
                 if busy() {
                     div { class: "login-note",
                         if started() {

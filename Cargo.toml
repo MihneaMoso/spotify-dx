@@ -13,11 +13,11 @@ web      = ["dioxus/web"]
 
 [dependencies]
 # ── UI framework ──────────────────────────────────────────────────────────────
-dioxus        = { version = "0.6", features = ["router"] }
-dioxus-router = { version = "0.6" }
-# "0.45" unifies with the wry version dioxus-desktop 0.6.3 already depends on,
+dioxus        = { version = "0.7", features = ["router"] }
+dioxus-router = { version = "0.7" }
+# "0.53" unifies with the wry version dioxus-desktop 0.7.10 already depends on,
 # otherwise cargo resolves two different wry copies into the same binary.
-wry           = { version = "0.45", optional = true }   # hidden webview for Web Playback SDK
+wry           = { version = "0.53", optional = true }   # hidden webview for Web Playback SDK
 
 # ── Async runtime ─────────────────────────────────────────────────────────────
 tokio         = { version = "1", features = ["full"] }

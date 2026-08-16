@@ -1,3 +1,4 @@
+use dioxus::document::Link;
 use dioxus::prelude::*;
 
 use crate::state::AUTH_STATE;
@@ -19,12 +20,13 @@ pub fn App() -> Element {
 
     let authenticated = AUTH_STATE.read().is_authenticated();
 
-    if authenticated {
-        rsx! {
+    rsx! {
+        // Load the design system once. The head component is deduplicated by
+        // href, so re-renders of the login gate / shell never re-inject it.
+        Link { rel: "stylesheet", href: asset!("/assets/main.css") }
+        if authenticated {
             Router::<Route> {}
-        }
-    } else {
-        rsx! {
+        } else {
             Login {}
         }
     }

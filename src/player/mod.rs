@@ -10,7 +10,7 @@ pub mod webview_bridge;
 
 use crate::app_error::AppError;
 use crate::state::PLAYER_STATE;
-use dioxus::signals::Readable;
+use dioxus::prelude::ReadableExt;
 
 /// Fire-and-forget playback launch used by every play button in the UI.
 pub fn launch(uri: String) {

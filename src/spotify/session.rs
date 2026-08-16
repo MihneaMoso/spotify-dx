@@ -3,7 +3,7 @@ use crate::auth;
 use crate::auth::token_store;
 use crate::state::{AUTH_STATE, AuthState};
 use chrono::Utc;
-use dioxus::signals::Readable;
+use dioxus::prelude::ReadableExt;
 
 /// Snapshot the current access token without subscribing callers.
 pub fn current_token() -> Option<String> {
