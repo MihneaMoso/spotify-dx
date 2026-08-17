@@ -3,14 +3,25 @@ use parking_lot::RwLock;
 use radix_trie::Trie;
 
 /// Hostnames that must never be blocked regardless of the blocklist content.
+/// This is the full set of domains the login flow, the web-player token
+/// endpoint and the SDK depend on — blocking any of them breaks sign-in or
+/// playback. Ad/tracker hosts (doubleclick, ad-gate CDNs) stay blockable.
 pub const ALWAYS_ALLOW: &[&str] = &[
+    "accounts.spotify.com",
+    "open.spotify.com",
     "api.spotify.com",
     "spclient.wg.spotify.com",
     "apresolve.spotify.com",
-    "open.spotify.com",
-    "accounts.spotify.com",
-    "i.scdn.co",
+    "login5.spotify.com",
+    "clienttoken.spotify.com",
+    "auth.spotify.com",
     "sdk.scdn.co",
+    "i.scdn.co",
+    "t.scdn.co",
+    "mosaic.scdn.co",
+    "lineup-images.scdn.co",
+    "seeded-session-images.scdn.co",
+    "odns.spotify.com",
 ];
 
 /// Returns `true` when `host` (or one of its parent domains) is on the blocklist.
@@ -172,18 +183,22 @@ fn reverse_domain(host: &str) -> String {
         .join(".")
 }
 
-/// The whitelist is intentionally not granular: any host under one of these
-/// names is let through. `audio*.spotifycdn.com` covers the stream hosts like
-/// `audio-ak.spotifycdn.com` or `audio-fa.spotifycdn.com`.
+/// The whitelist is intentionally not granular: any host under Spotify's own
+/// domains (`*.spotify.com`, `*.spotifycdn.com`, `*.scdn.co`) is let through —
+/// that covers the login/auth/API/player/CDN hosts AND the audio stream hosts
+/// like `audio-ak.spotifycdn.com`. Only genuinely third-party ad/tracker hosts
+/// (doubleclick, ad-gate CDNs outside these domains) are blocked.
 fn is_whitelisted(host: &str) -> bool {
     if ALWAYS_ALLOW.contains(&host) {
         return true;
     }
     let host = host.trim_end_matches('.');
-    if host.ends_with(".spotifycdn.com") && host.starts_with("audio.") {
-        return true;
-    }
-    false
+    host == "spotify.com"
+        || host.ends_with(".spotify.com")
+        || host == "spotifycdn.com"
+        || host.ends_with(".spotifycdn.com")
+        || host == "scdn.co"
+        || host.ends_with(".scdn.co")
 }
 
 #[cfg(test)]

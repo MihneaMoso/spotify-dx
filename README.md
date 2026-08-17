@@ -1,31 +1,36 @@
 # Spotify DX
 
-Cross-platform Spotify client that plays full tracks on **premium** Spotify accounts and
-**never** shows the "premium preview" 30-second wall on free accounts — by routing the
-SDK's `getOAuthToken` + `fetch` through a hidden WebView and a local ad-blocker.
-
-See the feature checklist below.
+A cross-platform Spotify client written in Rust + [Dioxus](https://dioxuslabs.com)
+that behaves like **open.spotify.com**: it signs you in through the real Spotify
+login page inside the app, keeps you logged in across restarts, and renders the
+whole UI as fast native components. On **premium** accounts it plays full tracks
+via the Web Playback SDK; on **free** accounts it browses/search plays and
+explains that playback needs Premium. An in-process AdGuard blocklist drops
+third-party ad/tracker requests.
 
 ## How it works
 
-1. **Desktop builds** open a second, hidden wry WebView that loads the
-   [Spotify Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk).
-2. The injected `getOAuthToken` hook hands the SDK the user's PKCE token from the Rust
-   keychain, while Rust owns the CORS-free authorized calls.
-3. Every network request the SDK makes passes through a **file-based fech engine** that
-   mirrors the browser's own `fetch`, checks an in-process **blocklist trie** and answers
-   the few requests Spotify allows us to answer (track URLs). Tracking/ad hosts return
-   an empty `102 Facility`-style response so the SDK falls back to the ad-pipelines
-   value — at which point the *same* gate blocks the "premium preview" interstitial.
-4. On **web**/**mobile**, everything plays through the `player` Connect API tied to the
-   device the hidden WebView registers.
+1. **First launch** opens a GTK window hosting `open.spotify.com`. You log in
+   exactly as you would in a browser (password / 2FA / passkey).
+2. The login WebView shares a persistent data directory (`webview_session/`).
+   Its session cookies (`sp_dc`, …) are what keep you logged in forever after —
+   exactly like the web app.
+3. Injected JS polls Spotify's internal `get_access_token` endpoint to detect
+   the login and capture the short-lived **web-player access token**. It's
+   mirrored to the OS keychain so startup can restore a session without a window.
+4. On **desktop**, playback is driven by the [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk)
+   running in a hidden wry WebView that reuses the same session cookies, so no
+   token hand-over is needed.
+5. Every outbound request goes through an in-process **AdGuard blocklist trie**
+   (`adblock/`); third-party ad/tracker hosts are dropped before hitting the
+   network.
 
 ## Feature checklist
 
-- [x] PKCE OAuth login (loopback redirect, state + verifier validation) with keychain persistence
-- [x] Full token persistence with background refresh and 401-triggered re-auth
+- [x] open.spotify.com-style login: real Spotify sign-in in a GTK WebView, session cookies persisted
+- [x] Persistent sessions (no re-login across app restarts), token refresh via the web-player endpoint
 - [x] AdGuard DNS-filter blocklist (merged, trie-indexed, bundled snapshot + background update)
-- [x] Web Playback SDK boot via hidden WebView (desktop) with file-based fetch routing
+- [x] Web Playback SDK boot via hidden WebView (desktop) with shared cookie jar
 - [x] Player bar: play/pause, next/prev, seek, volume, shuffle/repeat
 - [x] Pages: Home (featured + new releases + recommended), Search (debounced), Library, Playlist, Album, Artist
 - [x] Artwork pipeline: colored placeholder → blur-up → full (downscaled, base64, thumbnails never hit the disk)
@@ -36,8 +41,7 @@ See the feature checklist below.
 Prerequisites: Rust 1.75+, and on Linux `pkg-config`, `libwebkit2gtk-4.1-dev` (±`libappindicator3-dev`, `librsvg2-dev`).
 
 ```bash
-# Linux/macOS desktop (default)
-export SPOTIFY_CLIENT_ID="your_client_id"
+# Linux/macOS desktop (default) — no credentials needed
 cargo build --release
 cargo run --release
 
@@ -48,23 +52,21 @@ cargo build --no-default-features --features web
 cargo build --no-default-features --features mobile
 ```
 
-The env var `SPOTIFY_CLIENT_ID` is read at compile time by `auth`. Create a developer app in the
-[Spotify Dashboard](https://developer.spotify.com) with the exact redirect URI
-`http://127.0.0.1:8888/callback`. Spotify only accepts concrete redirect URIs, so the
-callback port is fixed (see `CALLBACK_PORT` in `src/auth/mod.rs`).
+No `SPOTIFY_CLIENT_ID` or Spotify Developer app is required — the app uses the
+same web session that open.spotify.com uses.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SPOTIFY_CLIENT_ID` | — (required) | OAuth client id |
-| `SPOTIFY_DX_LOG` | `rspotify=warn,wry=warn,tao=warn,tokio=info,spotify_dx=info` | Tracing filter |
+| `SPOTIFY_DX_LOG` | `wry=warn,tao=warn,tokio=info,spotify_dx=info` | Tracing filter |
 
 ## Data & directories
 
 | Path | What lives there |
 | --- | --- |
-| OS keychain | OAuth token pair |
+| OS keychain | Web-player access token + expiry |
+| `data_local_dir/spotify-dx/webview_session/` | WebView session cookies (`sp_dc`, …) — keeps you logged in |
 | `cache_dir/blocklist_cache.txt` | Merged snapshot of the blocklists |
 | `assets/blocklist_cache.txt` | Bundled snapshot shipped with the app (cold-start) |
 
@@ -73,7 +75,7 @@ callback port is fixed (see `CALLBACK_PORT` in `src/auth/mod.rs`).
 ```
 src/
   adblock/     trie-based blocklist + AdGuard/Hosts parsing + background refresh
-  auth/        PKCE flow, keychain token store, boot auth
+  auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
   player/      Web Playback SDK bootstrap (desktop) / Connect API fallback
   spotify/     API client, models, playback API
   ui/          pages, components, router, theme, inline icons
@@ -102,5 +104,6 @@ Search / Library` nav.
 
 - Blocklist: AdGuard DNS filter (`adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt`)
 - Spotify artwork is served from `i.scdn.co`, which is explicitly **never** blocked.
-- The ad-pipeline and "premium preview" gates live on `*.spotifycdn.com` ad hosts, which the
-  bundled blocklist covers.
+- Spotify's own domains (`*.spotify.com`, `*.spotifycdn.com`, `*.scdn.co`) are **never**
+  blocked — the login, token endpoint, API and audio streams all live there. The blocklist
+  targets genuinely third-party ad/tracker hosts.

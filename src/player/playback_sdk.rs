@@ -6,12 +6,33 @@
 pub const SDK_HTML: &str = r#"<!DOCTYPE html><html><head>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script>
+// Fetch a fresh web-player access token from Spotify's internal endpoint. This
+// works only inside the WebView because it relies on the HttpOnly session
+// cookies (sp_dc) that the shared data directory holds — Rust can never see
+// them, so the SDK never asks Rust for a token.
+function fetchAccessToken() {
+  return fetch(
+    'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
+    { credentials: 'include' }
+  ).then(r => r.json());
+}
 window.onSpotifyWebPlaybackSDKReady = () => {
   const player = new Spotify.Player({
     name: 'Spotify DX',
     getOAuthToken: cb => {
-      window.ipc.postMessage(JSON.stringify({ type: 'needToken' }));
-      window._tokenCb = cb;
+      fetchAccessToken()
+        .then(d => {
+          window.ipc.postMessage(JSON.stringify({
+            type: 'token_refresh',
+            token: d.accessToken,
+            expiresMs: d.accessTokenExpirationTimestampMs,
+            isAnon: d.isAnonymous
+          }));
+          cb(d.accessToken);
+        })
+        .catch(e => {
+          window.ipc.postMessage(JSON.stringify({ type: 'token_error', msg: e.toString() }));
+        });
     },
     volume: 0.8,
   });
@@ -33,7 +54,18 @@ window.onSpotifyWebPlaybackSDKReady = () => {
     prev:  () => player.previousTrack(),
     seek:  (ms) => player.seek(ms),
     volume: (v) => player.setVolume(v),
-    provideToken: (tok) => { if (window._tokenCb) window._tokenCb(tok); },
+    refreshToken: () => {
+      fetchAccessToken()
+        .then(d => window.ipc.postMessage(JSON.stringify({
+          type: 'token_refresh_result',
+          token: d.accessToken,
+          expiresMs: d.accessTokenExpirationTimestampMs,
+          isAnon: d.isAnonymous
+        })))
+        .catch(e => window.ipc.postMessage(JSON.stringify({
+          type: 'token_error', msg: e.toString()
+        })));
+    },
     connect: () => player.connect(),
   };
   player.connect();

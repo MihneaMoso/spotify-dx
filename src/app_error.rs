@@ -11,6 +11,14 @@ pub enum AppError {
     AdBlock(String),
     #[error("playback error: {0}")]
     Playback(String),
+    #[error("Premium required: {0}")]
+    PremiumRequired(String),
+    #[error("Session expired — please log in again")]
+    SessionExpired,
+    #[error("Access forbidden: {0}")]
+    Forbidden(String),
+    #[error("Spotify's API is rate-limiting requests right now — retrying automatically")]
+    RateLimited,
     #[error("spotify api error: {0}")]
     Spotify(String),
     #[cfg(feature = "desktop")]

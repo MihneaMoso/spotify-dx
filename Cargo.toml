@@ -7,7 +7,7 @@ license = "MIT"
 
 [features]
 default  = ["desktop"]
-desktop  = ["dioxus/desktop", "dep:wry"]
+desktop  = ["dioxus/desktop", "dep:wry", "dep:gtk"]
 mobile   = ["dioxus/mobile"]
 web      = ["dioxus/web"]
 
@@ -20,7 +20,7 @@ dioxus-router = { version = "0.7" }
 wry           = { version = "0.53", optional = true }   # hidden webview for Web Playback SDK
 
 # ── Async runtime ─────────────────────────────────────────────────────────────
-tokio         = { version = "1", features = ["full"] }
+tokio         = { version = "1", features = ["full", "sync"] }
 futures       = "0.3"
 
 # ── HTTP / networking ─────────────────────────────────────────────────────────
@@ -31,10 +31,10 @@ url           = "2"
 webbrowser    = "1"
 
 # ── Auth / crypto ─────────────────────────────────────────────────────────────
+# sha2/base64 are NOT auth-only: cache.rs hashes URLs and album_art.rs base64s
+# images. Keep them. oauth2/rand were only used by the deleted PKCE flow.
 sha2          = "0.10"
 base64        = "0.22"
-rand          = "0.8"
-oauth2        = "4"
 
 # ── Ad-block / DNS ────────────────────────────────────────────────────────────
 # Pure-Rust trie for fast hostname lookup
@@ -64,6 +64,11 @@ dirs          = "5"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
+
+# The login flow hosts the real open.spotify.com page in a GTK window (Linux).
+# Version is pinned to what tao/wry already pull in (gtk 0.18).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
 
 [profile.dev]
 opt-level = 1

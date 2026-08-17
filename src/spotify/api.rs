@@ -23,7 +23,11 @@ async fn api_get_json(url: &str, cacheable: bool) -> Result<serde_json::Value, A
             match request_once(url, &fresh).await? {
                 ResponseOutcome::Success(body) => (body, true),
                 ResponseOutcome::Throttled(secs) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                    // api.spotify.com is rate-limiting. One short capped wait,
+                    // then a clear error — never an endless spinner. Callers
+                    // retry on their own timer, so the feed returns as soon as
+                    // the quota clears.
+                    tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
                     let fresh2 = session::ensure_token().await?;
                     let body = request_after_backoff(url, &fresh2).await?;
                     (body, true)
@@ -32,16 +36,20 @@ async fn api_get_json(url: &str, cacheable: bool) -> Result<serde_json::Value, A
                     crate::auth::logout();
                     return Err(AppError::Auth("session revoked".into()));
                 }
+                ResponseOutcome::Forbidden(err) => return Err(err),
                 ResponseOutcome::ApiError(status, msg) => {
                     return Err(AppError::Spotify(format!("{status}: {msg}")))
                 }
             }
         }
         ResponseOutcome::Throttled(secs) => {
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            // Rate-limited: one short capped wait, then surface a clear error
+            // (Home retries on its own timer).
+            tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
             let body = request_after_backoff(url, &token).await?;
             (body, true)
         }
+        ResponseOutcome::Forbidden(err) => return Err(err),
         ResponseOutcome::ApiError(status, msg) => {
             return Err(AppError::Spotify(format!("{status}: {msg}")));
         }
@@ -59,6 +67,9 @@ enum ResponseOutcome {
     Success(String),
     Unauthorized,
     Throttled(u64),
+    /// 403 — Spotify gate. `/me/player` is Premium-only; anything else is a
+    /// general access denial (dead session, geo-block, …).
+    Forbidden(AppError),
     ApiError(u16, String),
 }
 
@@ -67,7 +78,17 @@ async fn request_once(
     token: &str,
 ) -> Result<ResponseOutcome, AppError> {
     let resp = client::filtered_get_auth(url, token).await?;
-    Ok(classify(resp).await)
+    let outcome = classify(resp, url).await;
+    match &outcome {
+        ResponseOutcome::Success(body) => tracing::info!("api: {url} -> 200 ({} bytes)", body.len()),
+        ResponseOutcome::Unauthorized => tracing::info!("api: {url} -> 401"),
+        ResponseOutcome::Throttled(secs) => tracing::info!("api: {url} -> 429 (retry-after {secs}s)"),
+        ResponseOutcome::Forbidden(err) => tracing::info!("api: {url} -> 403 ({err})"),
+        ResponseOutcome::ApiError(status, msg) => {
+            tracing::info!("api: {url} -> {status} ({})", &msg[..msg.len().min(80)])
+        }
+    }
+    Ok(outcome)
 }
 
 async fn request_after_backoff(
@@ -75,27 +96,27 @@ async fn request_after_backoff(
     token: &str,
 ) -> Result<String, AppError> {
     let resp = client::filtered_get_auth(url, token).await?;
-    match classify(resp).await {
+    match classify(resp, url).await {
         ResponseOutcome::Success(body) => Ok(body),
         ResponseOutcome::Unauthorized => {
             crate::auth::logout();
             Err(AppError::Auth("session revoked".into()))
         }
+        ResponseOutcome::Forbidden(err) => Err(err),
         ResponseOutcome::Throttled(secs) => {
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
             let resp2 = client::filtered_get_auth(url, token).await?;
-            match classify(resp2).await {
+            match classify(resp2, url).await {
                 ResponseOutcome::Success(body) => Ok(body),
                 ResponseOutcome::Unauthorized => {
                     crate::auth::logout();
                     Err(AppError::Auth("session revoked".into()))
                 }
+                ResponseOutcome::Forbidden(err) => Err(err),
                 ResponseOutcome::ApiError(status, msg) => {
                     Err(AppError::Spotify(format!("{status}: {msg}")))
                 }
-                ResponseOutcome::Throttled(_) => {
-                    Err(AppError::Spotify("rate limited after retry".into()))
-                }
+                ResponseOutcome::Throttled(_) => Err(AppError::RateLimited),
             }
         }
         ResponseOutcome::ApiError(status, msg) => {
@@ -104,10 +125,20 @@ async fn request_after_backoff(
     }
 }
 
-async fn classify(resp: reqwest::Response) -> ResponseOutcome {
+async fn classify(resp: reqwest::Response, url: &str) -> ResponseOutcome {
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return ResponseOutcome::Unauthorized;
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::warn!("api: 403 for {url}: {body}");
+        let err = if url.contains("/me/player") {
+            AppError::PremiumRequired("Playback requires Spotify Premium".into())
+        } else {
+            AppError::Forbidden("Access denied (check account or endpoint)".into())
+        };
+        return ResponseOutcome::Forbidden(err);
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let secs = resp
@@ -153,11 +184,10 @@ where
 
 // ── endpoints ────────────────────────────────────────────────────────────────
 
-pub async fn get_current_user_profile(
-    access_token: &str,
-) -> Result<UserProfile, AppError> {
+pub async fn get_current_user_profile() -> Result<UserProfile, AppError> {
+    let token = session::ensure_token().await?;
     let url = format!("{API_BASE}/me");
-    let resp = client::filtered_get_auth(&url, access_token).await?;
+    let resp = client::filtered_get_auth(&url, &token).await?;
     resp.error_for_status()
         .map_err(AppError::from)?
         .json()
@@ -166,9 +196,13 @@ pub async fn get_current_user_profile(
 }
 
 pub async fn get_home() -> Result<HomeData, AppError> {
+    tracing::info!("api: get_home start");
     let featured = get_featured_playlists().await?;
+    tracing::info!("api: get_home featured ok ({} items)", featured.len());
     let new_releases = get_new_releases().await?;
+    tracing::info!("api: get_home new_releases ok ({} items)", new_releases.len());
     let recommended = get_recommendations(&[]).await.unwrap_or_default();
+    tracing::info!("api: get_home recommended ok ({} items)", recommended.len());
     Ok(HomeData {
         featured,
         new_releases,

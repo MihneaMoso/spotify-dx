@@ -1,8 +1,8 @@
 //! Spotify DX — a cross-platform Spotify client that hides premium previews.
 //!
 //! Renderers: `--features desktop` (primary), `web` and `mobile`. On desktop we
-//! boot a hidden wry WebView that runs the Web Playback SDK plus a file-based
-//! fetch routing engine; on web/mobile everything falls back to the Connect API.
+//! boot a hidden wry WebView that runs the Web Playback SDK; it shares its data
+//! directory (session cookies) with the visible login WebView from `auth`.
 
 #![forbid(unsafe_code)]
 
@@ -16,23 +16,19 @@ pub mod state;
 pub mod ui;
 pub mod util;
 
-/// Shared startup: tracing, ad-blocker, auth boot, then hand the session to the
-/// renderer. `bootstrap` runs inside a tokio runtime; it never touches dioxus.
-async fn bootstrap() {
+/// Shared startup: tracing, ad-blocker, auth boot. Returns `true` when a valid
+/// session was restored from the keychain (main UI launches straight away).
+async fn bootstrap() -> bool {
     if let Err(err) = adblock::init().await {
         tracing::warn!("adblock: bootstrap failed ({err:#}); continuing without a blocker");
     }
-    match auth::init().await {
-        Ok(Some(session)) => auth::set_boot_auth(session),
-        Ok(None) => tracing::info!("auth: no stored session; will show the login gate"),
-        Err(err) => tracing::warn!("auth: bootstrap could not restore a session: {err:#}"),
-    }
+    crate::auth::init().await
 }
 
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::new(
         std::env::var("SPOTIFY_DX_LOG")
-            .unwrap_or_else(|_| "rspotify=warn,wry=warn,tao=warn,tokio=info,spotify_dx=info".into()),
+            .unwrap_or_else(|_| "wry=warn,tao=warn,tokio=info,spotify_dx=info".into()),
     );
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
@@ -45,7 +41,10 @@ fn main() {
     init_logging();
 
     // Everything that reads network/token/blocklist data happens before the
-    // window is mounted so the first frame is instant.
+    // window is mounted so the first frame is instant. Global signals cannot be
+    // touched before the dioxus runtime exists, so auth::init() only inspects
+    // the token store; the login gate (which always shows the open.spotify.com
+    // web-session WebView) decides the session.
     let rt = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
     rt.block_on(bootstrap());
     drop(rt);
@@ -92,12 +91,11 @@ fn main() {
         .enable_all()
         .build()
         .expect("failed to start the tokio runtime");
-    rt.block_on(bootstrap());
+    let has_session = rt.block_on(bootstrap());
 
-    let session = auth::take_boot_auth();
     println!(
         "spotify-dx headless (tooling build): adblock={} auth={}",
         if crate::state::is_blocker_ready() { "ready" } else { "not-ready" },
-        if session.is_some() { "restored" } else { "none" }
+        if has_session { "restored" } else { "none" }
     );
 }

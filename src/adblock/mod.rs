@@ -73,9 +73,18 @@ mod tests {
 
     #[test]
     fn test_known_ad_domain_blocked() {
+        insert_blocked_domain("ads.doubleclick.net");
+        assert!(should_block("https://ads.doubleclick.net/some/path?q=1"));
+        assert!(should_block("https://banner.ads.doubleclick.net/track.gif"));
+    }
+
+    #[test]
+    fn test_spotify_domains_never_blocked() {
+        // Spotify's own domains are always let through: the web-session login,
+        // token endpoint, API and audio streams all live there.
         insert_blocked_domain("ads.spotify.com");
-        assert!(should_block("https://ads.spotify.com/some/path?q=1"));
-        assert!(should_block("https://banner.ads.spotify.com/track.gif"));
+        assert!(!should_block("https://ads.spotify.com/some/path?q=1"));
+        assert!(!should_block("https://audio-ak.spotifycdn.com/track.mp4"));
     }
 
     #[test]

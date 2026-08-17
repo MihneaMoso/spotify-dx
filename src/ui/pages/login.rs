@@ -1,56 +1,43 @@
+use crate::state::AUTH_STATE;
 use dioxus::prelude::*;
 
-use crate::state::AUTH_STATE;
-
-/// Sign-in gate shown before the app shell.
+/// The login gate shown when no valid session exists at startup (or after the
+/// session expired). It opens the real `open.spotify.com` sign-in in a WebView
+/// window; the moment `AUTH_STATE.is_authenticated` flips, `App` swaps to the
+/// router shell and this component unmounts.
 #[component]
 pub fn Login() -> Element {
-    let mut busy = use_signal(|| false);
+    let mut error = use_signal(String::new);
     let mut started = use_signal(|| false);
 
+    // Kick the login flow once. `started` gates re-entry so a slow window never
+    // gets opened twice; retry resets it.
+    use_effect(move || {
+        if AUTH_STATE.read().is_authenticated || *started.read() {
+            return;
+        }
+        started.set(true);
+        dioxus::prelude::spawn(async move {
+            if let Err(err) = crate::auth::login().await {
+                error.set(err.to_string());
+                started.set(false);
+            }
+        });
+    });
+
     rsx! {
-        div { class: "login-page",
-            div { class: "login-card",
-                div { class: "login-brand",
-                    div { class: "brand-mark", "SDX" }
-                    h1 { "Spotify DX" }
-                    p { "Your library, your feed, no surprises." }
-                }
-                if busy() {
-                    div { class: "login-note",
-                        if started() {
-                            "Waiting for the browser flow… you can close the dialog once signed in."
-                        } else {
-                            "Starting the browser…"
-                        }
-                    }
-                    div { class: "spinner" }
+        div { class: "login-overlay",
+            div { class: "login-brand",
+                span { class: "login-logo", "♫" }
+                h1 { "Spotify DX" }
+                if error.read().is_empty() {
+                    p { class: "login-hint", "Opening Spotify login…" }
                 } else {
+                    p { class: "login-error", "Couldn't start Spotify login: {error}" }
                     button {
-                        class: "primary login-button",
-                        onclick: move |_| {
-                            busy.set(true);
-                            started.set(false);
-                            dioxus::prelude::spawn(async move {
-                                match crate::auth::login().await {
-                                    Ok(auth) => {
-                                        AUTH_STATE.write().copy_from(&auth);
-                                        crate::player::on_authenticated();
-                                    }
-                                    Err(err) => {
-                                        busy.set(false);
-                                        tracing::error!("auth: login failed: {err:#}");
-                                        crate::state::publish_error(crate::app_error::AppError::Auth(
-                                            format!("Sign-in failed: {err:#}")
-                                        ));
-                                    }
-                                }
-                            });
-                        },
-                        "Continue with Spotify"
-                    }
-                    p { class: "login-terms",
-                        "By continuing you agree to Spotify's Developer Terms.\nTokens stay on this device."
+                        class: "login-retry",
+                        onclick: move |_| error.set(String::new()),
+                        "Try again"
                     }
                 }
             }

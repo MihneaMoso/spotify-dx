@@ -2,7 +2,6 @@ use dioxus::prelude::*;
 
 use crate::app_error::AppError;
 use crate::spotify::models::*;
-use chrono::{DateTime, Utc};
 
 /// The page currently visible in the UI router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,47 +69,27 @@ pub struct PlayerState {
     pub device_id: Option<String>, // Spotify Connect device id reported by the hidden WebView
 }
 
-/// OAuth / session data.
+/// Web-session auth data. The access token comes from Spotify's internal
+/// web-player endpoint (`open.spotify.com/get_access_token`) — it is short-lived
+/// (~1h) and refreshed via the hidden SDK WebView. No refresh_token exists:
+/// session cookies live in the shared WebView data directory, never in Rust.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AuthState {
     pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
+    /// Unix epoch in milliseconds — the expiry time of the access token.
+    pub expires_at_ms: u64,
     pub user_id: Option<String>,
     pub user_display_name: Option<String>,
     pub user_avatar_url: Option<String>,
+    /// "premium" | "free" | None (unknown)
+    pub product: Option<String>,
+    pub is_authenticated: bool,
 }
 
 impl AuthState {
-    /// Whether we hold an access token that has not expired yet.
-    pub fn is_authenticated(&self) -> bool {
-        if self.access_token.is_none() {
-            return false;
-        }
-        match self.expires_at {
-            Some(exp) => Utc::now() < exp,
-            None => false,
-        }
-    }
-
-    /// Replace this state with another session (used after login and boot).
-    pub fn copy_from(&mut self, other: &AuthState) {
-        self.access_token = other.access_token.clone();
-        self.refresh_token = other.refresh_token.clone();
-        self.expires_at = other.expires_at;
-        self.user_id = other.user_id.clone();
-        self.user_display_name = other.user_display_name.clone();
-        self.user_avatar_url = other.user_avatar_url.clone();
-    }
-
-    /// Drop all session data (used by logout and account reset).
-    pub fn reset(&mut self) {
-        self.access_token = None;
-        self.refresh_token = None;
-        self.expires_at = None;
-        self.user_id = None;
-        self.user_display_name = None;
-        self.user_avatar_url = None;
+    /// Whether the account tier allows Web Playback SDK playback.
+    pub fn is_premium(&self) -> bool {
+        self.product.as_deref() == Some("premium")
     }
 }
 

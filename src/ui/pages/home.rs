@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 
+use crate::app_error::AppError;
 use crate::spotify::api;
 use crate::ui::components::{MediaCard, TrackRow};
 use crate::ui::router::Route;
@@ -8,7 +9,30 @@ use crate::ui::router::Route;
 #[component]
 pub fn Home() -> Element {
     let navigator = use_navigator();
-    let resource = use_resource(|| async move { api::get_home().await });
+    // Bump to re-run the feed fetch. The resource re-runs when this changes,
+    // giving the rate-limited case a self-healing retry loop.
+    let mut retry_count = use_signal(|| 0u32);
+    let mut retry_pending = use_signal(|| false);
+
+    let resource = use_resource(move || {
+        let attempt = *retry_count.read();
+        tracing::info!("home: fetching feed (attempt {attempt})");
+        async move { api::get_home().await }
+    });
+
+    // api.spotify.com rate-limiting isn't a login problem — retry on a slow
+    // timer so the feed loads by itself once the quota clears.
+    use_effect(move || {
+        let rate_limited = matches!(resource.read().as_ref(), Some(Err(AppError::RateLimited)));
+        if rate_limited && !*retry_pending.read() {
+            retry_pending.set(true);
+            spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                *retry_count.write() += 1;
+                retry_pending.set(false);
+            });
+        }
+    });
 
     let featured_cards: Vec<Element> = match resource.read().as_ref() {
         Some(Ok(home)) => home
@@ -92,7 +116,11 @@ pub fn Home() -> Element {
                 div { class: "error-banner",
                     {err.to_string()}
                     div { class: "error-detail",
-                        "Couldn't load your feed. Make sure you're signed in and online."
+                        if matches!(err, AppError::RateLimited) {
+                            "Spotify's API is temporarily limiting requests. The feed will retry automatically."
+                        } else {
+                            "Couldn't load your feed. Make sure you're signed in and online."
+                        }
                     }
                 }
             } else if featured_cards.is_empty() {

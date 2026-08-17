@@ -9,13 +9,20 @@ pub mod playback_sdk;
 pub mod webview_bridge;
 
 use crate::app_error::AppError;
-use crate::state::PLAYER_STATE;
+use crate::state::{AUTH_STATE, PLAYER_STATE};
 use dioxus::prelude::ReadableExt;
 
 /// Fire-and-forget playback launch used by every play button in the UI.
 pub fn launch(uri: String) {
     dioxus::prelude::spawn(async move {
-        let _ = play_uri(&uri).await;
+        if let Err(err) = play_uri(&uri).await {
+            if matches!(err, AppError::PremiumRequired(_)) {
+                crate::state::publish_error(AppError::PremiumRequired(
+                    "Playback requires Spotify Premium — your account can browse freely."
+                        .into(),
+                ));
+            }
+        }
     });
 }
 
@@ -23,6 +30,10 @@ pub fn launch(uri: String) {
 pub fn init() -> anyhow::Result<()> {
     #[cfg(feature = "desktop")]
     {
+        // A hidden session WebView (open.spotify.com + token-capture) must exist
+        // for token refreshes even when no sign-in ran (keychain-restored
+        // session). The sign-in flow already leaves one behind.
+        crate::auth::webview_login::ensure_session()?;
         webview_bridge::init()
     }
     #[cfg(not(feature = "desktop"))]
@@ -31,8 +42,18 @@ pub fn init() -> anyhow::Result<()> {
     }
 }
 
+/// Tear down the playback backend (used by logout so the SDK releases its
+/// cookie jar before the session is cleared).
+pub fn shutdown() {
+    #[cfg(feature = "desktop")]
+    {
+        webview_bridge::shutdown();
+    }
+}
+
 /// Tell the playback backend a session is now available (after a fresh login).
-/// Desktop: hand the new token to the hidden SDK and reconnect it.
+/// Desktop: reconnect the hidden SDK — it fetches its own token from the shared
+/// session cookies.
 pub fn on_authenticated() {
     #[cfg(feature = "desktop")]
     {
@@ -45,6 +66,11 @@ pub fn on_authenticated() {
 /// This path goes through the Connect API regardless of renderer, because the
 /// initialized device was reported by the Web Playback SDK.
 pub async fn play_uri(uri: &str) -> Result<(), AppError> {
+    if !AUTH_STATE.read().is_premium() {
+        return Err(AppError::PremiumRequired(
+            "Playback requires Spotify Premium — your account can browse freely.".into(),
+        ));
+    }
     let device_id = PLAYER_STATE
         .peek()
         .device_id

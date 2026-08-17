@@ -16,6 +16,6 @@ Guidance for AI coding agents working in this repository.
 - Dev loop: the user runs `dx serve` with auto-reload — do NOT start it yourself.
 - Verify changes with `cargo check --features desktop` and `cargo clippy --features desktop` (do NOT run the app).
 - Tests: `cargo test` (network-free) / `cargo test --no-default-features`.
-- `SPOTIFY_CLIENT_ID` is read at **compile time** (`env!`) — builds will fail without it in the environment.
+- `SPOTIFY_CLIENT_ID` is **not** needed anymore — auth is the open.spotify.com web session (see `src/auth/webview_login.rs`). No env vars are required to build.
 
 See `RULES.md` for the full agent-map, conventions, and gotchas.

@@ -1,20 +1,23 @@
+use crate::app_error::AppError;
 use crate::player::playback_sdk;
 use crate::player::playback_sdk::SdkState;
 use crate::state::{AUTH_STATE, PLAYER_STATE};
 use anyhow::Context as _;
-use dioxus::prelude::ReadableExt;
 use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use wry::{Rect, WebView, WebViewBuilder};
 
-// The single hidden WebView that runs the Web Playback SDK for the whole app
-// lifetime, owned by the UI thread. dioxus-desktop polls the whole virtual DOM
-// on the main thread, and webkitgtk requires the WebView to be touched only
-// there, so a `thread_local` is both correct and `Send`-free (hence compatible
-// with the crate-level `#![forbid(unsafe_code)]`).
+// The hidden SDK WebView. It is built with the process-wide session WebContext
+// (see `crate::auth::session_context_mut`), which is `Send`-free (webkitgtk
+// must be touched only on the UI thread), so it lives in a `thread_local` —
+// compatible with `#![forbid(unsafe_code)]`.
+struct SdkWebView {
+    webview: WebView,
+}
+
 thread_local! {
-    static WEBVIEW: RefCell<Option<WebView>> = const { RefCell::new(None) };
+    static WEBVIEW: RefCell<Option<SdkWebView>> = const { RefCell::new(None) };
 }
 
 // JS → Rust traffic is dropped into this queue by the wry IPC handler and
@@ -24,8 +27,21 @@ thread_local! {
 static IPC_QUEUE: OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>> =
     OnceLock::new();
 
+/// Pending token-refresh requests. `request_token_refresh()` pushes its sender
+/// here; the IPC handler answers EVERY pending sender when the JS fetch
+/// round-trips. Multiple requests can legitimately be outstanding at once (Home
+/// and the profile backfill both refresh after login) — a single overwritten
+/// slot would silently drop the first sender, which surfaces as a spurious
+/// "Token refresh timed out".
+static REFRESH_TX: Mutex<Vec<tokio::sync::oneshot::Sender<Result<String, String>>>> =
+    Mutex::new(Vec::new());
+
 /// Create (once) the off-screen WebView hosting `SDK_HTML` and wire the JS↔Rust
 /// message channel. Must run on the UI thread after dioxus has built a window.
+///
+/// The WebView shares the login WebView's data directory, so it inherits the
+/// user's Spotify session cookies and can fetch its own access tokens — Rust
+/// never has to hand it a token.
 pub fn init() -> anyhow::Result<()> {
     if WEBVIEW.with(|cell| cell.borrow().is_some()) {
         return Ok(());
@@ -33,35 +49,46 @@ pub fn init() -> anyhow::Result<()> {
 
     let desktop = dioxus::desktop::window();
 
-    let builder = WebViewBuilder::new()
-        .with_html(playback_sdk::SDK_HTML)
-        // Never visible: 1×1, pushed far off-screen.
-        .with_bounds(Rect {
-            position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, -9999)),
-            size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(1.0, 1.0)),
-        })
-        .with_visible(false)
-        .with_ipc_handler(handle_ipc);
+    // Same shared cookie jar as the sign-in WebView: the SDK behaves as the
+    // authenticated user with zero token wiring. ONE process-wide context is
+    // used by every WebView — a second WebContext on the same data directory
+    // makes webkitgtk abort. Build inside the closure because the context
+    // borrow cannot escape the `thread_local`'s `.with`.
+    let webview = crate::auth::with_session_context(|context| {
+        let builder = WebViewBuilder::new_with_web_context(context)
+            .with_html(playback_sdk::SDK_HTML)
+            // Never visible: 1×1, pushed far off-screen.
+            .with_bounds(Rect {
+                position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, -9999)),
+                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(1.0, 1.0)),
+            })
+            .with_visible(false)
+            .with_ipc_handler(handle_ipc);
 
-    #[cfg(target_os = "linux")]
-    let webview = {
-        use dioxus::desktop::tao::platform::unix::WindowExtUnix;
-        use wry::WebViewBuilderExtUnix as _;
-        let vbox = desktop
-            .window
-            .default_vbox()
-            .context("had no gtk container to host the hidden webview")?;
-        builder
-            .build_gtk(vbox)
-            .context("failed to build the hidden webview")?
-    };
+        #[cfg(target_os = "linux")]
+        {
+            use dioxus::desktop::tao::platform::unix::WindowExtUnix;
+            use wry::WebViewBuilderExtUnix as _;
+            let vbox = desktop
+                .window
+                .default_vbox()
+                .context("had no gtk container to host the hidden webview")?;
+            builder
+                .build_gtk(vbox)
+                .context("failed to build the hidden webview")
+        }
 
-    #[cfg(not(target_os = "linux"))]
-    let webview = builder
-        .build(&desktop.window)
-        .context("failed to build the hidden webview")?;
+        #[cfg(not(target_os = "linux"))]
+        {
+            builder
+                .build(&desktop.window)
+                .context("failed to build the hidden webview")
+        }
+    })?;
 
-    WEBVIEW.with(move |cell| *cell.borrow_mut() = Some(webview));
+    WEBVIEW.with(move |cell| {
+        *cell.borrow_mut() = Some(SdkWebView { webview })
+    });
 
     // Spawn the message dispatcher so IPC is handled inside a dioxus runtime.
     if IPC_QUEUE.get().is_none() {
@@ -76,9 +103,17 @@ pub fn init() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Destroy the hidden WebView and its cookie-holding process. Used by logout so
+/// a fresh WebView (and fresh login) starts from a clean state.
+pub fn shutdown() {
+    WEBVIEW.with(|cell| *cell.borrow_mut() = None);
+}
+
 /// JS → Rust: parse `window.ipc.postMessage` payloads. Runs on the webkit
-/// thread, so it only enqueues; the drain task does the real work.
-fn handle_ipc(request: wry::http::Request<String>) {
+/// thread, so it only enqueues; the drain task does the real work. Also used by
+/// the in-window session WebView (`auth::webview_login`), which shares the IPC
+/// channel so its token-refresh answers land here too.
+pub(crate) fn handle_ipc(request: wry::http::Request<String>) {
     let body = request.into_body();
     let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body) else {
         tracing::debug!("webview: ignored malformed ipc payload");
@@ -94,10 +129,17 @@ fn handle_message(msg: &serde_json::Value) {
     let body = msg.to_string();
     let kind = msg.get("type").and_then(|t| t.as_str()).unwrap_or_default();
     match kind {
-        // The SDK asks for a token: echo the current one back.
-        "needToken" => {
-            let token = AUTH_STATE.peek().access_token.clone().unwrap_or_default();
-            provide_token(&token);
+        // The SDK's getOAuthToken fetched a token itself — keep AUTH_STATE current.
+        "token_refresh" => apply_token_msg(msg, false),
+        // Rust requested a refresh via request_token_refresh() — answer it.
+        "token_refresh_result" => apply_token_msg(msg, true),
+        "token_error" => {
+            let message = msg.get("msg").and_then(|m| m.as_str()).unwrap_or_default();
+            tracing::error!("webview: token fetch error: {message}");
+        }
+        "token_debug" => {
+            let message = msg.get("msg").and_then(|m| m.as_str()).unwrap_or_default();
+            tracing::info!("webview: token debug: {message}");
         }
         "ready" => {
             let device_id = msg.get("device_id").and_then(|d| d.as_str()).unwrap_or_default();
@@ -121,6 +163,47 @@ fn handle_message(msg: &serde_json::Value) {
     }
 }
 
+/// Fold a `token_refresh[_result]` payload into `AUTH_STATE` (and keychain),
+/// and optionally answer the pending `REFRESH_TX` oneshot.
+fn apply_token_msg(msg: &serde_json::Value, answer_refresh: bool) {
+    let token = msg.get("token").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let expires_ms = msg.get("expiresMs").and_then(|t| t.as_u64()).unwrap_or(0);
+    let is_anon = msg.get("isAnon").and_then(|t| t.as_bool()).unwrap_or(true);
+
+    if is_anon {
+        tracing::warn!("webview: session expired");
+        crate::state::publish_error(AppError::SessionExpired);
+        AUTH_STATE.write().is_authenticated = false;
+        // Tear the session WebView down so a fresh login can start (start()
+        // refuses to run while one is alive).
+        crate::auth::webview_login::shutdown();
+        if answer_refresh {
+            for tx in REFRESH_TX.lock().unwrap().drain(..) {
+                let _ = tx.send(Err("session expired".into()));
+            }
+        }
+        return;
+    }
+
+    crate::auth::token_store::save(&token, expires_ms);
+    {
+        let mut s = AUTH_STATE.write();
+        s.access_token = Some(token.clone());
+        // A capture carrying no expiry field (or one the JS couldn't read)
+        // arrives as `expiresMs: 0`. Never let that clobber a valid stored
+        // expiry — a poisoned 0 would force every page into the refresh path.
+        if expires_ms != 0 {
+            s.expires_at_ms = expires_ms;
+        }
+    }
+    if answer_refresh {
+        for tx in REFRESH_TX.lock().unwrap().drain(..) {
+            let _ = tx.send(Ok(token.clone()));
+        }
+    }
+}
+
+
 /// Apply a player-state-changed payload to `PLAYER_STATE`.
 fn apply_state(payload: &serde_json::Value) {
     let state: SdkState = playback_sdk::parse_sdk_state(payload);
@@ -138,30 +221,46 @@ fn apply_state(payload: &serde_json::Value) {
 
 fn eval(js: &str) {
     WEBVIEW.with(|cell| {
-        if let Some(webview) = cell.borrow().as_ref() {
-            if let Err(err) = webview.evaluate_script(js) {
+        if let Some(sdk) = cell.borrow().as_ref() {
+            if let Err(err) = sdk.webview.evaluate_script(js) {
                 tracing::debug!("webview: eval failed: {err}");
             }
         }
     });
 }
 
-/// Rust → JS: hand the OAuth token to the SDK.
-pub fn provide_token(token: &str) {
-    let js = format!("window._relay.provideToken({:?})", token);
-    eval(&js);
+/// Rust → JS: ask for a fresh access token. The in-window session WebView is
+/// preferred: its page IS `open.spotify.com`, so its `get_access_token` fetch
+/// is same-origin and not CORS-blocked (the SDK WebView's null-origin page
+/// fails with `TypeError: Load failed`). Falls back to the SDK WebView when no
+/// session WebView is alive. The receiver resolves when the IPC answer
+/// arrives, or errors immediately if no WebView is available.
+pub fn request_token_refresh() -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut guard = REFRESH_TX.lock().unwrap();
+    if crate::auth::webview_login::refresh_token() {
+        guard.push(tx);
+        return rx;
+    }
+    let has_webview = WEBVIEW.with(|cell| cell.borrow().is_some());
+    if !has_webview {
+        // No WebView alive (session torn down): fail fast so callers can route
+        // the user back to the login page instead of hanging.
+        for tx in guard.drain(..) {
+            let _ = tx.send(Err("no webview available".into()));
+        }
+        return rx;
+    }
+    guard.push(tx);
+    drop(guard);
+    eval("window._relay && window._relay.refreshToken && window._relay.refreshToken()");
+    rx
 }
 
-/// (Re)connect the SDK after a fresh login. The hidden WebView boots before the
-/// user authenticates, so the initial `connect()` dies with an auth error; once
-/// we have a token we must hand it over and ask the player to connect again.
+/// (Re)connect the SDK after a fresh login. The SDK fetches its own token via
+/// the shared session cookies, so no token hand-over is needed.
 pub fn reconnect() {
-    let token = AUTH_STATE.peek().access_token.clone().unwrap_or_default();
-    if token.is_empty() {
-        return;
-    }
-    let js = format!("window._relay.provideToken({token:?}); window._relay.connect();");
-    eval(&js);
+    eval("window._relay && window._relay.connect && window._relay.connect()");
 }
 
 pub fn play() {
@@ -187,3 +286,4 @@ pub fn seek(ms: u64) {
 pub fn volume(v: f32) {
     eval(&format!("window._relay.volume({v})"));
 }
+

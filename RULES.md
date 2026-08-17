@@ -40,10 +40,11 @@ complements. Never `cargo run` and never launch the produced binary.
 
 ## 3. Environment prerequisites
 
-- **`SPOTIFY_CLIENT_ID` is required at compile time.** It is read via
-  `env!("SPOTIFY_CLIENT_ID")` in `src/auth/mod.rs:19`. Without it in the
-  environment, every build/check fails with "environment variable not defined".
-  If a build fails for that reason, that's the first thing to check.
+- **No API credentials are needed.** Auth is the web-player session: the user
+  signs in on `open.spotify.com` inside a GTK WebView and the app captures the
+  access token from Spotify's internal `get_access_token` endpoint. There is no
+  OAuth app, so `SPOTIFY_CLIENT_ID` is **not** read anywhere (the old PKCE flow
+  was deleted).
 - Linux desktop builds need `pkg-config`, `libwebkit2gtk-4.1-dev`
   (±`libappindicator3-dev`, `librsvg2-dev`).
 - The dev loop: user runs `dx serve` (dx CLI 0.7.x). It is **auto-reload**, so
@@ -53,11 +54,14 @@ complements. Never `cargo run` and never launch the produced binary.
 
 ### 4.1 What it is
 
-A cross-platform Spotify client ("Spotify DX") written in Rust with Dioxus.
-Its headline trick: on **premium** accounts it plays full tracks via the Web
-Playback SDK driven from a hidden wry WebView, and on **free** accounts it
-blocks Spotify's ad pipeline + "premium preview" 30-second interstitial by
-routing the SDK's network traffic through an in-process ad-blocker.
+A cross-platform Spotify client ("Spotify DX") written in Rust with Dioxus. It
+behaves like open.spotify.com: the first launch opens the real Spotify sign-in
+in a WebView, captures the web-player session, and stays logged in across
+restarts via the persisted session cookies. On **premium** accounts it plays
+full tracks through the Web Playback SDK driven from a hidden wry WebView; on
+**free** accounts playback is gated with a "Premium required" message and the
+app doubles as a browse/search player. An in-process ad-blocker (AdGuard DNS
+lists) drops third-party ad/tracker requests.
 
 ### 4.2 High-level data flow
 
@@ -81,7 +85,7 @@ routing the SDK's network traffic through an in-process ad-blocker.
 | `app.rs` | Root `App` component: injects the stylesheet, login gate vs. routed shell, seeds auth from boot snapshot, calls `player::init()` + `player::on_authenticated()` once. |
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
-| `auth/` | PKCE OAuth (`pkce.rs`), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). `CALLBACK_PORT` fixed at 8888 — Spotify dashboard only accepts concrete redirect URIs. |
+| `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
 | `spotify/` | API models (`models.rs`), filtered HTTP client (`client.rs`), endpoints (`api.rs`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request cache (`cache.rs`). |
 | `adblock/` | AdGuard DNS-filter parsing (`adguard_api.rs`), radix-trie blocklist + DoH resolver (`dns_filter.rs`), `mod.rs` facade. |
 | `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC). |
@@ -109,6 +113,12 @@ routing the SDK's network traffic through an in-process ad-blocker.
   with the CSS variables (e.g. `PLAYER_HEIGHT` ↔ `--player-height`).
 - **`src/state.rs`** — `Signal::global` statics; cross-component state flows
   through these, not props drilling.
+- **`src/auth/webview_login.rs`** — the in-window sign-in. A WebView packed
+  into the main window's `vbox` shows `open.spotify.com` (the dioxus UI is
+  hidden underneath); an injected poller waits for the web-player access token
+  and hands it to Rust over `window.ipc.postMessage`. Built with the shared
+  session `WebContext` (`auth::with_session_context`), so the session cookies
+  persist across restarts. Never reparents WebViews (see §6.7).
 
 ### 4.5 Router & features
 
@@ -205,10 +215,199 @@ rule overrides an earlier `display: none`.
 
 ### 6.6 Auth specifics
 
-- `SPOTIFY_CLIENT_ID` compile-time (`env!`); OAuth redirect is
-  `http://127.0.0.1:8888/callback` (fixed port — Spotify requires concrete
-  URIs). Mobile deep-link scheme `spotifydx://callback`.
-- Session is persisted in the OS keychain (`keyring`), not on disk.
+- No `SPOTIFY_CLIENT_ID`, no OAuth scopes, no redirect URIs. The app signs in
+  exactly like open.spotify.com: an in-window WebView loads `open.spotify.com`,
+  the user logs in (password / 2FA / passkey), and injected JS polls
+  `open.spotify.com/get_access_token` (requires the HttpOnly `sp_dc` cookie) to
+  capture the web-player access token.
+- Session cookies live in the WebView data directory
+  (`auth::webview_data_dir()`), which is what keeps the user logged in across
+  restarts. The short-lived access token (~1h) is mirrored to the OS keychain
+  (`token_store`) so startup can restore a session without opening a window.
+- The access token has **no refresh token**; the login WebView stays alive
+  (hidden) after sign-in and refreshes it via the same endpoint
+  (`spotify/session.rs` → `webview_bridge::request_token_refresh` →
+  `webview_login::refresh_token`). See §6.7 for why it must be the login WebView
+  and not the SDK WebView (CORS).
+
+### 6.7 The sign-in flow (in-window, open.spotify.com-style auth)
+
+- The sign-in is hosted **inside the main window**, not a separate window. The
+  sign-in WebView is packed into the window's existing `vbox` (next to the
+  dioxus UI) and the dioxus UI children are **hidden** underneath it; capturing
+  the session hides the sign-in widget and re-`show()`s the native UI.
+- **Never reparent a realized WebView.** Moving a WebView widget between GTK
+  containers (an overlay `add_overlay`, etc.) is what produced the blank white
+  screen — webkit's surface does not survive the unmap/remap reliably. The
+  sign-in flow only ever `hide()`/`show()`s widgets inside the untouched `vbox`.
+- **The login WebView stays alive after sign-in as the session WebView.**
+  Because its page IS `open.spotify.com`, it is the ONLY WebView whose
+  `get_access_token` fetch works: the hidden SDK WebView is a null-origin page
+  and its cross-origin credentialed fetch is CORS-blocked (`TypeError: Load
+  failed`), which previously produced "Token refresh timed out" and an
+  unloaded Home page. `webview_bridge::request_token_refresh()` evals
+  `window._relay.refreshToken()` (defined by `POLL_JS`) in the session WebView
+  and falls back to the SDK WebView only when none is alive. It is torn down on
+  logout / session-expiry (`webview_login::shutdown`) so the next login starts
+  fresh — `start()` refuses to run while a session WebView is alive.
+- **Direct `get_access_token` calls are reCAPTCHA-gated** (Spotify tightened
+  the endpoint in 2025): a bare fetch now returns a Google invisible-reCAPTCHA
+  challenge page, so `r.json()` throws `SyntaxError: The string did not match
+  the expected pattern.`. Since Aug 2026 the web player itself fetches from
+  **`open.spotify.com/api/token`** instead, whose only challenge is a **TOTP
+  computed locally** (RFC 6238 HOTP, SHA-1, 6 digits, 30s period; the key is a
+  deobfuscated constant in the `web-player.*.js` bundle — XOR each char with
+  `index % 33 + 9`, join the results into a decimal string, use its bytes as
+  the HMAC key; `totpVer` is the bundle's version, 61 as of 2026-08). With the
+  session cookies + `reason=transport|init&productType=web_player&totp=..&totpServer=..&totpVer=61`
+  it returns `{accessToken, accessTokenExpirationTimestampMs, isAnonymous}`.
+  `POLL_JS` calls this directly, plus the fetch hook watching the page's own
+  `/api/token` traffic, both cached in `window.__spotifyDxToken` and served by
+  `refreshToken` (polling before the captcha-gated legacy endpoint). The TOTP
+  is computed with a **pure-JS HMAC-SHA1** (embedded, verified against Node and
+  Python) rather than `crypto.subtle` — the first attempt used WebCrypto and
+  failed silently (a synchronous throw when `crypto.subtle` is unavailable
+  left the in-flight guard latched and produced no output). `tryApiToken` is
+  fully synchronous, wrapped in try/catch, and aborts hanging fetches.
+  The login DOM fallback waits ~10s for these captures before settling on an
+  empty token.
+- **The `/api/token` TOTP key MUST be the FULL deobfuscated string.** The first
+  version truncated it to the first 40 digits (`…8471124`); the correct one is
+  the entire 60-digit decimal string
+  `376136387538459893883312310911992847112448894410210511297108`. A truncated
+  key silently produces wrong TOTPs, which the endpoint rejects with a generic
+  `400 {"error":{"code":400,"message":"Unauthorized request","extra":{"_notes":
+  "Usage of this endpoint is not permitted under the Spotify Developer Terms …"}}}`
+  — indistinguishable from a missing cookie/header. Verified via curl + the
+  session cookies: with the correct key the endpoint returns HTTP 200
+  `{accessToken, accessTokenExpirationTimestampMs, isAnonymous}` and needs NO
+  extra header (a `client-token` from `clienttoken.spotify.com/v1/clienttoken`,
+  client id `d8a5ed958d274c2e8ee717e6a4b0971d`, is optional). `isAnonymous` is
+  true for guest sessions and false once the cookies identify a logged-in user.
+- **The keychain token is a hint, not the session.** Since the app now always
+  shows the `open.spotify.com` WebView at startup (that page is the source of
+  truth, and it needs the webview to keep refreshing tokens), `auth::init()` no
+  longer writes `AUTH_STATE` or fast-paths past the login gate — it only
+  reports whether a clock-valid token exists (used by the headless build). A
+  stored token that went stale server-side (e.g. rate-limited to 429 on
+  `api.spotify.com`) previously landed the app on a Home screen that spun
+  forever.
+- **Late token captures must not be dropped.** After login completes
+  (`reported` is latched), `store()` still posts `token_refresh_result` so
+  `AUTH_STATE` stays current. **But do NOT make page fetches reactive to
+  `AUTH_STATE`.** The session WebView writes a fresh token into `AUTH_STATE`
+  every ~2s, so any `use_resource` future that reads it (even transitively via
+  `session::ensure_token`) is cancelled and restarted on every capture — a
+  page fetch like `get_home()` is restarted every 2s and never completes,
+  leaving the page spinning forever. `ensure_token` therefore reads
+  `AUTH_STATE` with `.peek()` (non-subscribing), and recovery from failures is
+  driven by explicit timers (Home re-fetches the feed 60s after a
+  rate-limit error), not by token-refresh reactivity.
+- **The bridge IPC queue drops document-start messages.** `webview_bridge`'s
+  `IPC_QUEUE` drain task is only spawned by `webview_bridge::init()`, which runs
+  AFTER the session WebView has loaded. Anything `POLL_JS` posts at
+  document-start (e.g. `token_debug` diagnostics, early `/api/token` results)
+  is silently discarded (`IPC_QUEUE.get()` is `None`), while `logged_in` (handled
+  locally in `webview_login::handle_ipc`) and late `token_error` arrive. So
+  diagnostics from the login/session WebView are logged directly from the
+  webkit thread in `webview_login::handle_ipc`, NOT forwarded through the
+  bridge queue.
+- **Every session needs a session WebView.** The login gate always runs
+  (`auth::init()` no longer fast-paths past it), so the session WebView is the
+  login WebView kept alive after sign-in. `player::init()` still calls
+  `auth::webview_login::ensure_session()`, which builds a hidden, never-shown
+  session WebView when none exists (idempotent) so token refreshes always have
+  a same-origin WebView to fetch through.
+- The session WebView's IPC handler forwards every non-`logged_in` message
+  verbatim to `webview_bridge::handle_ipc`, so its `token_refresh_result`
+  answers land on the shared `REFRESH_TX`/`IPC_QUEUE` machinery.
+- **No `unsafe` is needed.** The whole flow uses only gtk-rs 0.18 safe APIs
+  (`children()`, `hide()`, `show()`, `unparent()`, `upcast::<gtk::Widget>()`),
+  so the crate stays `#![forbid(unsafe_code)]`-clean. gtk 0.18 is the version
+  tao/wry already pull in. `WebViewExtUnix::webview()` returns the
+  `webkit2gtk::WebView` widget — store it upcast to `gtk::Widget`.
+- **ONE process-wide `WebContext` for all WebViews.** Both the login WebView
+  and the hidden SDK WebView are built via `auth::with_session_context`, a
+  closure API backed by a `thread_local!` `SESSION_CONTEXT` (created lazily at
+  `auth::webview_data_dir()`). This is mandatory: webkitgtk ABORTS when a second
+  `WebContext` claims a data directory still held by a live (cached) web
+  process — the old two-contexts-on-one-dir login window design was the crash
+  behind the "app exits ~7s after login" symptom.
+- `with_session_context` takes a closure because the `RefCell` guard cannot
+  escape the `thread_local`'s `.with` — build the `WebView` inside the closure
+  and return it (a `WebViewBuilder` borrows the context and cannot escape).
+- The login IPC handler runs on the webkit thread — it only sends over the
+  oneshot channel; the awaiting task on the UI thread writes state and removes
+  the WebView (same rule as §6.5).
+- **Dioxus signals can only be touched from inside a dioxus runtime.**
+  `tokio::spawn` runs on a bare tokio worker and panics (`Must be called from
+  inside a Dioxus runtime`). Use `dioxus::prelude::spawn` when the current
+  context is already inside the runtime, and NEVER touch signal state from
+  `main.rs`'s pre-launch `bootstrap()` (no runtime exists yet) — the very first
+  `GlobalSignal::read/write` there panics at `Runtime::current()`. This
+  actually crashed the app at startup whenever a *valid* token happened to be
+  in the keychain: `auth::init()` used to write `AUTH_STATE` directly. Now it
+  parks the restored session in a plain `static Mutex` and `App`'s use-effect
+  applies it to `AUTH_STATE` on mount (see §6.7 `auth/mod.rs`). `Login` gates
+  its auto-start on `auth::pending_restored_session()` so it doesn't open a
+  WebView the frame before a restore lands.
+- **`open.spotify.com/get_access_token` is unreliable** (Spotify tightened it
+  in 2025: 403/400 for many callers, TOTP requirements, changing response
+  shapes). The login poller therefore captures the token THREE ways: a
+  document-start `fetch` hook that observes the web player's own token request
+  (the real player always needs one), a direct poll, and finally a DOM signal
+  (profile widget present) that proceeds token-less and lets the hidden SDK
+  WebView fetch a token from the shared cookies (`auth::login()` handles the
+  empty-token case). Do not "simplify" this back to a single poll.
+- **Concurrent token-refresh requests must all be answered.** Two `ensure_token`
+  callers can legitimately refresh at once right after login (Home's feed fetch
+  + App's `refresh_profile()` backfill). The old single-slot
+  `REFRESH_TX: Option<Sender>` silently dropped the first sender when the second
+  request overwrote it, which surfaced as a spurious
+  `session: token refresh timed out (10s)` on Home even though the refresh
+  succeeded. `REFRESH_TX` is now a `Vec` and `apply_token_msg`/the "no webview"
+  fast-fail answer EVERY pending sender. `ensure_token` also re-checks
+  `AUTH_STATE` after a lost/timed-out answer, because the refresh may still have
+  landed via a periodic capture.
+- **Never let a token capture poison the stored expiry.** A capture whose JS
+  object lacks `accessTokenExpirationTimestampMs` arrives as `expiresMs: 0`;
+  blindly storing that turned a perfectly valid ~1h token into "expired", so
+  every page entered the 10s refresh path. `apply_token_msg` now ignores
+  `expires_ms == 0`.
+- **The webview's in-memory session and the on-disk cookie file can diverge.**
+  After login, the session WebView captures non-anonymous tokens (`anon=false`)
+  while `~/.local/share/spotify-dx/webview_session/cookies` can still yield an
+  anonymous `/api/token` response to curl — webkitgtk's cookie flush lags the
+  live session. Don't debug login against the cookie file; trust the app's
+  `anon=` log lines.
+- **`api.spotify.com` 429 rate limits are real and can be fed by the app
+  itself.** During an outage window every `/v1/*` call returns
+  `429 API rate limit exceeded` regardless of token validity. `App`'s use-effect
+  used to re-spawn `refresh_profile()` on every `AUTH_STATE` write (i.e. every
+  ~1.5s token capture) whenever `user_id` was still `None` — a failing
+  `/v1/me` fetch kept the limit hot. The effect now boots the backend once and
+  spawns the profile backfill once (`backend_booted` / `profile_backfilled`
+  signals). `get_current_user_profile` still has no 429 backoff (it's best-effort
+  and swallows errors); `api_get_json` does.
+- **429 handling is fail-fast + self-healing, never an endless spinner.** The
+  old Throttled path slept the full `Retry-After` (~40s+) before each retry, so
+  Home sat on a spinner for minutes during a rate-limit window and looked
+  broken. Now `api_get_json` waits at most `min(Retry-After, 5s)` once, retries
+  once, and on a second 429 returns `AppError::RateLimited`. Home detects that
+  error, shows a "Spotify's API is temporarily limiting requests" banner, and
+  re-fetches the feed on a 60s timer (`retry_count` signal + `use_effect`) until
+  the quota clears — at which point the feed loads with no user action.
+- **As of 2026-08-17, valid web-player tokens were hard-429'd by
+  api.spotify.com for many hours** (every `/v1/*` endpoint, `Retry-After` 11–57s
+  that never actually cleared even after a 70s quiet wait). It is NOT
+  IP-based (no-token/garbage-token requests get a clean 401), not fixed by the
+  `client-token` header the web player sends, and not fixed by browser-like
+  Origin/Referer/cookies. The web player itself now routes most browsing through
+  `api-partner.spotify.com/pathfinder` (GraphQL) and `spclient.wg.spotify.com`
+  instead of `api.spotify.com/v1`; neither accepted our BQA token in testing
+  (401/404). Do not burn time re-testing whether the 429 has cleared — the app
+  self-heals when it does.
+- `auth::init()` no longer writes `AUTH_STATE` — see §6.7 note above.
 
 ## 7. Testing
 
