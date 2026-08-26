@@ -1,9 +1,12 @@
 use dioxus::prelude::*;
 
 use crate::ui::components::AppLayout;
-use crate::ui::pages::{Album, Artist, ArtistTopTracks, Home, Library, Playlist, Search};
+use crate::ui::pages::{
+    Album, Artist, ArtistTopTracks, Home, Library, Liked, Playlist, Queue, Search, Settings,
+};
 
-/// App routes. Nested layout wraps every page with the persistent shell.
+/// Router: authenticated pages. Nested layout wraps every page with the
+/// persistent shell (top bar, rail, player bar).
 #[derive(Clone, Routable, Debug, PartialEq)]
 pub enum Route {
     #[layout(AppLayout)]
@@ -15,6 +18,15 @@ pub enum Route {
 
     #[route("/library")]
     Library,
+
+    #[route("/liked")]
+    Liked,
+
+    #[route("/queue")]
+    Queue,
+
+    #[route("/settings")]
+    Settings,
 
     #[route("/album/:id")]
     Album { id: String },

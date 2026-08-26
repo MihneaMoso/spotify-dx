@@ -1,91 +1,83 @@
 use dioxus::prelude::*;
 
 use crate::spotify::api;
-use crate::ui::components::{AlbumArt, TrackRow};
-use crate::ui::router::Route;
+use crate::ui::components::{HeroHeader, TrackTable};
 
-/// Album detail page: artwork hero, metadata and the track list.
+/// Album detail: hero (year · artist) + track table.
 #[component]
 pub fn Album(id: String) -> Element {
-    let navigator = use_navigator();
     let resource = use_resource(move || {
         let id = id.clone();
         async move { api::get_album(&id).await }
     });
 
-    let snapshot = match resource.read().as_ref() {
-        Some(Ok(album)) => album.clone(),
-        _ => crate::spotify::models::Album::default(),
-    };
+    // Clone the Ok payload out so no read guard crosses the nested use_resource.
+    let album_loaded = resource
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .cloned();
+    let is_err = matches!(resource.read().as_ref(), Some(Err(_)));
 
-    let name = snapshot.name.clone();
-    let artists = snapshot
-        .artists
-        .iter()
-        .map(|a| a.name.clone())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let release_year = snapshot.release_date.split('-').next().unwrap_or("").to_string();
-    let tracks = snapshot.tracks.as_ref().map(|page| page.items.clone()).unwrap_or_default();
-    let total = tracks.len();
-    let art_url = snapshot
-        .images
-        .first()
-        .map(|img| img.url.clone())
-        .unwrap_or_default();
-    let art_seed = snapshot.id.clone();
-    let playable = !snapshot.id.is_empty();
-    let play_uri = format!("spotify:album:{}", snapshot.id);
-
-    let rows = tracks
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let track = item.clone();
-            let uri = track.uri.clone();
-            rsx! {
-                TrackRow {
-                    track: track,
-                    index: Some((index + 1) as u32),
-                    onplay: move |_| crate::player::launch(uri.clone()),
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    rsx! {
-        div { class: "page detail",
-            if resource.read().is_none() {
-                div { class: "page-spinner", div { class: "spinner" } }
-            } else if !playable {
-                div { class: "error-banner", "Album unavailable." }
+    match album_loaded {
+        None => {
+            if is_err {
+                rsx! { div { class: "page detail", div { class: "error-banner", "Album unavailable." } } }
             } else {
-                div { class: "detail-hero",
-                    AlbumArt { url: art_url, seed: art_seed, class: Some("detail-art".to_string()) }
-                    div { class: "detail-text",
-                        h1 { "{name}" }
-                        div { class: "detail-subtitle",
-                            "{artists} · {release_year} · {total} tracks"
-                        }
-                        div { class: "detail-actions",
-                            button {
-                                class: "primary",
-                                onclick: move |_| {
-                                    // Seed the "playing" state so the bar isn't
-                                    // empty while the connect session spins up.
-                                    crate::player::launch(play_uri.clone());
-                                },
-                                "Play album"
+                rsx! { div { class: "page detail", div { class: "page-spinner", div { class: "spinner" } } } }
+            }
+        }
+        Some(album) => {
+            let year = album
+                .release_date
+                .split('-')
+                .next()
+                .unwrap_or(&album.release_date)
+                .to_string();
+            let artist_name = album.artists.first().map(|a| a.name.clone()).unwrap_or_default();
+            let meta = format!("{} · {}", year, artist_name);
+            let art_url = album.images.first().map(|i| i.url.clone()).unwrap_or_default();
+
+            let album_for_tracks = album.clone();
+            let tracks_resource = use_resource(move || {
+                let id = album_for_tracks.id.clone();
+                async move { api::get_album_tracks(&id).await.unwrap_or_default() }
+            });
+            let tracks = tracks_resource.read().as_ref().cloned().unwrap_or_default();
+            let total_label = album
+                .tracks
+                .as_ref()
+                .map(|p| p.total)
+                .unwrap_or(tracks.len() as u32);
+
+            let first_uri = tracks.first().map(|t| t.uri.clone()).unwrap_or_default();
+            let shuffle_tracks = tracks.clone();
+
+            rsx! {
+                div { class: "page detail",
+                    HeroHeader {
+                        kind: "Album".to_string(),
+                        title: album.name.clone(),
+                        meta: format!("{meta} · {total_label} songs"),
+                        image_url: art_url,
+                        seed: album.id.clone(),
+                        onplay: move |_| {
+                            if !first_uri.is_empty() {
+                                crate::player::launch(first_uri.clone());
                             }
-                            button {
-                                class: "ghost",
-                                onclick: move |_| { navigator.push(Route::Home); },
-                                "Back home"
+                        },
+                        onshuffle: move |_| {
+                            if !shuffle_tracks.is_empty() {
+                                let i = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.subsec_nanos() as usize)
+                                    .unwrap_or(0);
+                                crate::player::launch(shuffle_tracks[i % shuffle_tracks.len()].uri.clone());
                             }
-                        }
+                        },
                     }
+                    TrackTable { tracks: tracks, numbered: true }
                 }
-                div { class: "track-list", for row in rows { {row} } }
             }
         }
     }

@@ -1,66 +1,102 @@
 use crate::app_error::AppError;
-use crate::spotify::cache;
 use crate::spotify::client;
 use crate::spotify::models::*;
 use crate::spotify::session;
+use crate::spotify::store;
 
 const API_BASE: &str = "https://api.spotify.com/v1";
 
-/// GET an endpoint, honoring the ad-filter, in-memory TTL cache, 401 refresh and
-/// 429 Retry-After backoff. Falls back to the on-disk cache on network errors.
-async fn api_get_json(url: &str, cacheable: bool) -> Result<serde_json::Value, AppError> {
+/// GET a cacheable endpoint through the store tier: memory TTL hits,
+/// single-flighted fetches (prefetch joins page mounts) and disk
+/// stale-while-revalidate snapshots.
+async fn cached_get_json(url: &str) -> Result<serde_json::Value, AppError> {
+    let body = store::Store::global()
+        .clone()
+        .resolve(
+            url.to_owned(),
+            true,
+            |url| async move { pipeline_load(&url).await },
+        )
+        .await?;
+    serde_json::from_slice(&body).map_err(|e| AppError::Spotify(e.to_string()))
+}
+
+/// GET an uncachable endpoint directly (search results and other live data).
+/// Still capped-wait on 429 and refresh-retry on 401; never cached.
+async fn live_get_json(url: &str) -> Result<serde_json::Value, AppError> {
     let token = session::ensure_token().await?;
-
-    if let Some(cached) = cache::get(url) {
-        return serde_json::from_slice(&cached).map_err(|e| AppError::Spotify(e.to_string()));
+    match request_once(url, &token).await? {
+        ResponseOutcome::Success(body) => serde_json::from_str(&body)
+            .map_err(|e| AppError::Spotify(e.to_string())),
+        ResponseOutcome::Throttled(secs) => {
+            tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
+            let fresh = session::ensure_token().await?;
+            let body = request_after_backoff(url, &fresh).await?;
+            serde_json::from_str(&body).map_err(|e| AppError::Spotify(e.to_string()))
+        }
+        ResponseOutcome::Unauthorized => {
+            let fresh = session::ensure_token().await?;
+            match request_once(url, &fresh).await? {
+                ResponseOutcome::Success(body) => {
+                    serde_json::from_str(&body)
+                        .map_err(|e| AppError::Spotify(e.to_string()))
+                }
+                ResponseOutcome::Unauthorized => {
+                    crate::auth::logout();
+                    Err(AppError::Auth("session revoked".into()))
+                }
+                ResponseOutcome::Forbidden(err) => Err(err),
+                ResponseOutcome::Throttled(_) => Err(AppError::RateLimited),
+                ResponseOutcome::ApiError(status, msg) => {
+                    Err(AppError::Spotify(format!("{status}: {msg}")))
+                }
+            }
+        }
+        ResponseOutcome::Forbidden(err) => Err(err),
+        ResponseOutcome::ApiError(status, msg) => {
+            Err(AppError::Spotify(format!("{status}: {msg}")))
+        }
     }
+}
 
-    let (body, _fresh) = match request_once(url, &token).await? {
-        ResponseOutcome::Success(body) => (body, true),
+/// The loader the store runs on a miss: token lifecycle plus the
+/// 401-refresh / capped-429 retry pipeline (formerly `api_get_json`).
+async fn pipeline_load(url: &str) -> Result<Vec<u8>, AppError> {
+    let token = session::ensure_token().await?;
+    match request_once(url, &token).await? {
+        ResponseOutcome::Success(body) => Ok(body.into_bytes()),
         ResponseOutcome::Unauthorized => {
             // Token went stale — refresh exactly once, then retry.
             let fresh = session::ensure_token().await?;
             match request_once(url, &fresh).await? {
-                ResponseOutcome::Success(body) => (body, true),
+                ResponseOutcome::Success(body) => Ok(body.into_bytes()),
                 ResponseOutcome::Throttled(secs) => {
-                    // api.spotify.com is rate-limiting. One short capped wait,
-                    // then a clear error — never an endless spinner. Callers
-                    // retry on their own timer, so the feed returns as soon as
-                    // the quota clears.
                     tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
                     let fresh2 = session::ensure_token().await?;
-                    let body = request_after_backoff(url, &fresh2).await?;
-                    (body, true)
+                    Ok(request_after_backoff(url, &fresh2).await?.into_bytes())
                 }
                 ResponseOutcome::Unauthorized => {
                     crate::auth::logout();
-                    return Err(AppError::Auth("session revoked".into()));
+                    Err(AppError::Auth("session revoked".into()))
                 }
-                ResponseOutcome::Forbidden(err) => return Err(err),
+                ResponseOutcome::Forbidden(err) => Err(err),
                 ResponseOutcome::ApiError(status, msg) => {
-                    return Err(AppError::Spotify(format!("{status}: {msg}")))
+                    Err(AppError::Spotify(format!("{status}: {msg}")))
                 }
             }
         }
         ResponseOutcome::Throttled(secs) => {
-            // Rate-limited: one short capped wait, then surface a clear error
-            // (Home retries on its own timer).
+            // One short capped wait, then surface a clear error — pages have
+            // their own retry timers (never an endless spinner).
             tokio::time::sleep(std::time::Duration::from_secs(secs.min(5))).await;
-            let body = request_after_backoff(url, &token).await?;
-            (body, true)
+            let fresh = session::ensure_token().await?;
+            Ok(request_after_backoff(url, &fresh).await?.into_bytes())
         }
-        ResponseOutcome::Forbidden(err) => return Err(err),
+        ResponseOutcome::Forbidden(err) => Err(err),
         ResponseOutcome::ApiError(status, msg) => {
-            return Err(AppError::Spotify(format!("{status}: {msg}")));
+            Err(AppError::Spotify(format!("{status}: {msg}")))
         }
-    };
-
-    let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| AppError::Spotify(e.to_string()))?;
-    if cacheable {
-        cache::put(url, body.into_bytes());
     }
-    Ok(value)
 }
 
 enum ResponseOutcome {
@@ -162,23 +198,22 @@ async fn fetch_page<T>(
     path: &str,
     limit: u32,
     offset: u32,
-    cacheable: bool,
 ) -> Result<Paged<T>, AppError>
 where
     T: serde::de::DeserializeOwned + std::default::Default,
 {
     let url = format!("{API_BASE}{path}?limit={limit}&offset={offset}");
-    let value = api_get_json(&url, cacheable).await?;
+    let value = cached_get_json(&url).await?;
     serde_json::from_value(value).map_err(|e| AppError::Spotify(e.to_string()))
 }
 
 /// GET a single object by id.
-async fn get_object<T>(path: &str, cacheable: bool) -> Result<T, AppError>
+async fn get_object<T>(path: &str) -> Result<T, AppError>
 where
     T: serde::de::DeserializeOwned + std::default::Default,
 {
     let url = format!("{API_BASE}{path}");
-    let value = api_get_json(&url, cacheable).await?;
+    let value = cached_get_json(&url).await?;
     serde_json::from_value(value).map_err(|e| AppError::Spotify(e.to_string()))
 }
 
@@ -196,20 +231,13 @@ pub async fn get_current_user_profile() -> Result<UserProfile, AppError> {
 }
 
 pub async fn get_home() -> Result<HomeData, AppError> {
-    tracing::info!("api: get_home start");
-    let featured = get_featured_playlists().await?;
-    tracing::info!("api: get_home featured ok ({} items)", featured.len());
-    let new_releases = get_new_releases().await?;
-    tracing::info!("api: get_home new_releases ok ({} items)", new_releases.len());
-    let recommended = get_recommendations(&[]).await.unwrap_or_default();
-    tracing::info!("api: get_home recommended ok ({} items)", recommended.len());
-    Ok(HomeData {
-        featured,
-        new_releases,
-        recommended,
-    })
+    tracing::info!("api: get_home start -- fanning out");
+    let rec = tokio::spawn(async move { get_recommendations(&[]).await.unwrap_or_default() });
+    let (featured, new_releases) = tokio::try_join!(get_featured_playlists(), get_new_releases())?;
+    let recommended = rec.await.unwrap_or_default();
+    tracing::info!("api: get_home done -- featured={} new_releases={} recommended={}", featured.len(), new_releases.len(), recommended.len());
+    Ok(HomeData { featured, new_releases, recommended })
 }
-
 pub async fn search(
     q: &str,
     types: &[&str],
@@ -218,7 +246,7 @@ pub async fn search(
     let types = types.join(",");
     let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
     let url = format!("{API_BASE}/search?q={encoded}&type={types}&limit={limit}&market=from_token");
-    let value = api_get_json(&url, false).await?;
+    let value = live_get_json(&url).await?;
     serde_json::from_value(value).map_err(|e| AppError::Spotify(e.to_string()))
 }
 
@@ -234,16 +262,16 @@ pub async fn search_tracks(q: &str, limit: u32) -> Result<Vec<Track>, AppError> 
 }
 
 pub async fn get_album(id: &str) -> Result<Album, AppError> {
-    get_object(&format!("/albums/{id}"), true).await
+    get_object(&format!("/albums/{id}")).await
 }
 
 pub async fn get_artist(id: &str) -> Result<Artist, AppError> {
-    get_object(&format!("/artists/{id}"), true).await
+    get_object(&format!("/artists/{id}")).await
 }
 
 pub async fn get_artist_top_tracks(id: &str) -> Result<Vec<Track>, AppError> {
     let url = format!("{API_BASE}/artists/{id}/top-tracks?market=from_token");
-    let value = api_get_json(&url, true).await?;
+    let value = cached_get_json(&url).await?;
     let tracks = value
         .get("tracks")
         .and_then(|t| t.as_array())
@@ -255,7 +283,7 @@ pub async fn get_artist_top_tracks(id: &str) -> Result<Vec<Track>, AppError> {
 
 pub async fn get_playlist(id: &str) -> Result<Playlist, AppError> {
     let url = format!("{API_BASE}/playlists/{id}?market=from_token");
-    let value = api_get_json(&url, true).await?;
+    let value = cached_get_json(&url).await?;
     let mut playlist: Playlist = serde_json::from_value(value.clone())
         .map_err(|e| AppError::Spotify(e.to_string()))?;
 
@@ -282,24 +310,48 @@ pub async fn get_playlist(id: &str) -> Result<Playlist, AppError> {
 }
 
 pub async fn get_user_playlists() -> Result<Vec<Playlist>, AppError> {
-    fetch_page::<Playlist>("/me/playlists", 50, 0, true)
+    fetch_page::<Playlist>("/me/playlists", 50, 0)
         .await
         .map(|page| page.items)
 }
 
-pub async fn get_user_saved_tracks(limit: u32, offset: u32) -> Result<Paged<Track>, AppError> {
-    fetch_page::<Track>("/me/tracks", limit, offset, true).await
+pub async fn get_user_saved_tracks(limit: u32, offset: u32) -> Result<Paged<crate::spotify::models::SavedTrack>, AppError> {
+    fetch_page::<crate::spotify::models::SavedTrack>("/me/tracks", limit, offset).await
+}
+
+/// An artist's albums ("discography"), newest-first per Spotify.
+pub async fn get_artist_albums(id: &str, limit: u32) -> Result<Vec<Album>, AppError> {
+    let url = format!(
+        "{API_BASE}/artists/{id}/albums?limit={limit}&market=from_token&include_groups=album,single"
+    );
+    let value = cached_get_json(&url).await?;
+    let payload = value
+        .get("items")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(vec![]));
+    serde_json::from_value(payload).map_err(|e| AppError::Spotify(e.to_string()))
+}
+
+/// Artists related to the given one ("Fans also like").
+pub async fn get_artist_related(id: &str) -> Result<Vec<Artist>, AppError> {
+    let url = format!("{API_BASE}/artists/{id}/related-artists");
+    let value = cached_get_json(&url).await?;
+    let artists = value
+        .get("artists")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(vec![]));
+    serde_json::from_value(artists).map_err(|e| AppError::Spotify(e.to_string()))
 }
 
 pub async fn get_user_albums(limit: u32, offset: u32) -> Result<Vec<Album>, AppError> {
-    fetch_page::<Album>("/me/albums", limit, offset, true)
+    fetch_page::<Album>("/me/albums", limit, offset)
         .await
         .map(|page| page.items)
 }
 
 pub async fn get_featured_playlists() -> Result<Vec<Playlist>, AppError> {
     let url = format!("{API_BASE}/browse/featured-playlists?limit=12&market=from_token");
-    let value = api_get_json(&url, true).await?;
+    let value = cached_get_json(&url).await?;
     let payload = value
         .get("playlists")
         .cloned()
@@ -311,7 +363,7 @@ pub async fn get_featured_playlists() -> Result<Vec<Playlist>, AppError> {
 
 pub async fn get_new_releases() -> Result<Vec<Album>, AppError> {
     let url = format!("{API_BASE}/browse/new-releases?limit=12&market=from_token");
-    let value = api_get_json(&url, true).await?;
+    let value = cached_get_json(&url).await?;
     let payload = value
         .get("albums")
         .cloned()
@@ -328,7 +380,7 @@ pub async fn get_recommendations(seed_tracks: &[&str]) -> Result<Vec<Track>, App
         seed_tracks.join(",")
     };
     let url = format!("{API_BASE}/recommendations?limit=20&market=from_token&seed_tracks={seeds}");
-    let value = api_get_json(&url, true).await?;
+    let value = cached_get_json(&url).await?;
     let tracks = value
         .get("tracks")
         .cloned()

@@ -22,6 +22,18 @@ pub fn App() -> Element {
     let mut backend_booted = use_signal(|| false);
     let mut profile_backfilled = use_signal(|| false);
 
+    // Apply the persisted theme exactly once per process. Runs after mount so
+    // the document exists; a pure attribute set repaints instantly with zero
+    // component re-renders (the signal gate keeps AUTH_STATE churn from
+    // re-running it).
+    let mut theme_applied = use_signal(|| false);
+    use_effect(move || {
+        if !*theme_applied.peek() {
+            theme_applied.set(true);
+            crate::ui::theme::apply_persisted_theme();
+        }
+    });
+
     // Once we have a session, boot the playback backend. This runs on the UI
     // thread where the dioxus window exists (the hidden SDK WebView must be
     // created there), so it is deliberately not done in main.rs.

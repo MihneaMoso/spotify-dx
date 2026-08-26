@@ -26,6 +26,11 @@ pub fn launch(uri: String) {
     });
 }
 
+/// Enqueue a track onto the local play queue (deduplicates by id).
+pub fn enqueue(track: crate::spotify::models::Track) {
+    PLAYER_STATE.write().enqueue(track);
+}
+
 /// Create (once) whichever playback backend this build uses.
 pub fn init() -> anyhow::Result<()> {
     #[cfg(feature = "desktop")]
@@ -104,6 +109,12 @@ pub async fn pause() -> Result<(), AppError> {
 }
 
 pub async fn next() -> Result<(), AppError> {
+    // Phase 4: local queue takes precedence over SDK skip.
+    let head = PLAYER_STATE.peek().queue_next().cloned();
+    if let Some(track) = head {
+        PLAYER_STATE.write().pop_queue_head();
+        return play_uri(&track.uri).await;
+    }
     #[cfg(feature = "desktop")]
     {
         webview_bridge::next();

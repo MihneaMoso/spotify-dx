@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use futures::channel::mpsc::UnboundedReceiver;
 
-use crate::state::ADBLOCK_STATS;
-use crate::ui::components::{BottomNav, PlayerBar, SideNav, Toast};
+use crate::state::{ADBLOCK_STATS, SHOW_NOW_PLAYING};
+use crate::ui::components::{BottomNav, NowPlayingView, PlayerBar, SideNav, Toast, TopBar};
 use crate::ui::router::Route;
 
 /// Sidebar drag-to-resize min/max (px). Tuned to feel snappy without the rail
@@ -11,8 +11,13 @@ const SIDEBAR_MIN: f64 = 200.0;
 const SIDEBAR_MAX: f64 = 460.0;
 const SIDEBAR_DEFAULT: f64 = 240.0;
 
-/// Wraps every authenticated page: side nav (wide) / bottom nav (narrow),
-/// the outlet for the current route, the persistent player bar and toasts.
+/// Width of the now-playing column when it is shown. CSS drops the column out
+/// of the grid entirely below 1280 px regardless of this value.
+const NOW_PLAYING_WIDTH: f64 = 320.0;
+
+/// Wraps every authenticated page: top bar, side nav (wide) / icon rail
+/// (≤999 px) / bottom nav (narrow), the outlet for the current route, the
+/// optional now-playing column, the persistent player bar and toasts.
 #[component]
 pub fn AppLayout() -> Element {
     // Sidebar width is state so the drag-to-resize handle can update the grid
@@ -34,10 +39,16 @@ pub fn AppLayout() -> Element {
         }
     });
 
+    let np_width = if *SHOW_NOW_PLAYING.read() {
+        NOW_PLAYING_WIDTH
+    } else {
+        0.0
+    };
+
     rsx! {
         div {
             class: if resizing() { "app-shell resizing" } else { "app-shell" },
-            style: "--sidebar-width: {sidebar_width}px",
+            style: "--sidebar-width: {sidebar_width}px; --np-width: {np_width}px",
             onpointermove: move |evt| {
                 if resizing() {
                     let w = evt.client_coordinates().x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
@@ -46,6 +57,7 @@ pub fn AppLayout() -> Element {
             },
             onpointerup: move |_| resizing.set(false),
             onpointercancel: move |_| resizing.set(false),
+            TopBar {}
             SideNav {
                 resizing: resizing,
                 onresize: move |w| sidebar_width.set(w),
@@ -53,6 +65,7 @@ pub fn AppLayout() -> Element {
             div { class: "main-content",
                 Outlet::<Route> {}
             }
+            NowPlayingView {}
             PlayerBar {}
             BottomNav {}
             Toast {}

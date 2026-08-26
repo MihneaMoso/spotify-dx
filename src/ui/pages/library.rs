@@ -1,142 +1,200 @@
 use dioxus::prelude::*;
 
-use crate::app_error::AppError;
 use crate::spotify::api;
-use crate::ui::components::{MediaCard, TrackRow};
+use crate::spotify::models::{Album, Playlist, SavedTrack};
+use crate::ui::components::MediaCard;
 use crate::ui::router::Route;
 
-/// "Your Library": saved albums, followed playlists and liked songs.
+/// Case-insensitive substring match used by the library filter.
+fn matches(name: &str, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    q.is_empty() || name.to_lowercase().contains(&q)
+}
+
+/// Library view filter chips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    All,
+    Playlists,
+    Albums,
+    Liked,
+}
+
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::All, Tab::Playlists, Tab::Albums, Tab::Liked];
+    fn label(self) -> &'static str {
+        match self {
+            Tab::All => "All",
+            Tab::Playlists => "Playlists",
+            Tab::Albums => "Albums",
+            Tab::Liked => "Liked",
+        }
+    }
+}
+
 #[component]
 pub fn Library() -> Element {
     let navigator = use_navigator();
+    let mut tab = use_signal(|| Tab::All);
+    let mut filter = use_signal(String::new);
+    let mut alpha = use_signal(|| false);
+
     let resource = use_resource(|| async move {
-        let mut first_error: Option<AppError> = None;
-        let playlists = match api::get_user_playlists().await {
-            Ok(list) => list,
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-                Vec::new()
-            }
-        };
-        let albums = match api::get_user_albums(50, 0).await {
-            Ok(list) => list,
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-                Vec::new()
-            }
-        };
-        let tracks = match api::get_user_saved_tracks(50, 0).await {
-            Ok(page) => page.items,
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-                Vec::new()
-            }
-        };
-        (playlists, albums, tracks, first_error)
+        let playlists = api::get_user_playlists().await.unwrap_or_default();
+        let albums = api::get_user_albums(50, 0).await.unwrap_or_default();
+        let liked = api::get_user_saved_tracks(50, 0)
+            .await
+            .map(|page| page.items)
+            .unwrap_or_default();
+        (playlists, albums, liked)
     });
 
-    let album_cards: Vec<Element> = match resource.read().as_ref() {
-        Some((_, albums, _, _)) => albums
-            .iter()
-            .map(|a| {
-                let name = a.name.clone();
-                let subtitle = a.artists.first().map(|x| x.name.clone()).unwrap_or_default();
-                let image = a.images.first().map(|img| img.url.clone()).unwrap_or_default();
-                let seed = a.id.clone();
-                let id = a.id.clone();
-                rsx! {
-                    MediaCard {
-                        title: name,
-                        subtitle: subtitle,
-                        image_url: image,
-                        seed: seed,
-                        onselect: move |_| { navigator.push(Route::Album { id: id.clone() }); },
-                    }
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let snapshot = resource.read().as_ref().cloned().unwrap_or_default();
+    let (playlists, albums, liked): (Vec<Playlist>, Vec<Album>, Vec<SavedTrack>) = snapshot;
+    let q = filter.read().clone();
+    let sort_alpha = *alpha.read();
 
-    let playlist_cards: Vec<Element> = match resource.read().as_ref() {
-        Some((playlists, _, _, _)) => playlists
-            .iter()
-            .map(|p| {
-                let name = p.name.clone();
-                let subtitle = format!("by {}", p.owner.display_name.clone().unwrap_or_default());
-                let image = p.images.first().map(|img| img.url.clone()).unwrap_or_default();
-                let seed = p.id.clone();
-                let id = p.id.clone();
-                rsx! {
-                    MediaCard {
-                        title: name,
-                        subtitle: subtitle,
-                        image_url: image,
-                        seed: seed,
-                        onselect: move |_| { navigator.push(Route::Playlist { id: id.clone() }); },
-                    }
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let mut pl: Vec<&Playlist> = playlists.iter().filter(|p| matches(&p.name, &q)).collect();
+    let mut al: Vec<&Album> = albums.iter().filter(|a| matches(&a.name, &q)).collect();
+    if sort_alpha {
+        pl.sort_by_key(|p| p.name.to_lowercase());
+        al.sort_by_key(|a| a.name.to_lowercase());
+    }
 
-    let liked_rows: Vec<Element> = match resource.read().as_ref() {
-        Some((_, _, tracks, _)) => tracks
-            .iter()
-            .map(|t| {
-                let track = t.clone();
-                let uri = track.uri.clone();
-                rsx! {
-                    TrackRow {
-                        track: track,
-                        index: None,
-                        onplay: move |_| crate::player::launch(uri.clone()),
-                    }
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let show_playlists = matches!(*tab.read(), Tab::All | Tab::Playlists);
+    let show_albums = matches!(*tab.read(), Tab::All | Tab::Albums);
+    let show_liked = matches!(*tab.read(), Tab::All | Tab::Liked);
+
+// Owned card tuples so closures are 'static.
+let playlist_cards: Vec<(String, String, String, String)> = pl
+    .into_iter()
+    .map(|p| {
+        (
+            p.id.clone(),
+            p.name.clone(),
+            format!("by {}", p.owner.display_name.clone().unwrap_or_default()),
+            p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
+        )
+    })
+    .collect();
+let album_cards: Vec<(String, String, String, String)> = al
+    .into_iter()
+    .map(|a| {
+        (
+            a.id.clone(),
+            a.name.clone(),
+            a.artists.first().map(|x| x.name.clone()).unwrap_or_default(),
+            a.images.first().map(|i| i.url.clone()).unwrap_or_default(),
+        )
+    })
+    .collect();
+// Playable liked tracks as owned (id, track) rows.
+let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
+    .iter()
+    .filter_map(|s| s.playable().cloned())
+    .map(|t| (t.id.clone(), t))
+    .collect();
 
     rsx! {
         div { class: "page library",
             header { class: "page-header",
                 h1 { "Your Library" }
+                div { class: "library-tools",
+                    input {
+                        class: "search-input lib-filter",
+                        r#type: "search",
+                        placeholder: "Filter…",
+                        value: "{q}",
+                        oninput: move |evt| filter.set(evt.value()),
+                    }
+                    button {
+                        class: if sort_alpha { "chip active" } else { "chip" },
+                        title: "Toggle A–Z sorting",
+                        onclick: move |_| {
+                            let cur = *alpha.peek();
+                            alpha.set(!cur);
+                        },
+                        "A–Z"
+                    }
+                }
+            }
+
+            div { class: "chip-row",
+                for t in Tab::ALL {
+                    button {
+                        class: if *tab.read() == t { "chip active" } else { "chip" },
+                        onclick: move |_| tab.set(t),
+                        "{t.label()}"
+                    }
+                }
             }
 
             if resource.read().is_none() {
                 div { class: "page-spinner", div { class: "spinner" } }
-            } else if let Some((_, _, _, Some(err))) = resource.read().as_ref() {
-                div { class: "error-banner",
-                    {err.to_string()}
-                }
             } else {
-                section { class: "shelf",
-                    h2 { "Saved albums" }
-                    div { class: "shelf-row",
-                        for card in album_cards { {card} }
+                if show_playlists && !playlist_cards.is_empty() {
+                    div { class: "section-header", h2 { "Playlists" } }
+                    div { class: "card-grid",
+                        for (pid, name, subtitle, image) in playlist_cards {
+                            MediaCard {
+                                key: "{pid}",
+                                title: name.clone(),
+                                subtitle: subtitle.clone(),
+                                image_url: image.clone(),
+                                seed: pid.clone(),
+                                onselect: move |_| { navigator.push(Route::Playlist { id: pid.clone() }); },
+                            }
+                        }
                     }
                 }
-                section { class: "shelf",
-                    h2 { "Playlists" }
-                    div { class: "shelf-row",
-                        for card in playlist_cards { {card} }
+
+                if show_albums && !album_cards.is_empty() {
+                    div { class: "section-header", h2 { "Albums" } }
+                    div { class: "card-grid",
+                        for (aid, name, subtitle, image) in album_cards {
+                            MediaCard {
+                                key: "{aid}",
+                                title: name.clone(),
+                                subtitle: subtitle.clone(),
+                                image_url: image.clone(),
+                                seed: aid.clone(),
+                                onselect: move |_| { navigator.push(Route::Album { id: aid.clone() }); },
+                            }
+                        }
                     }
                 }
-                section { class: "shelf",
-                    h2 { "Liked songs" }
+
+                if show_liked {
+                    div { class: "section-header", h2 { "Liked songs" } }
                     div { class: "track-list",
-                        for row in liked_rows { {row} }
+                        if playable_rows.is_empty() {
+                            div { class: "empty-state", "Nothing liked yet." }
+                        }
+                        for (kid, t) in playable_rows {
+                            TrackRowLite {
+                                key: "{kid}",
+                                track: t,
+                                index_by_id: kid,
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Minimal list row for the library's liked section.
+#[component]
+fn TrackRowLite(track: crate::spotify::models::Track, index_by_id: String) -> Element {
+    let uri = track.uri.clone();
+    rsx! {
+        button {
+            class: "lib-row",
+            onclick: move |_| crate::player::launch(uri.clone()),
+            span { class: "track-index", "{index_by_id}" }
+            span { class: "lib-row-name", "{track.name}" }
+            span { class: "np-duration", "{crate::state::format_duration(track.duration_ms)}" }
         }
     }
 }

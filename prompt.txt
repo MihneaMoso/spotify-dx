@@ -1,0 +1,13 @@
+I waited a lot of time and the feed does not populate, none of the retries actually work, so the problem is Spotify's API. What I want you to do next is to rethink, replan and reimplement the playback like this:
+
+You are a rust/dioxus expert and an app architecture and network senior engineer. Explore this codebase and it's documentation to get context about this project. I want to completely rethink the project and reimplement it like so:
+Take inspiration from these repos:
+ - https://github.com/fr0stb1rd/Spotufi/
+ - https://gitlab.com/spotihater/spoticap/
+ - Brave browser's ad blocking strategy (search it up)
+Write down all useful information you can gather from these repos about how the code handles music streaming/ data fetching and ad blocking. Essentially this is what I want:
+ - The UI needs to be as similar as possible to `open.spotify.com`. Have the user's library, playlists, recent plays, history etc just like the layout of `open.spotify.com`;
+ - For the styling, also target to be as identical as possible to the open.spotify.com site, but have a dark/deepblue theme instead. The app already has a styling system, but improve it to make it as modern, sleek, fast and responsive as possible. The biggest priorities here are that the UI is VERY responsive, and that the style is changable very easily in the code, not in the UI (don't clutter the main UI with a theme switcher, put one in the settings);
+ - The most important part: the backend. Here you will use all the things you learned about data fetching and streaming music and ad blocking when you researched the repos/brave. The flow of the app will be as follows: the user logs in to spotify inside the app (not externally) - this part already works. Then the main UI shows up and displays exactly what spotify usually displays: the playlists, songs etc. The goal is to be as IDENTICAL to the spotify interface as possible. Then the user can use the app just like a normal music streaming app. The biggest priorities are speed and responsiveness. Don't improvise too much and defenitly don't take shortcuts or solve problems by ruining the app's flow; the behaviour should be exactly how I described it.
+After you complete your research, write down everything you will need and don't start implementing until you have a clear system design doc and a roadmap/todo-list for the tasks.
+

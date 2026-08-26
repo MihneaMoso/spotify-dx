@@ -104,3 +104,43 @@ pub fn volume(size: i32) -> Element {
         }
     }
 }
+
+/// History back arrow (top bar).
+pub fn back_arrow(size: i32) -> Element {
+    rsx! {
+        svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "none",
+            stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
+            stroke_linejoin: "round",
+            path { d: "M19 12H5m0 0 6-6m-6 6 6 6" }
+        }
+    }
+}
+
+/// History forward arrow (top bar).
+pub fn forward_arrow(size: i32) -> Element {
+    rsx! {
+        svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "none",
+            stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
+            stroke_linejoin: "round",
+            path { d: "M5 12h14m0 0-6-6m6 6-6 6" }
+        }
+    }
+}
+
+/// Play queue / now-playing panel toggle.
+pub fn queue_list(size: i32) -> Element {
+    rsx! {
+        svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "currentColor",
+            path { d: "M3 5h13v2H3zM3 10h13v2H3zM3 15h8v2H3zm15-6v7.2a3 3 0 1 0 2 2.8V7h-2z" }
+        }
+    }
+}
+
+/// Settings gear (avatar menu).
+pub fn settings_gear(size: i32) -> Element {
+    rsx! {
+        svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "currentColor",
+            path { d: "M19.4 13a7.6 7.6 0 0 0 .1-1 7.6 7.6 0 0 0-.1-1l2.1-1.6a.5.5 0 0 0 .1-.7l-2-3.4a.5.5 0 0 0-.6-.2l-2.5 1a7.7 7.7 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.7 7.7 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.4a.5.5 0 0 0 .1.7L4.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.7l2 3.4c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .2.2.4.5.4h4c.2 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.4a.5.5 0 0 0-.1-.7L19.4 13zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" }
+        }
+    }
+}

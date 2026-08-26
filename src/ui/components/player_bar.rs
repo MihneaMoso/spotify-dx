@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use futures::channel::mpsc::UnboundedReceiver;
 
 use crate::player;
-use crate::state::{PLAYER_STATE, RepeatMode};
+use crate::state::{PLAYER_STATE, SHOW_NOW_PLAYING, RepeatMode};
 use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 
 /// Persistent bottom bar: artwork, controls, progress and volume. Always lives
@@ -25,9 +25,10 @@ pub fn PlayerBar() -> Element {
     let volume = PLAYER_STATE.read().volume;
     let shuffle = PLAYER_STATE.read().shuffle;
     let repeat = PLAYER_STATE.read().repeat;
+    let liked = PLAYER_STATE.read().liked;
 
-    let track = PLAYER_STATE.peek().track.clone();
-    let (art_url, seed, title, subtitle, pos, dur) = match &track {
+    let state = PLAYER_STATE.peek();
+    let (art_url, seed, title, subtitle, pos, dur) = match &state.track {
         Some(t) => (
             t.album
                 .images
@@ -38,13 +39,9 @@ pub fn PlayerBar() -> Element {
                 .unwrap_or_default(),
             t.id.clone(),
             t.name.clone(),
-            t.artists
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            PLAYER_STATE.peek().position_ms,
-            PLAYER_STATE.peek().duration_ms,
+            state.subtitle(),
+            state.position_ms,
+            state.duration_ms,
         ),
         None => (String::new(), String::new(), String::new(), String::new(), 0, 0),
     };
@@ -121,6 +118,25 @@ pub fn PlayerBar() -> Element {
                 }
             }
             div { class: "player-right",
+                button {
+                    class: "ctrl",
+                    title: "Queue",
+                    onclick: move |_| {
+                        let next = !*SHOW_NOW_PLAYING.peek();
+                        *SHOW_NOW_PLAYING.write() = next;
+                    },
+                    {crate::ui::icons::queue_list(18)}
+                }
+                button {
+                    title: if liked { "Remove from Liked Songs" } else { "Save to Liked Songs" },
+                    class: if liked { "ctrl active" } else { "ctrl" },
+                    onclick: move |_| {
+                        // Optimistic stub; the real /me/tracks call lands in Phase 4.
+                        let next = !PLAYER_STATE.peek().liked;
+                        PLAYER_STATE.write().liked = next;
+                    },
+                    {crate::ui::icons::heart(18, liked)}
+                }
                 {crate::ui::icons::volume(18)}
                 VolumeBar {
                     volume: volume,

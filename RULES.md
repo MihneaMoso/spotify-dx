@@ -47,6 +47,20 @@ complements. Never `cargo run` and never launch the produced binary.
   was deleted).
 - Linux desktop builds need `pkg-config`, `libwebkit2gtk-4.1-dev`
   (±`libappindicator3-dev`, `librsvg2-dev`).
+- **Audio stack (Phase-0 decision):** decoding = `symphonia 0.6` (features:
+  flac,aac,mp3,isomp4,ogg,pcm); sound-card sink = `rodio 0.22`.
+  **rodio MUST stay `default-features = false, features = ["playback"]`** — its
+  default decoder features pull in symphonia 0.5, which would duplicate the entire
+  codec stack alongside our direct 0.6 dependency.
+- Symphonia 0.6 broke hard from 0.5 (learned the expensive way): `Probe::probe()`
+  returns `Box<dyn FormatReader>` directly (no `ProbedMetadata`); `MediaSource` needs
+  `is_seekable()`/`byte_len()` (no `len()`); decoders are per-media-type
+  (`CodecRegistry::make_audio_decoder(&AudioCodecParameters, &AudioDecoderOptions)`);
+  `Track.codec_params` is an `Option<CodecParameters>` enum (`is_audio()` /
+  `.audio()`); `next_packet()` returns `Result<Option<Packet>>`; packet fields are
+  public (`packet.track_id`, `packet.pts.get()`); `TimeBase` fields are
+  `numer`/`denom` (`NonZero<u32>`, not num/den). Reference implementation lives in
+  `src/media/audio.rs`.
 - The dev loop: user runs `dx serve` (dx CLI 0.7.x). It is **auto-reload**, so
   code changes are picked up without a restart.
 
@@ -86,12 +100,14 @@ lists) drops third-party ad/tracker requests.
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
-| `spotify/` | API models (`models.rs`), filtered HTTP client (`client.rs`), endpoints (`api.rs`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request cache (`cache.rs`). |
+| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request cache (`cache.rs`). |
 | `adblock/` | AdGuard DNS-filter parsing (`adguard_api.rs`), radix-trie blocklist + DoH resolver (`dns_filter.rs`), `mod.rs` facade. |
 | `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC). |
-| `ui/` | `router.rs`, `theme.rs` (design tokens mirrored in CSS), `icons.rs` (inline SVG), `components/`, `pages/`. |
-| `ui/components/` | `app_layout.rs` (shell + sidebar resize), `nav.rs` (`SideNav`/`BottomNav`), `player_bar.rs`, `progress_bar.rs`, `album_art.rs`, `card.rs`, `track_row.rs`, `toast.rs`. |
-| `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
+| `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
+| `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/avatar menu), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
+| `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
+| `media/` | Open-playback support code. `audio.rs`: Phase-0 spike proving byte-source decode + accurate seek + gapless planning with symphonia 0.6 (tests decode real FLAC/AAC fixtures from `assets/test-audio/`). The rodio sink joins here in Phase 4b. |
+| `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference. Load failures always fall back to defaults — settings must never block boot. Exposed app-wide as `state::SETTINGS`. |
 | `util.rs` | Shared helpers. |
 
 ### 4.4 Key files & ideas to know
@@ -118,7 +134,7 @@ lists) drops third-party ad/tracker requests.
   hidden underneath); an injected poller waits for the web-player access token
   and hands it to Rust over `window.ipc.postMessage`. Built with the shared
   session `WebContext` (`auth::with_session_context`), so the session cookies
-  persist across restarts. Never reparents WebViews (see §6.7).
+  persist across restarts. Never reparents WebViews (see §6.8).
 
 ### 4.5 Router & features
 
@@ -182,29 +198,55 @@ suspect stale CSS, inspect the code/CSS for the actual bug first. (One real
 bug found this way: a later `.bottom-nav { position: fixed; bottom: ... }`
 rule silently overriding an earlier `display: none` in the same sheet.)
 
-### 6.3 The bottom-nav / player-bar stack (current layout)
+### 6.3 The shell grid (current layout, Phase 2)
 
-`.app-shell` is a 3-row grid on desktop:
-`sidenav main / player player / nav nav` — the bottom nav is a real grid row at
-the very bottom, the player bar sits directly above it. The `@media
-(max-width: 820px)` block swaps the side nav for the same bottom nav and stacks
-`main / player / nav`. When changing this:
-- Keep the grid-area assignments (`side-nav`, `main-content`, `player-bar`,
-  `bottom-nav`) in `assets/main.css` section 3 consistent.
-- `.sidebar-resizer` is `position: fixed` and its `bottom` must equal
-  `calc(var(--player-height) + var(--bottom-nav-height))` to span the full
-  rail height.
+`.app-shell` is a 4-row × 3-column grid on desktop:
+`top top top / sidenav main np / player player player / nav nav nav`.
+The now-playing column participates through `--np-width`, bound INLINE by
+`AppLayout` (0 px = hidden; CSS drops the column entirely below 1280 px).
+Breakpoints: ≤1279 px no np column · ≤999 px fixed 72 px icon rail (resizer
+hidden — the inline `--sidebar-width` would fight it) · ≤820 px stacked
+mobile layout with bottom nav. When changing this:
+- Keep the grid-area assignments in `assets/main.css` section 3 consistent
+  (`ui/theme.rs` tests assert all six zones + the `"sidenav main   np"` row).
+- `.sidebar-resizer` is `position: fixed`; its `top` is `var(--topbar-height)`
+  and its `bottom` must equal
+  `calc(var(--player-height) + var(--bottom-nav-height))`.
 - `.toast` floats above the player bar and must also clear the bottom-nav row.
+- The theme-sync test `every_css_custom_property_in_use_is_defined` lints the
+  stylesheet: bare `var(--x)` references need a definition; inline-bound vars
+  (e.g. `--np-width`) must carry a fallback.
 
 ### 6.4 Desktop window & "wide vs narrow" media queries
 
-The desktop window defaults to 1200×780. That is WIDER than the
-`max-width: 820px` breakpoint, so base (non-media-query) CSS governs most
-desktop layout. When a "mobile-only" rule (e.g. `.bottom-nav`) is involved,
-verify which rule actually wins in the base sheet — a later same-specificity
-rule overrides an earlier `display: none`.
+The desktop window defaults to 1200×780. That sits between the breakpoints:
+base CSS governs layout, the now-playing column is hidden (1200 < 1280), and
+the rail is full-width (1200 > 999). When a "mobile-only" rule (e.g.
+`.bottom-nav`) is involved, verify which rule actually wins in the base
+sheet — a later same-specificity rule overrides an earlier `display: none`.
 
-### 6.5 WebView / SDK pitfalls
+### 6.5 Dioxus 0.7 rsx gotchas (learned in Phase 2/3 — follow the house pattern)
+
+- **No `let` bindings inside rsx `for` loop bodies** ("expected identifier").
+  Precompute owned tuples in plain Rust *before* the rsx block and iterate
+  those (see every page: `for (id, title, …) in cards`).
+- **Event handlers must return `()`.** `navigator.push(..)` returns a value —
+  wrap it: `onclick: move |_| { navigator.push(Route::…); }`.
+- **Never hold a resource read-guard across an rsx `return`** (E0597
+  "does not live long enough" when a nested `use_resource` follows, or when
+  different branches return early). Clone the payload out first:
+  `let loaded = resource.read().as_ref().and_then(|r| r.as_ref().ok()).cloned();`
+- **Two closures cannot both move the same Vec** (E0382) — give each its own
+  clone (`let pool = data.clone();`) or precompute per-closure values.
+- **Signal handles are `Copy`; they do not need `mut`.** Only signal-derived
+  write paths need mutation.
+- Shared fetch helpers should be plain `fn`s taking a `#[derive(Clone)]`
+  context struct of signals (see `liked.rs::fetch_page`), NOT closures —
+  closures get moved into effects/buttons and each use site needs another clone.
+- Prefer `*signal.write() = v;` over `.set()` if trait imports are unclear;
+  `peek()` requires `use dioxus::prelude::ReadableExt;`.
+
+### 6.6 WebView / SDK pitfalls
 
 - The hidden WebView runs the Web Playback SDK; on free accounts the SDK
   reports `init_error: Failed to initialize player` — that warning in the dx
@@ -213,7 +255,7 @@ rule overrides an earlier `display: none`.
   gates are the ones the blocklist targets.
 - No direct dioxus signal access from the wry IPC handler — queue and drain.
 
-### 6.6 Auth specifics
+### 6.7 Auth specifics
 
 - No `SPOTIFY_CLIENT_ID`, no OAuth scopes, no redirect URIs. The app signs in
   exactly like open.spotify.com: an in-window WebView loads `open.spotify.com`,
@@ -227,10 +269,10 @@ rule overrides an earlier `display: none`.
 - The access token has **no refresh token**; the login WebView stays alive
   (hidden) after sign-in and refreshes it via the same endpoint
   (`spotify/session.rs` → `webview_bridge::request_token_refresh` →
-  `webview_login::refresh_token`). See §6.7 for why it must be the login WebView
+  `webview_login::refresh_token`). See §6.8 for why it must be the login WebView
   and not the SDK WebView (CORS).
 
-### 6.7 The sign-in flow (in-window, open.spotify.com-style auth)
+### 6.8 The sign-in flow (in-window, open.spotify.com-style auth)
 
 - The sign-in is hosted **inside the main window**, not a separate window. The
   sign-in WebView is packed into the window's existing `vbox` (next to the

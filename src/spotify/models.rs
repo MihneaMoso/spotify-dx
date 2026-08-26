@@ -183,3 +183,62 @@ pub struct UserProfile {
     #[serde(default)]
     pub product: Option<String>,
 }
+
+/// One entry of `/me/tracks`: Spotify wraps the track with the date it was
+/// liked. The inner `track` can be null for region-blocked entries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SavedTrack {
+    #[serde(default)]
+    pub added_at: String,
+    #[serde(default)]
+    pub track: Option<Track>,
+}
+
+impl SavedTrack {
+    /// The playable track, if this entry has one.
+    pub fn playable(&self) -> Option<&Track> {
+        self.track.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_track_parses_spotify_envelope() {
+        let json = serde_json::json!({
+            "added_at": "2026-01-02T03:04:05Z",
+            "track": {
+                "id": "t1", "name": "Mercy", "duration_ms": 200_000,
+                "artists": [{"id": "a", "name": "Kanye"}]
+            }
+        });
+        let saved: SavedTrack = serde_json::from_value(json).unwrap();
+        assert_eq!(saved.added_at, "2026-01-02T03:04:05Z");
+        assert_eq!(saved.playable().unwrap().name, "Mercy");
+    }
+
+    #[test]
+    fn saved_track_tolerates_null_track() {
+        let json = serde_json::json!({"added_at": "2026-01-02T03:04:05Z", "track": null});
+        let saved: SavedTrack = serde_json::from_value(json).unwrap();
+        assert!(saved.playable().is_none());
+    }
+
+    #[test]
+    fn paged_saved_tracks_parses_mixed_entries() {
+        let json = serde_json::json!({
+            "items": [
+                {"added_at": "a", "track": {"id": "1", "name": "One"}},
+                {"added_at": "b", "track": null}
+            ],
+            "total": 2, "limit": 50, "offset": 0
+        });
+        let page: Paged<SavedTrack> = serde_json::from_value(json).unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.total, 2);
+        assert!(page.items[0].playable().is_some());
+        assert!(page.items[1].playable().is_none());
+    }
+}

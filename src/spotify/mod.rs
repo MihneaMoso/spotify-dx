@@ -1,9 +1,9 @@
 pub mod api;
-pub mod cache;
 pub mod client;
 pub mod models;
 pub mod player_api;
 pub mod session;
+pub mod store;
 
 /// Straightforward `Result` alias used across the crate.
 pub type Result<T> = std::result::Result<T, crate::app_error::AppError>;

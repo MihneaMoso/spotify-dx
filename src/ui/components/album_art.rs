@@ -94,12 +94,7 @@ fn use_artwork(url: String) -> Signal<Artwork> {
 }
 
 async fn load_image_bytes(url: &str) -> Result<Vec<u8>, crate::app_error::AppError> {
-    let resp = client::filtered_get(url).await?;
-    resp.error_for_status()?
-        .bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(crate::app_error::AppError::Network)
+    crate::media::images::load(url).await.map(|bytes| bytes.as_ref().clone())
 }
 
 /// Build the blur-up (32px, heavy quality loss) and full (< 512px) JPEG data URIs.
