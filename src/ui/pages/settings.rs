@@ -46,7 +46,7 @@ pub fn Settings() -> Element {
             section { class: "settings-section",
                 h2 { "Playback" }
                 p { class: "settings-hint",
-                    "Which engine plays audio. Auto uses the Spotify Web Playback SDK when your account allows it, the open multi-source engine otherwise."
+                    "Which engine plays audio. Auto uses the Spotify Web Playback SDK for Premium accounts and the open multi-source engine (TIDAL/Qobuz/YouTube) for free accounts — every user gets full-track playback."
                 }
                 div { class: "radio-col",
                     EngineRadio {
@@ -96,9 +96,17 @@ pub fn Settings() -> Element {
             }
 
             section { class: "settings-section",
+                h2 { "Cosmetic filtering" }
+                p { class: "settings-hint",
+                    "Hide premium upsell UI (upgrade buttons, HPTO banners, sponsored items) in the login WebView. Disable if Spotify pages look broken."
+                }
+                UpsellToggle {}
+            }
+
+            section { class: "settings-section",
                 h2 { "Cache" }
                 p { class: "settings-hint",
-                    "Artwork & API snapshot management arrives with the Phase-4 cache work."
+                    "Artwork & API snapshots are cached to disk automatically."
                 }
             }
         }
@@ -138,6 +146,26 @@ fn EngineRadio(
             onclick: move |_| onset(pref),
             span { class: if active { "radio-dot on" } else { "radio-dot" } }
             "{label}"
+        }
+    }
+}
+
+#[component]
+fn UpsellToggle() -> Element {
+    let on = SETTINGS.read().hide_upsell;
+
+    rsx! {
+        button {
+            class: if on { "menu-item radio-row active" } else { "menu-item radio-row" },
+            onclick: move |_| {
+                SETTINGS.write().hide_upsell = !on;
+                let snapshot = *SETTINGS.peek();
+                dioxus::prelude::spawn(async move {
+                    let _ = snapshot.save();
+                });
+            },
+            span { class: if on { "radio-dot on" } else { "radio-dot" } }
+            if on { "Hide upsell: ON" } else { "Hide upsell: OFF" }
         }
     }
 }

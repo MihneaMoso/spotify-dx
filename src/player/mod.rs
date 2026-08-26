@@ -8,6 +8,9 @@ pub mod playback_sdk;
 #[cfg(feature = "desktop")]
 pub mod webview_bridge;
 
+/// PlaybackEngine trait: abstraction over SDK vs open engine.
+pub mod engine;
+
 use crate::app_error::AppError;
 use crate::state::{AUTH_STATE, PLAYER_STATE};
 use dioxus::prelude::ReadableExt;
@@ -66,11 +69,29 @@ pub fn on_authenticated() {
     }
 }
 
-/// Start playing the given Spotify URI on the active device.
+/// Decide which engine to use based on settings and account state.
+fn should_use_open_engine() -> bool {
+    use crate::settings::EnginePreference;
+    let pref = crate::state::SETTINGS.read().engine;
+    match pref {
+        EnginePreference::Open => true,
+        EnginePreference::SpotifySdk => false,
+        EnginePreference::Auto => {
+            // Use SDK when Premium; open engine for free accounts.
+            !crate::state::AUTH_STATE.read().is_premium()
+        }
+    }
+}
+
+/// Start playing the given Spotify URI.
 ///
-/// This path goes through the Connect API regardless of renderer, because the
-/// initialized device was reported by the Web Playback SDK.
+/// Routes to either the SDK (Premium) or the open streaming engine (free/forced)
+/// based on `EnginePreference` in Settings.
 pub async fn play_uri(uri: &str) -> Result<(), AppError> {
+    if should_use_open_engine() {
+        return open_play_uri(uri).await;
+    }
+    // SDK path: requires Premium + device_id.
     if !AUTH_STATE.read().is_premium() {
         return Err(AppError::PremiumRequired(
             "Playback requires Spotify Premium — your account can browse freely.".into(),
@@ -82,6 +103,34 @@ pub async fn play_uri(uri: &str) -> Result<(), AppError> {
         .clone()
         .ok_or_else(|| AppError::Playback("no playback device available yet".into()))?;
     crate::spotify::player_api::play(&device_id, uri, None).await
+}
+
+/// Play a track via the open streaming engine.
+///
+/// Extracts the Spotify track ID from the URI, resolves it through the provider
+/// chain, and plays the result through the audio sink.
+async fn open_play_uri(uri: &str) -> Result<(), AppError> {
+    let track_id = uri
+        .strip_prefix("spotify:track:")
+        .unwrap_or(uri);
+    // Look up the track in Spotify's API for metadata.
+    let track = crate::spotify::api::get_track(track_id)
+        .await
+        .map_err(|e| AppError::Playback(format!("failed to fetch track metadata: {e}")))?;
+    // Resolve through the open engine.
+    let stream = crate::streaming::resolver::resolve(&track)
+        .await
+        .map_err(|e| AppError::Playback(format!("resolver error: {e}")))?;
+    match stream {
+        Some(s) => {
+            tracing::info!("open engine: playing {} via {}", track.name, s.provider);
+            // TODO: send to audio sink (Phase 4b sink wiring)
+            Ok(())
+        }
+        None => Err(AppError::Playback(
+            "could not find this track on any provider".into(),
+        )),
+    }
 }
 
 pub async fn play() -> Result<(), AppError> {

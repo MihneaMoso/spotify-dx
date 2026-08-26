@@ -32,6 +32,7 @@ pub fn Playlist(id: String) -> Element {
             .unwrap_or_default();
         let tracks = playlist.tracks.items.clone();
         let shuffle_tracks = tracks.clone();
+        let tracks_empty = tracks.is_empty();
 
         rsx! {
             div { class: "page detail",
@@ -57,6 +58,9 @@ pub fn Playlist(id: String) -> Element {
                     },
                 }
                 TrackTable { tracks: tracks, numbered: true }
+                if tracks_empty {
+                    div { class: "empty-state", "This playlist has no tracks." }
+                }
             }
         }
     } else if is_err {

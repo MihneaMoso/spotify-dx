@@ -1,22 +1,20 @@
 pub mod adguard_api;
-pub mod dns_filter;
+pub mod engine;
 
 use crate::app_error::AppError;
 use crate::state::AdblockStats;
 
-/// Seed the filter: load the bundled snapshot, refresh in the background and
-/// report what the graph looks like.
+/// Seed the filter: load the bundled snapshot, compile or restore the engine,
+/// then refresh in the background.
 pub async fn init() -> anyhow::Result<()> {
     adguard_api::init().await
 }
 
-/// Decide whether a URL should be dropped by the ad filter. Extracts the host
-/// and runs the O(k) trie lookup against the reversed-label index.
+/// Decide whether a URL should be dropped by the ad filter.  Delegates to the
+/// Brave-style `adblock` engine which handles hosts syntax, AdGuard syntax,
+/// and exception rules natively.
 pub fn should_block(url: &str) -> bool {
-    let Some(host) = extract_host(url) else {
-        return false;
-    };
-    dns_filter::is_blocked(&host)
+    engine::should_block_url(url)
 }
 
 /// Pull the hostname out of an arbitrary URL string.
@@ -25,14 +23,14 @@ pub fn extract_host(url: &str) -> Option<String> {
     parsed.host_str().map(|host| host.to_ascii_lowercase())
 }
 
-/// Current number of rules held in the tree (for the status panel).
+/// Current number of compiled rules held in the engine.
 pub fn block_count() -> usize {
-    dns_filter::block_count()
+    engine::block_count()
 }
 
-/// Whether the filter has any rules loaded yet (used by the UI badge).
+/// Whether the engine has any rules loaded (used by the UI badge).
 pub fn is_ready() -> bool {
-    dns_filter::block_count() > 0
+    engine::is_ready()
 }
 
 /// Record one blocked request. Thread-safe; callable from the HTTP layer.
@@ -45,26 +43,44 @@ pub fn stats_snapshot() -> AdblockStats {
     adguard_api::snapshot()
 }
 
-/// Parse a blocklist line into a domain (also used by the merging code and tests).
-pub fn parse_host_line(line: &str) -> Option<String> {
-    dns_filter::parse_host(line)
-}
-
-/// Insert a single domain at runtime (used by tests and live-updates).
-pub fn insert_blocked_domain(domain: &str) {
-    dns_filter::insert_blocked_domain(domain);
-}
-
-/// Bulk-insert hosts-format content; returns the number of new entries.
-pub fn load_hosts_content(content: &str) -> usize {
-    dns_filter::load_hosts_content(content)
-}
-
-/// Resolve a hostname through the system resolver, falling back to DoH.
-pub async fn resolve(host: &str) -> Result<Vec<std::net::IpAddr>, AppError> {
-    dns_filter::resolve(host)
+/// Resolve a hostname through DNS-over-HTTPS (Cloudflare).
+pub async fn dns_resolve(host: &str) -> Result<Vec<std::net::IpAddr>, AppError> {
+    engine::dns_resolve(host)
         .await
         .map_err(|err| AppError::Other(anyhow::anyhow!(err.to_string())))
+}
+
+/// Inject cosmetic CSS into a WebView page to hide Spotify upsell elements.
+/// Gated behind `hide_upsell` in Settings (disabled by default).
+pub fn cosmetic_css_injection() -> &'static str {
+    use crate::settings::Settings;
+    let settings = Settings::load();
+    if settings.hide_upsell {
+        cosmetic::HIDE_UPSELL_CSS
+    } else {
+        ""
+    }
+}
+
+/// Cosmetic CSS rules targeting Spotify upsell / ad elements (SpotiCap tier 2).
+/// See `docs/RESEARCH.md` §3.3.
+pub mod cosmetic {
+    /// CSS injected into the login/session WebView to hide premium upgrade
+    /// buttons, HPTO banners, and sponsored items.
+    pub const HIDE_UPSELL_CSS: &str = r#"
+        [class*="UpgradeButton"],
+        a[href*="/premium/"],
+        .main-leaderboardComponent-container,
+        div[data-testid*="hpto"],
+        div[data-testid*="ad-"],
+        [data-testid="sponsored-item"],
+        iframe[src*="doubleclick"],
+        iframe[src*="googlesyndication"],
+        [class*="PremiumBadge"],
+        [data-testid="premium-upsell"] {
+            display: none !important;
+        }
+    "#;
 }
 
 #[cfg(test)]
@@ -73,73 +89,60 @@ mod tests {
 
     #[test]
     fn test_known_ad_domain_blocked() {
-        insert_blocked_domain("ads.doubleclick.net");
-        assert!(should_block("https://ads.doubleclick.net/some/path?q=1"));
-        assert!(should_block("https://banner.ads.doubleclick.net/track.gif"));
+        let engine = engine::build_engine("0.0.0.0 ads.doubleclick.net\n");
+        let req = adblock::request::Request::new(
+            "https://ads.doubleclick.net/some/path?q=1",
+            "open.spotify.com",
+            "xhr",
+            "GET",
+        )
+        .unwrap();
+        assert!(engine.check_network_request(&req).should_block());
     }
 
     #[test]
     fn test_spotify_domains_never_blocked() {
-        // Spotify's own domains are always let through: the web-session login,
-        // token endpoint, API and audio streams all live there.
-        insert_blocked_domain("ads.spotify.com");
-        assert!(!should_block("https://ads.spotify.com/some/path?q=1"));
-        assert!(!should_block("https://audio-ak.spotifycdn.com/track.mp4"));
+        let engine = engine::build_engine("0.0.0.0 ads.spotify.com\n");
+        let urls = [
+            "https://ads.spotify.com/some/path?q=1",
+            "https://audio-ak.spotifycdn.com/track.mp4",
+        ];
+        for url in &urls {
+            let req = adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
+            assert!(
+                !engine.check_network_request(&req).should_block(),
+                "must not block {url}"
+            );
+        }
     }
 
     #[test]
     fn test_spotify_api_not_blocked() {
-        insert_blocked_domain("ads.spotify.com");
-        assert!(!should_block("https://api.spotify.com/v1/me"));
-        assert!(!should_block("https://accounts.spotify.com/authorize"));
-        assert!(!should_block("https://i.scdn.co/image/abc"));
-        assert!(!should_block("https://audio-ak.spotifycdn.com/track.mp4"));
+        let engine = engine::build_engine("0.0.0.0 ads.spotify.com\n||doubleclick.net^\n");
+        let urls = [
+            "https://api.spotify.com/v1/me",
+            "https://accounts.spotify.com/authorize",
+            "https://i.scdn.co/image/abc",
+            "https://audio-ak.spotifycdn.com/track.mp4",
+        ];
+        for url in &urls {
+            let req = adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
+            assert!(
+                !engine.check_network_request(&req).should_block(),
+                "must not block {url}"
+            );
+        }
     }
 
     #[test]
-    fn test_trie_lookup_perf() {
-        // Insert a realistic corpus…
-        for i in 0..5_000 {
-            insert_blocked_domain(&format!("tracker{i}.example{i}.com"));
-        }
-        // …then measure a million lookups.
-        let start = std::time::Instant::now();
-        let mut hits = 0u32;
-        for i in 0..1_000_000 {
-            let needle = format!("sub.tracker{}.example{}.com", i % 5_000, i % 5_000);
-            if dns_filter::is_blocked(&needle) {
-                hits += 1;
-            }
-        }
-        let elapsed = start.elapsed();
-        assert_eq!(hits, 1_000_000, "all generated needles must hit");
-        assert!(
-            elapsed.as_secs_f64() < 1.0,
-            "1M lookups took {:?}, expected < 1s",
-            elapsed
-        );
+    fn test_extract_host_normalizes() {
+        assert_eq!(extract_host("https://Example.COM/path"), Some("example.com".into()));
+        assert_eq!(extract_host("not a url"), None);
     }
 
     #[test]
-    fn test_hosts_file_parsing() {
-        let sample = "\
-# AdGuard DNS
-! comment block
-||ads.example.com^
-||analytics.example.net^$third-party
-0.0.0.0 track.example.org
-127.0.0.1 pixel.example.io
-api.spotify.com
-0.0.0.0 0.0.0.0
-";
-
-        let count = load_hosts_content(sample);
-        // ||ads.example.com^, ||analytics…^, track.example.org, pixel.example.io
-        assert_eq!(count, 4);
-        assert!(should_block("https://ads.example.com/x"));
-        assert!(should_block("https://pixel.example.io/1"));
-        assert!(!should_block("https://api.spotify.com/v1"));
-        // The hosts-form `0.0.0.0 0.0.0.0` must be ignored entirely.
-        assert_eq!(parse_host_line("0.0.0.0 0.0.0.0"), None);
+    fn test_cosmetic_css_is_nonempty() {
+        assert!(!cosmetic::HIDE_UPSELL_CSS.is_empty());
+        assert!(cosmetic::HIDE_UPSELL_CSS.contains("UpgradeButton"));
     }
 }

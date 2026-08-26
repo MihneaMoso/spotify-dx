@@ -15,6 +15,7 @@ pub mod player;
 pub mod settings;
 pub mod spotify;
 pub mod state;
+pub mod streaming;
 pub mod ui;
 pub mod util;
 

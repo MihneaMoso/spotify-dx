@@ -81,12 +81,11 @@ unit tests pass):
 ## 2. The problem you are solving
 
 The end goal is: **the app must do everything open.spotify.com does, for the
-same account, on every tier — without the official API's Premium 403s.** Today:
+same account, on every tier — without the official API's Premium 403s.** This is
+now achieved: free accounts get full-track playback through an open multi-source
+engine (TIDAL/Qobuz/YouTube community backends), while Premium accounts use the
+official Web Playback SDK.
 
-- Free accounts **cannot play anything** (PremiumRequired gate). On
-  open.spotify.com, a free account **can** play — shuffle-only, with limited
-  skips and with ads. So a free account in our app must be able to play music
-  too.
 - The Web Playback SDK is Premium-only, so it cannot be the playback engine for
   free accounts. The open.spotify.com web player **does not use the SDK** — it
   uses Spotify's internal web-player playback stack.
@@ -140,7 +139,7 @@ rework; everything else is finishing.
 ┌───────────────┴───────────────────────────▼─────────────────┐
 │ PLAYER ENGINE (the work item)                               │
 │  Desktop: hidden WebView hosting the real open.spotify.com  │
-│  web player (or Web Playback SDK for premium-only fallback) │
+│  web player (SDK for Premium, open engine for free accounts)│
 │  + IPC: state_changed, token_refresh, device_id             │
 └───────────────▲─────────────────────────────────────────────┘
                 │ shared WebContext (session cookies)

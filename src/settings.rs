@@ -1,12 +1,9 @@
-//! Persistent user settings (Phase-0 skeleton).
+//! Persistent user settings (theme, volume, playback engine, cosmetic toggle).
 //!
 //! Stored as human-readable JSON under `{data_dir}/settings.json` so users can
 //! hand-edit them too. Everything here must stay cheap to load at bootstrap:
 //! `main.rs::bootstrap()` reads this file before the window exists to decide
 //! the theme attribute and playback defaults.
-//!
-//! Deliberately NOT wired into global signals yet — the theme plumbing lands
-//! in Phase 1 (`ROADMAP.md`). This module only owns persistence + validation.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -54,6 +51,10 @@ pub struct Settings {
     /// Master volume, 0.0–1.0 (clamped on load).
     pub volume: f32,
     pub engine: EnginePreference,
+    /// Inject element-hiding CSS into the login/session WebView to suppress
+    /// premium upgrade buttons, HPTO banners, and sponsored items.
+    /// Disabled by default (ToS-sensitive; see RESEARCH §3.3).
+    pub hide_upsell: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +63,7 @@ impl Default for Settings {
             theme: ThemeName::DeepBlue,
             volume: 0.8,
             engine: EnginePreference::Auto,
+            hide_upsell: false,
         }
     }
 }

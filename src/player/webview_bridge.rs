@@ -207,12 +207,13 @@ fn apply_token_msg(msg: &serde_json::Value, answer_refresh: bool) {
 /// Apply a player-state-changed payload to `PLAYER_STATE`.
 fn apply_state(payload: &serde_json::Value) {
     let state: SdkState = playback_sdk::parse_sdk_state(payload);
-    PLAYER_STATE.write().track = state.track;
-    PLAYER_STATE.write().is_playing = state.is_playing;
-    PLAYER_STATE.write().position_ms = state.position_ms;
-    PLAYER_STATE.write().duration_ms = state.duration_ms;
-    PLAYER_STATE.write().shuffle = state.shuffle;
-    PLAYER_STATE.write().repeat = match state.repeat {
+    let mut s = PLAYER_STATE.write();
+    s.track = state.track;
+    s.is_playing = state.is_playing;
+    s.position_ms = state.position_ms;
+    s.duration_ms = state.duration_ms;
+    s.shuffle = state.shuffle;
+    s.repeat = match state.repeat {
         1 => crate::state::RepeatMode::Context,
         2 => crate::state::RepeatMode::Track,
         _ => crate::state::RepeatMode::Off,

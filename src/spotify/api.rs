@@ -232,11 +232,16 @@ pub async fn get_current_user_profile() -> Result<UserProfile, AppError> {
 
 pub async fn get_home() -> Result<HomeData, AppError> {
     tracing::info!("api: get_home start -- fanning out");
-    let rec = tokio::spawn(async move { get_recommendations(&[]).await.unwrap_or_default() });
-    let (featured, new_releases) = tokio::try_join!(get_featured_playlists(), get_new_releases())?;
-    let recommended = rec.await.unwrap_or_default();
-    tracing::info!("api: get_home done -- featured={} new_releases={} recommended={}", featured.len(), new_releases.len(), recommended.len());
-    Ok(HomeData { featured, new_releases, recommended })
+    let (playlists_res, liked_res) = tokio::join!(
+        get_user_playlists(),
+        get_user_saved_tracks(20, 0),
+    );
+    let playlists = playlists_res.unwrap_or_default();
+    let liked_tracks: Vec<Track> = liked_res
+        .map(|page| page.items.into_iter().filter_map(|st| st.track).collect())
+        .unwrap_or_default();
+    tracing::info!("api: get_home done -- playlists={} liked={}", playlists.len(), liked_tracks.len());
+    Ok(HomeData { playlists, liked_tracks })
 }
 pub async fn search(
     q: &str,
@@ -394,4 +399,11 @@ pub async fn get_album_tracks(id: &str) -> Result<Vec<Track>, AppError> {
         .tracks
         .map(|page| page.items)
         .unwrap_or_default())
+}
+
+/// Fetch a single track by ID.
+pub async fn get_track(id: &str) -> Result<Track, AppError> {
+    let url = format!("{API_BASE}/tracks/{id}");
+    let value = cached_get_json(&url).await?;
+    serde_json::from_value(value).map_err(|e| AppError::Spotify(e.to_string()))
 }

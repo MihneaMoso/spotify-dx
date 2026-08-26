@@ -52,6 +52,7 @@ pub fn Album(id: String) -> Element {
 
             let first_uri = tracks.first().map(|t| t.uri.clone()).unwrap_or_default();
             let shuffle_tracks = tracks.clone();
+            let tracks_empty = tracks.is_empty();
 
             rsx! {
                 div { class: "page detail",
@@ -77,6 +78,9 @@ pub fn Album(id: String) -> Element {
                         },
                     }
                     TrackTable { tracks: tracks, numbered: true }
+                    if tracks_empty {
+                        div { class: "empty-state", "This album has no tracks." }
+                    }
                 }
             }
         }

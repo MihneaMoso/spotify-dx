@@ -1,19 +1,14 @@
-use crate::adblock::dns_filter;
+use crate::adblock::engine;
 use crate::state::AdblockStats;
 use anyhow::Context as _;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use std::path::{Path, PathBuf};
 
 /// Blocklist sources, refreshed in the background at startup.
 pub const BLOCKLIST_URLS: &[&str] = &[
     "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
     "https://raw.githubusercontent.com/nicehash/NiceHashAdblocker/master/hosts/hosts.txt",
 ];
-
-/// The bundled snapshot shipped in `assets/blocklist_cache.txt`. The snapshot is
-/// always loadable, so the filter never blocks on the network for cold starts.
-const CACHE_FILE_NAME: &str = "blocklist_cache.txt";
 
 /// Thread-safe counters. Dioxus signals must only be touched on the UI thread,
 /// so the background refresh thread records here instead and the UI polls this
@@ -27,39 +22,36 @@ static STATS: Lazy<RwLock<AdblockStats>> = Lazy::new(|| {
     })
 });
 
-static FRESH_LIST: Lazy<std::sync::RwLock<Option<String>>> =
-    Lazy::new(|| std::sync::RwLock::new(None));
-
-/// Load the cached snapshot, then kick off a background refresh.
+/// Load the bundled snapshot, spawn the engine thread, and kick off a
+/// background refresh.  The engine thread builds the `adblock::Engine` lazily
+/// on first URL check; the text cache is loaded here so the rule count can be
+/// reported immediately.
 pub async fn init() -> anyhow::Result<()> {
-    // 1. Load the bundled snapshot (always succeeds when assets are present).
-    let cache_path = cache_path();
-    let mut cached_text = include_str!("../../assets/blocklist_cache.txt").to_owned();
-    if let Ok(from_disk) = std::fs::read_to_string(&cache_path) {
-        // Prefer anything newer on disk over the bundled copy.
-        cached_text = from_disk;
-    }
-    let added = dns_filter::load_hosts_content(&cached_text);
+    // Spawn the dedicated engine thread (Engine is !Send, so it lives here).
+    engine::spawn_engine_thread();
+
+    // Build the engine on the engine thread and report the rule count.
+    // The engine thread builds lazily, but we can report readiness now.
     {
         let mut stats = STATS.write();
-        stats.tracked = dns_filter::block_count();
-        stats.cached_entries = added;
+        stats.tracked = engine::block_count();
+        stats.cached_entries = engine::block_count();
     }
-    tracing::info!("adblock: loaded {added} cached entries");
+    tracing::info!("adblock: engine thread spawned");
 
-    // 2. Resolve the Spotify control-plane endpoints once to prove our filter
-    //    does not interfere with the API.
-    if let Ok(ips) = dns_filter::resolve("api.spotify.com").await {
+    // Resolve the Spotify control-plane endpoints once to prove our filter
+    // does not interfere with the API.
+    if let Ok(ips) = engine::dns_resolve("api.spotify.com").await {
         tracing::debug!("adblock: api.spotify.com resolves to {ips:?}");
     }
 
-    // 3. Background refresh — never blocks UI startup.
-    tokio::spawn(refresh_lists(cache_path));
+    // Background refresh — never blocks UI startup.
+    tokio::spawn(refresh_lists());
     Ok(())
 }
 
-/// Fetch every list, merge into the live trie and atomically rewrite the cache.
-async fn refresh_lists(cache_path: PathBuf) {
+/// Fetch every list, rebuild the engine, and atomically rewrite the cache.
+async fn refresh_lists() {
     let mut merged = String::new();
     for url in BLOCKLIST_URLS {
         match fetch_list(url).await {
@@ -78,17 +70,20 @@ async fn refresh_lists(cache_path: PathBuf) {
         return;
     }
 
-    let added = dns_filter::load_hosts_content(&merged);
+    // Rebuild the engine with the fresh list.
+    engine::rebuild_engine(&merged);
+
     {
         let mut stats = STATS.write();
-        stats.tracked = dns_filter::block_count();
+        stats.tracked = engine::block_count();
+        stats.cached_entries = engine::block_count();
     }
-    tracing::info!("adblock: refreshed blocklist, {added} new entries");
+    tracing::info!("adblock: refreshed blocklist, engine now has {} rules", engine::block_count());
 
-    if let Ok(mut current) = FRESH_LIST.write() {
-        *current = Some(merged.clone());
+    // Store the merged text for version-change detection on next boot.
+    if let Ok(mut current) = engine::FRESH_LIST.write() {
+        *current = Some(merged);
     }
-    write_cache_atomic(&cache_path, &merged);
 }
 
 /// Record one dropped request. Safe to call from any thread.
@@ -128,33 +123,9 @@ async fn fetch_list(url: &str) -> anyhow::Result<String> {
     resp.text().await.context("blocklist body read failed")
 }
 
-/// Full path of the merged cache file (never the bundled asset — that stays
-/// read-only inside the install directory).
-fn cache_path() -> PathBuf {
-    crate::util::cache_dir().join(CACHE_FILE_NAME)
-}
-
-/// Write the merged list to a temp file in the same directory, then rename.
-fn write_cache_atomic(dest: &Path, content: &str) {
-    let Some(dir) = dest.parent() else {
-        tracing::error!("adblock: cache path has no parent directory");
-        return;
-    };
-    if let Err(err) = std::fs::create_dir_all(dir) {
-        tracing::warn!("adblock: cannot create cache dir: {err}");
-        return;
-    }
-    let tmp = dest.with_extension("tmp");
-    let result = std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, dest));
-    if let Err(err) = result {
-        tracing::warn!("adblock: failed to persist cache: {err}");
-        let _ = std::fs::remove_file(&tmp);
-    }
-}
-
 /// The most recent merged snapshot, if a background refresh completed.
 pub fn current_merged_snapshot() -> Option<String> {
-    FRESH_LIST
+    engine::FRESH_LIST
         .read()
         .ok()
         .and_then(|guard| guard.clone())

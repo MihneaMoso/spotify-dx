@@ -8,6 +8,14 @@ use dioxus::prelude::ReadableExt;
 /// hidden SDK WebView when needed. The WebView owns the session cookies, so the
 /// refresh is a JS fetch to `open.spotify.com/get_access_token` bridged to Rust.
 pub async fn ensure_token() -> Result<String> {
+    // Guard: if we're running outside a Dioxus runtime (e.g. store SWR background
+    // task, tokio::spawn), we can't access AUTH_STATE at all — return an auth
+    // error so the caller can serve stale data or fail gracefully.
+    if dioxus::core::Runtime::try_current().is_none() {
+        tracing::warn!("session: ensure_token called outside Dioxus runtime");
+        return Err(AppError::Auth("no dioxus runtime available".into()));
+    }
+
     // `peek()` — NOT `.read()`. `ensure_token` runs inside page resources
     // (e.g. Home's `use_resource`), and `.read()` would register `AUTH_STATE` as
     // a reactive dependency of that resource. The session WebView posts a fresh

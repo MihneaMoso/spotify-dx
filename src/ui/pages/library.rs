@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::spotify::api;
-use crate::spotify::models::{Album, Playlist, SavedTrack};
+use crate::spotify::models::{Album, Playlist};
 use crate::ui::components::MediaCard;
 use crate::ui::router::Route;
 
@@ -40,17 +40,27 @@ pub fn Library() -> Element {
     let mut alpha = use_signal(|| false);
 
     let resource = use_resource(|| async move {
-        let playlists = api::get_user_playlists().await.unwrap_or_default();
-        let albums = api::get_user_albums(50, 0).await.unwrap_or_default();
-        let liked = api::get_user_saved_tracks(50, 0)
-            .await
-            .map(|page| page.items)
-            .unwrap_or_default();
+        let playlists = api::get_user_playlists().await;
+        let albums = api::get_user_albums(50, 0).await;
+        let liked = api::get_user_saved_tracks(50, 0).await;
         (playlists, albums, liked)
     });
 
-    let snapshot = resource.read().as_ref().cloned().unwrap_or_default();
-    let (playlists, albums, liked): (Vec<Playlist>, Vec<Album>, Vec<SavedTrack>) = snapshot;
+    let (is_err, playlists, albums, liked) = {
+        let snap = resource.read();
+        match snap.as_ref() {
+            None => (false, Vec::new(), Vec::new(), Vec::new()),
+            Some((p, a, l)) => {
+                let err = p.is_err() || a.is_err() || l.is_err();
+                (
+                    err,
+                    p.as_ref().cloned().unwrap_or_default(),
+                    a.as_ref().cloned().unwrap_or_default(),
+                    l.as_ref().map(|page| page.items.clone()).unwrap_or_default(),
+                )
+            }
+        }
+    };
     let q = filter.read().clone();
     let sort_alpha = *alpha.read();
 
@@ -131,6 +141,10 @@ let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
 
             if resource.read().is_none() {
                 div { class: "page-spinner", div { class: "spinner" } }
+            } else if is_err {
+                div { class: "error-banner",
+                    "Couldn't load your library. Make sure you're signed in and online."
+                }
             } else {
                 if show_playlists && !playlist_cards.is_empty() {
                     div { class: "section-header", h2 { "Playlists" } }

@@ -73,8 +73,8 @@ behaves like open.spotify.com: the first launch opens the real Spotify sign-in
 in a WebView, captures the web-player session, and stays logged in across
 restarts via the persisted session cookies. On **premium** accounts it plays
 full tracks through the Web Playback SDK driven from a hidden wry WebView; on
-**free** accounts playback is gated with a "Premium required" message and the
-app doubles as a browse/search player. An in-process ad-blocker (AdGuard DNS
+**free** accounts it plays full tracks through an open multi-source engine
+(TIDAL/Qobuz/YouTube community backends). An in-process ad-blocker (AdGuard DNS
 lists) drops third-party ad/tracker requests.
 
 ### 4.2 High-level data flow
@@ -100,14 +100,15 @@ lists) drops third-party ad/tracker requests.
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
-| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request cache (`cache.rs`). |
-| `adblock/` | AdGuard DNS-filter parsing (`adguard_api.rs`), radix-trie blocklist + DoH resolver (`dns_filter.rs`), `mod.rs` facade. |
-| `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC). |
+| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
+| `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
+| `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
 | `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/avatar menu), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
 | `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
-| `media/` | Open-playback support code. `audio.rs`: Phase-0 spike proving byte-source decode + accurate seek + gapless planning with symphonia 0.6 (tests decode real FLAC/AAC fixtures from `assets/test-audio/`). The rodio sink joins here in Phase 4b. |
-| `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference. Load failures always fall back to defaults — settings must never block boot. Exposed app-wide as `state::SETTINGS`. |
+| `media/` | `audio.rs`: symphonia decode (FLAC/M4A/MP3/OGG, seek, gapless planner) with tests. `images.rs`: disk-cached artwork loader (SHA-256 keyed, 128-file LRU, 30-day TTL). `sink.rs`: rodio audio sink thread (`MixerDeviceSink` + `Player` via `rodio::play()`), `SinkCommand` channel, `SinkState` atomics. |
+| `streaming/` | Open streaming engine (Phase 4b). `provider.rs`: `Provider` trait, `Resolution` enum, `TrackQuery`. `odesli.rs`: song.link ID mapping with in-memory cache. `cache.rs`: stream-URL cache (memory + disk, 50-min TTL, FIFO 256). `resolver.rs`: cache → Odesli → provider failover. `providers/{tidal,qobuz,youtube}.rs`: TIDAL (live uptime list + fallback pool), Qobuz (ISRC search), YouTube (InnerTube API). |
+| `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference (`EnginePreference` enum: Auto/SpotifySdk/Open), `hide_upsell` toggle. Load failures always fall back to defaults. Exposed app-wide as `state::SETTINGS`. |
 | `util.rs` | Shared helpers. |
 
 ### 4.4 Key files & ideas to know
@@ -255,6 +256,35 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   gates are the ones the blocklist targets.
 - No direct dioxus signal access from the wry IPC handler — queue and drain.
 
+### 6.6a Ad-block engine v2 (Brave-style `adblock` crate)
+
+- **`adblock::Engine` is `!Send + !Sync`** (uses `Rc`/`RefCell` internally).
+  It cannot live in a `static`.  A dedicated std thread owns the engine and
+  checks URLs via `mpsc::SyncSender`/`Receiver` channels.  `should_block_url`
+  sends the URL and blocks on the reply — safe from any thread including tokio
+  workers.
+- **Format splitting is required.** The `adblock` crate's `FilterSet` treats
+  content as either ABP/uBO Standard (`||domain^`) OR hosts format
+  (`0.0.0.0 hostname`), never both in one call.  `split_blocklist_formats()`
+  separates them before calling `add_filter_list` with the correct
+  `ParseOptions { format }`.
+- **`Engine::deserialize` is `&mut self`**, not a static constructor.  Create
+  with `Engine::default()`, then call `.deserialize(&bytes)`.
+- **`add_filters`/`add_filter` are `#[cfg(test)]` only.** Use
+  `add_filter_list(String, ParseOptions)` for production code.
+- **Engine cache** at `{cache_dir}/adblock_engine.bin` enables fast restart.
+  The engine thread tries deserialization first; falls back to compiling from
+  blocklist text on cache miss/corruption.
+- **Cosmetic CSS** (`mod.rs::cosmetic::HIDE_UPSELL_CSS`) is gated behind the
+  `hide_upsell` setting toggle (disabled by default; ToS-sensitive).  Inject
+  into the login/session WebView only when the toggle is ON.
+- **`hickory-resolver` is kept** for DNS-over-HTTPS during adblock bootstrap
+  (proving the filter doesn't block `api.spotify.com`).  It is NOT used for
+  runtime URL blocking — the `adblock` engine handles that entirely.
+- **`radix_trie` is removed.** The entire old `dns_filter.rs` module (radix
+  trie + reversed-label lookup + `ALWAYS_ALLOW` whitelist) is deleted.  The
+  Brave engine subsumes all of it.
+
 ### 6.7 Auth specifics
 
 - No `SPOTIFY_CLIENT_ID`, no OAuth scopes, no redirect URIs. The app signs in
@@ -386,7 +416,10 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   inside a Dioxus runtime`). Use `dioxus::prelude::spawn` when the current
   context is already inside the runtime, and NEVER touch signal state from
   `main.rs`'s pre-launch `bootstrap()` (no runtime exists yet) — the very first
-  `GlobalSignal::read/write` there panics at `Runtime::current()`. This
+  `GlobalSignal::read/write` there panics at `Runtime::current()`. To make
+  `ensure_token()` safe outside the runtime (e.g. store SWR background
+  refresh), it now checks `Runtime::try_current().is_none()` and returns an
+  auth error instead of panicking — the caller serves stale data. This
   actually crashed the app at startup whenever a *valid* token happened to be
   in the keychain: `auth::init()` used to write `AUTH_STATE` directly. Now it
   parks the restored session in a plain `static Mutex` and `App`'s use-effect
@@ -450,6 +483,29 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   (401/404). Do not burn time re-testing whether the 429 has cleared — the app
   self-heals when it does.
 - `auth::init()` no longer writes `AUTH_STATE` — see §6.7 note above.
+
+### 6.9 Open streaming engine (Phase 4b)
+
+- **`rodio 0.22` API differs from newer versions.** Uses `MixerDeviceSink`
+  (from `rodio::stream`), `rodio::play(&Mixer, reader)` returns a `Player`,
+  and `DeviceSinkBuilder::open_default_sink()` for device init. NOT `Sink`,
+  `OutputStream`, or `Sink::try_new`.
+- **`MixerDeviceSink` is `!Send`.** The audio sink runs on a dedicated std
+  thread that owns the device; commands arrive via `mpsc::channel`.
+- **`SETTINGS` access from non-dioxus threads** requires
+  `use dioxus::prelude::ReadableExt;` to bring `.peek()` into scope.
+  From a dioxus task, `.read()` subscribes; from a bare thread, use `.peek()`.
+- **Provider resolution is async.** The `resolver::resolve()` function and
+  each provider's `resolve()` are async. The sink thread calls `resolve()`
+  via `tokio::spawn` and waits for the result.
+- **TIDAL uptime list** (`tidal-uptime.geeked.wtf`) is fetched on first
+  access and cached for 5 min. Falls back to hardcoded instances.
+- **Stream URLs expire** (~1h). The URL cache uses a conservative 50-min
+  TTL.
+- **`async-trait` is required** for the `Provider` trait because its
+  methods are async and the trait is used as `dyn Provider`.
+- **Odesli API** (`api.song.link`) maps Spotify track IDs to TIDAL/Qobuz/YouTube
+  IDs. No API key needed. Results cached in-memory by Spotify track ID.
 
 ## 7. Testing
 

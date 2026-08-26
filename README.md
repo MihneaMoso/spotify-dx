@@ -3,10 +3,10 @@
 A cross-platform Spotify client written in Rust + [Dioxus](https://dioxuslabs.com)
 that behaves like **open.spotify.com**: it signs you in through the real Spotify
 login page inside the app, keeps you logged in across restarts, and renders the
-whole UI as fast native components. On **premium** accounts it plays full tracks
-via the Web Playback SDK; on **free** accounts it browses/search plays and
-explains that playback needs Premium. An in-process AdGuard blocklist drops
-third-party ad/tracker requests.
+whole UI as fast native components. **Every signed-in user gets full-track
+playback** — Premium accounts use the official Web Playback SDK, free accounts
+use an open multi-source engine (TIDAL/Qobuz/YouTube community backends). An
+in-process AdGuard blocklist drops third-party ad/tracker requests.
 
 ## How it works
 
@@ -20,17 +20,22 @@ third-party ad/tracker requests.
    mirrored to the OS keychain so startup can restore a session without a window.
 4. On **desktop**, playback is driven by the [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk)
    running in a hidden wry WebView that reuses the same session cookies, so no
-   token hand-over is needed.
-5. Every outbound request goes through an in-process **AdGuard blocklist trie**
-   (`adblock/`); third-party ad/tracker hosts are dropped before hitting the
-   network.
+   token hand-over is needed. **Free accounts** get full-track playback through
+   an open multi-source engine (TIDAL/Qobuz/YouTube community backends) instead.
+5. Every outbound request goes through an in-process **Brave-style ad-block
+   engine** (`adblock/`); third-party ad/tracker hosts are dropped before
+   hitting the network. The engine runs on a dedicated thread and checks URLs
+   via channel IPC.
 
 ## Feature checklist
 
 - [x] open.spotify.com-style login: real Spotify sign-in in a GTK WebView, session cookies persisted
 - [x] Persistent sessions (no re-login across app restarts), token refresh via the web-player endpoint
-- [x] AdGuard DNS-filter blocklist (merged, trie-indexed, bundled snapshot + background update)
+- [x] Brave-style ad-block engine (adblock crate, dedicated thread, serialized cache, background refresh)
+- [x] Request store: in-flight coalescing, memory TTL cache, disk stale-while-revalidate
+- [x] Disk-cached artwork (SHA-256 keyed, 128-file LRU, 30-day TTL)
 - [x] Web Playback SDK boot via hidden WebView (desktop) with shared cookie jar
+- [x] Open multi-source engine (TIDAL/Qobuz/YouTube) for free-tier full-track playback
 - [x] Player bar: play/pause, next/prev, seek, volume, shuffle/repeat
 - [x] Pages: Home (featured + new releases + recommended), Search (debounced), Library, Playlist, Album, Artist
 - [x] Artwork pipeline: colored placeholder → blur-up → full (downscaled, base64, thumbnails never hit the disk)
@@ -68,19 +73,23 @@ same web session that open.spotify.com uses.
 | OS keychain | Web-player access token + expiry |
 | `data_local_dir/spotify-dx/webview_session/` | WebView session cookies (`sp_dc`, …) — keeps you logged in |
 | `cache_dir/blocklist_cache.txt` | Merged snapshot of the blocklists |
+| `cache_dir/adblock_engine.bin` | Serialized ad-block engine (fast restart) |
 | `assets/blocklist_cache.txt` | Bundled snapshot shipped with the app (cold-start) |
 
 ## Layout
 
 ```
 src/
-  adblock/     trie-based blocklist + AdGuard/Hosts parsing + background refresh
+  adblock/     Brave ad-block engine (adblock crate) + blocklist fetch + cosmetic CSS scaffold
   auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
-  player/      Web Playback SDK bootstrap (desktop) / Connect API fallback
-  spotify/     API client, models, playback API
+  media/       audio.rs (symphonia decode), images.rs (disk-cached artwork), sink.rs (rodio audio output)
+  player/      PlaybackEngine trait, SDK bootstrap (desktop) / Connect API fallback
+  streaming/   Open engine: provider trait, TIDAL/Qobuz/YouTube, resolver, Odesli ID mapping, URL cache
+  spotify/     API client, models, request store (coalescing + SWR), playback API
   ui/          pages, components, router, theme, inline icons
   app.rs       login gate / routed shell
   main.rs      per-renderer entry points + bootstrap
+  settings.rs  persistent settings (theme, volume, engine preference, cosmetic toggle)
 assets/
   main.css             design system
   blocklist_cache.txt  bundled blocklist snapshot
@@ -102,7 +111,7 @@ Search / Library` nav.
 
 ## Credits & notes
 
-- Blocklist: AdGuard DNS filter (`adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt`)
+- Blocklist: AdGuard DNS filter (`adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt`) + curated Spotify ad/analytics rules, loaded via the Brave `adblock` crate.
 - Spotify artwork is served from `i.scdn.co`, which is explicitly **never** blocked.
 - Spotify's own domains (`*.spotify.com`, `*.spotifycdn.com`, `*.scdn.co`) are **never**
   blocked — the login, token endpoint, API and audio streams all live there. The blocklist

@@ -167,9 +167,8 @@ pub struct SearchResults {
 /// Bundle of `home` feed sections.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct HomeData {
-    pub featured: Vec<Playlist>,
-    pub new_releases: Vec<Album>,
-    pub recommended: Vec<Track>,
+    pub playlists: Vec<Playlist>,
+    pub liked_tracks: Vec<Track>,
 }
 
 /// The authenticated user's public profile.
