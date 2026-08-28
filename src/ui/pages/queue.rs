@@ -44,12 +44,12 @@ pub fn Queue() -> Element {
             }
             if has_queue {
                 div { class: "track-list",
-                    for (i, uri, t) in queue.into_iter().enumerate().map(|(i, t)| (i, t.uri.clone(), t)) {
+                    for (i, t) in queue.into_iter().enumerate() {
                         TrackRow {
                             key: "{t.id}-{i}",
                             track: t,
                             index: Some((i + 1) as u32),
-                            onplay: move |_| crate::player::launch(uri.clone()),
+                            onplay: crate::player::launch_track,
                         }
                     }
                 }

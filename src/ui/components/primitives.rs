@@ -89,13 +89,12 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
         .map(|(i, t)| {
             let index = numbered.then_some(i as u32 + 1);
             let track = t.clone();
-            let uri = track.uri.clone();
             rsx! {
                 TrackRow {
                     key: "{track.id}-{i}",
                     track: track,
                     index: index,
-                    onplay: move |_| crate::player::launch(uri.clone()),
+                    onplay: crate::player::launch_track,
                 }
             }
         })
@@ -103,6 +102,14 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
 
     rsx! {
         div { class: "track-list",
+            div { class: if numbered { "track-table-head" } else { "track-table-head track-table-head--noindex" },
+                if numbered {
+                    span { class: "track-head-index", "#" }
+                }
+                span { class: "track-head-art" }
+                span { class: "track-head-title", "Title" }
+                span { class: "track-head-duration", "Duration" }
+            }
             for row in rows { {row} }
             if shown < total {
                 button {

@@ -115,9 +115,12 @@ impl Provider for TidalProvider {
     }
 
     fn is_available(&self) -> bool {
-        // TIDAL is always "available" in the sense that we have fallback
-        // instances. The uptime list just affects ordering.
-        true
+        // DISABLED: Odesli (song.link) — the only Spotify→TIDAL ID mapper — was
+        // sunset (API now returns 401 PUBLIC_API_ACCESS_DEPRECATED and requires
+        // a paid API key), and the community proxy instances return 404. Until a
+        // working ID mapper exists, TIDAL cannot resolve; return false so the
+        // resolver skips it without calling the dead Odesli API.
+        false
     }
 
     async fn resolve(&self, query: &TrackQuery) -> Resolution {

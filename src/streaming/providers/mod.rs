@@ -10,9 +10,11 @@ use crate::streaming::provider::Provider;
 /// `Success` wins. On `NotFound`/`Error` the resolver falls through to the
 /// next provider. On `Cooldown` the resolver either skips or waits briefly.
 ///
-/// Order is informed by RESEARCH §2.3 / SYSTEM_DESIGN §6.7:
-/// TIDAL (fastest, community instances) → Qobuz (ISRC match, high quality)
-/// → YouTube (always available, lower quality).
+/// TIDAL and Qobuz are compiled in but report `is_available() == false`: Odesli
+/// (song.link), their only Spotify→platform ID mapper, was sunset (401,
+/// key-gated), so they can't resolve. They're kept for a future working mapper
+/// but skipped by the resolver. YouTube is the active, self-contained provider
+/// (InnerTube search + player; no external ID mapping).
 pub fn build_provider_chain() -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(tidal::TidalProvider::new()),

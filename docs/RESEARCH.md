@@ -97,6 +97,76 @@ Rejects `isAnonymous == true`. Login URL forces the password form:
 - History/stats persist locally and paint instantly on launch — no network needed for
   first frame of history.
 
+### 2.5 Data-layer breakthrough: Spotify's internal GraphQL (`api-partner.spotify.com`)
+
+**Spotufi does NOT use `api.spotify.com/v1` for library/browse/home data at all.**
+Its entire data layer (playlists, library tracks/albums/artists, search, home feed,
+playlist detail, artist overview) runs on Spotify's internal **GraphQL persisted-query
+API**:
+
+```
+POST https://api-partner.spotify.com/pathfinder/v2/query
+```
+
+Key facts (verified against the Spotufi source, `Spotify.kt` + `SpotifyHashProvider.kt`):
+
+- **Headers**: `Authorization: Bearer <web-player token>`,
+  `app-platform: WebPlayer`, `Origin: https://open.spotify.com`,
+  `Referer: https://open.spotify.com/`, plus a rotating Chrome UA. Content-Type JSON.
+- **Body**: `{ variables: {...}, operationName: "...", extensions: { persistedQuery: { version: 1, sha256Hash: "<hex>" } } }`
+- **The token is the SAME web-player token** our app already captures from
+  `open.spotify.com/api/token`. Spotufi fetches it natively via TOTP; we get it from
+  the session WebView. Either way it's a `web_player` access token that works.
+- **Persisted-query hashes are the load-bearing secret.** Spotify rotates them, and we
+  must ship current ones. Spotufi's hardcoded hashes (SHA-256) as of 2026-08:
+  - `libraryV3` (playlists/albums/artists): `973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3`
+  - `fetchPlaylist` (playlist detail + tracks): `346811f856fb0b7e4f6c59f8ebea78dd081c6e2fb01b77c954b26259d5fc6763`
+  - `fetchLibraryTracks` (liked songs): `087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240`
+  - `searchDesktop`: `4801118d4a100f756e833d33984436a3899cff359c532f8fd3aaf174b60b3b49`
+  - `home`: `23e37f2e58d82d567f27080101d36609009d8c3676457b1086cb0acc55b72a5d`
+  - `profileAttributes`: `53bcb064f6cd18c23f752bc324a791194d20df612d8e1239c735144ab0399ced`
+  - `getAlbum`: `b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10`
+  - `queryArtistOverview`: `5b9e64f43843fa3a9b6a98543600299b0a2cbbbccfdcdcef2402eb9c1017ca4c`
+  - `queryWhatsNewFeed`: `3b53dede3c6054e8b7c962dd280eb6761c5d1c82b06b039f4110d76a62b4966b`
+  - `addToLibrary`/`removeFromLibrary`: `7c5a69420e2bfae3da5cc4e14cbc8bb3f6090f80afc00ffc179177f19be3f33d`
+  - `addToPlaylist`/`removeFromPlaylist`/`moveItemsInPlaylist`: `47b2a1234b17748d332dd0431534f22450e9ecbb3d5ddcdacbd83368636a0990`
+- **Hash rotation handling**: on `412 PersistedQueryNotFound`, re-query with a known
+  "previous" hash; if that fails, trigger a remote hash refresh (Spotufi pulls a
+  community-maintained JSON registry). This is defensive — ship the current hashes and
+  re-check periodically.
+- **`variables` for `libraryV3` (playlists)**:
+  ```json
+  { "filters": ["Playlists"], "order": null, "textFilter": "",
+    "features": ["LIKED_SONGS","YOUR_EPISODES_V2","PRERELEASES","EVENTS"],
+    "limit": 50, "offset": 0, "flatten": true, "expandedFolders": [],
+    "folderUri": null, "includeFoldersWhenFlattening": false }
+  ```
+- **GQL response shape**: track artists are nested under `artists.items[].profile.name`
+  (or `.profile`), albums under `albumOfTrack`, images under `images/sources[].url`.
+  Track URIs may be on a wrapper `_uri`. Playlist tracks live at
+  `data.playlistV2.content.items[].itemV2.data`.
+- **429 handling**: GQL honors `Retry-After`, retries ~3× up to a few seconds each,
+  then surfaces a rate-limit error. Pathfinder is far less rate-limited than `/v1`.
+- **No single-track GQL op** — Spotufi fetches single tracks via REST `/v1`
+  (`tracks/{id}`), which is hard-429'd for us. **We get single-track metadata via
+  the `searchDesktop` GQL op by searching the exact track URI** (Spotify matches
+  full URIs). Searches return the first `Track` whose id matches.
+- **Playback should reuse in-hand metadata, not `/v1`.** Correction to the earlier
+  plan: instead of calling `/v1/tracks/{id}` before playback (429), the UI passes
+  the full `Track` the user clicked straight to the open engine
+  (`player::launch_track`). Only URI-only entry points re-fetch, via GQL
+  `searchDesktop`. This means the open-engine path never needs `/v1`.
+
+> **Assessment (supersedes §1 "pathfinder didn't accept our token"):** The earlier
+> rejection was almost certainly a transient 429/hardening window or a missing
+> `app-platform`/Origin header — Spoticap/Spoofy-class clients and Spotufi all drive
+> their entire data layer through pathfinder with the plain web-player token. **Adopted
+> (2026-08)**: replace all `/v1` library/browse/home/search reads with pathfinder GQL.
+> Keep `/v1` only for the few endpoints with no GQL equivalent (top tracks/artists,
+> recommendations). This sidesteps the `/v1` 429 outage entirely. Confirmed working
+> in-app: home feed, user playlists, liked songs, playlist detail all load via GQL.
+
+
 ---
 
 ## 3. SpotiCap — themed WebView + tiered ad blocking

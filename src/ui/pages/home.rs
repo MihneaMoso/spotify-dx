@@ -54,10 +54,15 @@ pub fn Home() -> Element {
             h.playlists
                 .iter()
                 .map(|p| {
+                    let count_label = if p.tracks.total > 0 {
+                        format!("{} tracks", p.tracks.total)
+                    } else {
+                        "Playlist".to_string()
+                    };
                     (
                         Route::Playlist { id: p.id.clone() },
                         p.name.clone(),
-                        format!("{} tracks", p.tracks.total),
+                        count_label,
                         p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
                     )
                 })

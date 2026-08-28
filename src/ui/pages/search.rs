@@ -123,13 +123,12 @@ pub fn Search() -> Element {
         .take(6)
         .map(|t| {
             let track = t.clone();
-            let uri = track.uri.clone();
             rsx! {
                 TrackRow {
                     key: "{track.id}",
                     track: track,
                     index: None,
-                    onplay: move |_| crate::player::launch(uri.clone()),
+                    onplay: crate::player::launch_track,
                 }
             }
         })

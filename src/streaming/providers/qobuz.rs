@@ -124,6 +124,13 @@ impl Provider for QobuzProvider {
         "qobuz"
     }
 
+    fn is_available(&self) -> bool {
+        // DISABLED: same root cause as TIDAL — Odesli (the Spotify→Qobuz ID
+        // mapper) is sunset/401, and Qobuz's own search API requires paid
+        // credentials. Skip so the resolver doesn't call the dead Odesli API.
+        false
+    }
+
     async fn resolve(&self, query: &TrackQuery) -> Resolution {
         // Prefer ISRC match (most accurate).
         if let Some(ref isrc) = query.isrc {

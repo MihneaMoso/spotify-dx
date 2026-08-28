@@ -1,5 +1,6 @@
 pub mod api;
 pub mod client;
+pub mod gql;
 pub mod models;
 pub mod player_api;
 pub mod session;

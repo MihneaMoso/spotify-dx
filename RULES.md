@@ -100,14 +100,14 @@ lists) drops third-party ad/tracker requests.
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
-| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
+| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), GraphQL persisted-query client (`gql.rs` — `api-partner.spotify.com/pathfinder`, used for user playlists + liked songs + home), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
 | `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
 | `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
 | `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/avatar menu), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
 | `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
 | `media/` | `audio.rs`: symphonia decode (FLAC/M4A/MP3/OGG, seek, gapless planner) with tests. `images.rs`: disk-cached artwork loader (SHA-256 keyed, 128-file LRU, 30-day TTL). `sink.rs`: rodio audio sink thread (`MixerDeviceSink` + `Player` via `rodio::play()`), `SinkCommand` channel, `SinkState` atomics. |
-| `streaming/` | Open streaming engine (Phase 4b). `provider.rs`: `Provider` trait, `Resolution` enum, `TrackQuery`. `odesli.rs`: song.link ID mapping with in-memory cache. `cache.rs`: stream-URL cache (memory + disk, 50-min TTL, FIFO 256). `resolver.rs`: cache → Odesli → provider failover. `providers/{tidal,qobuz,youtube}.rs`: TIDAL (live uptime list + fallback pool), Qobuz (ISRC search), YouTube (InnerTube API). |
+| `streaming/` | Open streaming engine (Phase 4b). `provider.rs`: `Provider` trait, `Resolution` enum, `TrackQuery`. `odesli.rs`: song.link ID mapping (DEAD — public API sunset/401). `cache.rs`: stream-URL cache (memory + disk, 50-min TTL, FIFO 256). `resolver.rs`: cache → provider failover. `providers/{tidal,qobuz,youtube}.rs`: TIDAL & Qobuz DISABLED (`is_available()==false`, Odesli sunset); YouTube (InnerTube ANDROID API) is the sole active, self-contained provider. |
 | `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference (`EnginePreference` enum: Auto/SpotifySdk/Open), `hide_upsell` toggle. Load failures always fall back to defaults. Exposed app-wide as `state::SETTINGS`. |
 | `util.rs` | Shared helpers. |
 
@@ -477,12 +477,50 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   that never actually cleared even after a 70s quiet wait). It is NOT
   IP-based (no-token/garbage-token requests get a clean 401), not fixed by the
   `client-token` header the web player sends, and not fixed by browser-like
-  Origin/Referer/cookies. The web player itself now routes most browsing through
-  `api-partner.spotify.com/pathfinder` (GraphQL) and `spclient.wg.spotify.com`
-  instead of `api.spotify.com/v1`; neither accepted our BQA token in testing
-  (401/404). Do not burn time re-testing whether the 429 has cleared — the app
-  self-heals when it does.
+  Origin/Referer/cookies. **Resolution (2026-08): route all user/library/home/
+  browse/search reads through Spotify's internal GraphQL API on
+  `api-partner.spotify.com/pathfinder/v2/query` instead of `/v1`** — pathfinder
+  accepts our same web-player token, is far less rate-limited, and is what the
+  web player itself uses. See `src/spotify/gql.rs` + `docs/RESEARCH.md` §2.5.
+  The earlier claim that "pathfinder didn't accept our token (401/404)" was a
+  transient hardening/bad-headers artifact, not a hard block.
 - `auth::init()` no longer writes `AUTH_STATE` — see §6.7 note above.
+
+### 6.8b Spotify GraphQL data layer (`api-partner.spotify.com/pathfinder`)
+
+- **User/library/home/data reads go through Spotify's internal GraphQL API, not
+  `/v1`.** Implemented in `src/spotify/gql.rs`. Endpoint:
+  `POST https://api-partner.spotify.com/pathfinder/v2/query` with a
+  persisted-query body `{ variables, operationName, extensions: { persistedQuery:
+  { version: 1, sha256Hash: "<hex>" } } }`.
+- **It accepts the same web-player token** we already capture from
+  `open.spotify.com/api/token`. Required headers: `app-platform: WebPlayer` plus
+  `Origin`/`Referer: https://open.spotify.com/` (see
+  `client::filtered_post_pathfinder`). Without `app-platform`+Origin, pathfinder
+  rejects the token.
+- **The sha256 hashes are the load-bearing secret and Spotify rotates them.**
+  On `412 PersistedQueryNotFound`, refresh the hash (Spotufi pulls a remote
+  registry; we keep the current hashes inline in `gql.rs::hashes`). Already routed
+  through GQL: user playlists (`libraryV3`), liked songs (`fetchLibraryTracks`),
+  playlist detail + tracks (`fetchPlaylist`), and single-track metadata
+  (`searchDesktop`, matched by exact URI). Album/artist/search still read `/v1`
+  (still rate-limited) — migrate them when practical.
+- **Playlist track counts from `libraryV3` are unreliable** — the item carries a
+  count only under a few schema-dependent keys (`trackCount` /
+  `content.totalCount` / `totalLength`), often 0 for library playlists. The home
+  shelf hides "0 tracks" and shows just "Playlist" when the count is unknown;
+  the playlist detail page gets the real count from `fetchPlaylist`.
+- **GQL response shapes** differ from `/v1`: track artists live at
+  `artists.items[].profile.name`, album at `albumOfTrack`, covers at
+  `coverArt.sources[]` / playlist `images.items[].sources[]`, track URIs may sit
+  on a wrapper `_uri` instead of `data.uri`. Liked songs parse from
+  `data.me.library.tracks.items[].track.data`. Playlist tracks parse from
+  `data.playlistV2.content.items[].itemV2.data`.
+- **Playback must not call `/v1` for metadata.** `player::launch_track(Track)`
+  plays using metadata already in hand (the UI has the full `Track` object the
+  user clicked), so rows/cards call `launch_track` and skip the network. The
+  URI-only fallback (`player::launch(uri)`) resolves via GQL `searchDesktop`.
+  Only legacy/premium paths touch `/v1/player`.
 
 ### 6.9 Open streaming engine (Phase 4b)
 
@@ -504,8 +542,60 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   TTL.
 - **`async-trait` is required** for the `Provider` trait because its
   methods are async and the trait is used as `dyn Provider`.
-- **Odesli API** (`api.song.link`) maps Spotify track IDs to TIDAL/Qobuz/YouTube
-  IDs. No API key needed. Results cached in-memory by Spotify track ID.
+- **`PLAYER_STATE.volume` starts at 0.0** (derive `Default`) and was NOT seeded
+  from `settings.json` — the open engine set the audio sink to volume 0 and was
+  completely silent despite decoding fine. Fix (kept): `App` seeds
+  `PLAYER_STATE.volume` from `SETTINGS.volume` exactly once at mount via
+  `player::seed_volume_from_settings()`. If the audio is ever silent again,
+  first check this, then the rodio `Player::connect_new(mixer)` → `append(...)`
+  wiring (decode itself is verified audibly correct).
+- **`TrackRow`/`track-table-head` grid columns must match the index presence.**
+  The row grid is `30px 50px minmax(0,1fr) auto`. When `numbered: false` (e.g.
+  home "Liked songs") there is NO index span, so the art/title/duration children
+  auto-place one column left (art→30px, title→50px, duration→1fr) and everything
+  looks crammed to the left. Rows use the extra class `track-row--noindex`
+  (`50px 1fr auto`) and the header `track-table-head--noindex` (same) when the
+  index is absent; the header always emits an art-column spacer so labels align.
+- **GQL track duration field differs by operation.** `libraryV3`/`fetchLibraryTracks`
+  expose duration as `duration.totalMilliseconds`; `fetchPlaylist` item tracks use
+  `trackDuration.totalMilliseconds`. `parse_gql_track` checks both (plus
+  `durationMs`/`duration_ms`). Missing the playlist variant showed "0:00" for every
+  playlist track while liked tracks (which parse `.duration`) were correct.
+- **Odesli API is dead.** `api.song.link` now returns
+  `401 PUBLIC_API_ACCESS_DEPRECATED` — Linktree officially sunset the public
+  Odesli API; it now requires a paid API key (email `developers@song.link`).
+  Consequently the **TIDAL and Qobuz providers are disabled**: they depended on
+  Odesli for Spotify→platform ID mapping (their own search APIs need paid auth,
+  and the community proxies return 404). Both now report `is_available() ==
+  false` so the resolver skips them without the futile `odesli::resolve()` call.
+  Re-enable only if a working ID mapper appears (flip `is_available()` to true).
+- **YouTube provider is the sole active source** and is fully self-contained (no
+  Odesli). It uses InnerTube with the ANDROID client (`clientVersion
+  20.10.38`, `androidSdkVersion 30`, plus `osName: Android`/`osVersion: 11`
+  — these are REQUIRED or YouTube returns 400 `FAILED_PRECONDITION`) and the
+  ANDROID API key `AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w`. The ANDROID
+  client returns direct (non-signature) audio URLs, so no JS/PO-token
+  handling is needed. Search parses
+  `contents.sectionListRenderer.contents[].itemSectionRenderer.contents[]`
+  using `compactVideoRenderer` (fall back to `videoRenderer`). Stale client
+  versions (e.g. `2.20240101.00.00`) are rejected — keep `CLIENT_VERSION`
+  current (ref: yt-dlp `INNERTUBE_CLIENTS`).
+- **YouTube throttles the adaptive (audio-only) formats — use the muxed
+  format instead.** The `adaptiveFormats` URLs carry `gir=yes`; they are
+  IP-bound and throttled: a sustained download 403s after ~1MB regardless of
+  range size, pacing, or fresh-URL rotation (measured hard cap = 1,000,000
+  cumulative bytes per IP). A full 3-4MB song can NOT be fetched that way.
+  The progressive muxed format (`streamingData.formats`, itag 18 = 360p mp4
+  with an AAC audio track) has NO such restriction: a plain GET returns the
+  entire file with any User-Agent. The YouTube provider therefore selects the
+  muxed format first (`AudioFormat::Aac`), falling back to adaptive formats.
+  rodio needs the `mp4` feature to decode it (see Cargo.toml — the app only
+  enables `playback` + `mp4` on rodio).
+- **All full-audio lossless/other sources are dead or locked down (2026):**
+  TIDAL/Qobuz (Odesli sunset), Invidious/Piped anonymous API instances (401/
+  403 from this IP). YouTube-muxed is currently the only reliable full-track
+  path. If ever blocked, the fallback is Spotify 30s previews via
+  `p.scdn.co/mp3-preview` using the captured web session.
 
 ## 7. Testing
 

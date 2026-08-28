@@ -5,20 +5,15 @@ use crate::ui::components::AlbumArt;
 
 /// One row in a track / saved-songs list.
 #[component]
-pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<String>) -> Element {
-    let Track {
-        name,
-        artists,
-        id,
-        duration_ms,
-        ..
-    } = track;
-
-    let artist_line = artists
+pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<Track>) -> Element {
+    let name = track.name.clone();
+    let artist_line = track
+        .artists
         .iter()
         .map(|artist| artist.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    let duration_ms = track.duration_ms;
     let mins = duration_ms / 60_000;
     let secs = (duration_ms / 1000) % 60;
 
@@ -31,11 +26,17 @@ pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<String>) 
         .map(|img| img.url.clone())
         .unwrap_or_default();
 
-    let album_art_seed = id.clone();
+    let album_art_seed = track.id.clone();
+    let played = track.clone();
+    let row_class = if index.is_some() {
+        "track-row"
+    } else {
+        "track-row track-row--noindex"
+    };
     rsx! {
         div {
-            class: "track-row",
-            onclick: move |_| onplay.call(id.clone()),
+            class: "{row_class}",
+            onclick: move |_| onplay.call(played.clone()),
             if let Some(index) = index {
                 span { class: "track-index", "{index}" }
             }

@@ -121,6 +121,7 @@ mod tests {
         let engine = engine::build_engine("0.0.0.0 ads.spotify.com\n||doubleclick.net^\n");
         let urls = [
             "https://api.spotify.com/v1/me",
+            "https://api-partner.spotify.com/pathfinder/v2/query",
             "https://accounts.spotify.com/authorize",
             "https://i.scdn.co/image/abc",
             "https://audio-ak.spotifycdn.com/track.mp4",

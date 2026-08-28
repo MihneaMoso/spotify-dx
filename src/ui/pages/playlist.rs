@@ -24,12 +24,7 @@ pub fn Playlist(id: String) -> Element {
         let owner = playlist.owner.display_name.clone().unwrap_or_default();
         let meta = format!("{} songs · by {}", playlist.tracks.total, owner);
         let art_url = playlist.images.first().map(|i| i.url.clone()).unwrap_or_default();
-        let first_uri = playlist
-            .tracks
-            .items
-            .first()
-            .map(|t| t.uri.clone())
-            .unwrap_or_default();
+        let first_track = playlist.tracks.items.first().cloned();
         let tracks = playlist.tracks.items.clone();
         let shuffle_tracks = tracks.clone();
         let tracks_empty = tracks.is_empty();
@@ -43,8 +38,8 @@ pub fn Playlist(id: String) -> Element {
                     image_url: art_url,
                     seed: playlist.id.clone(),
                     onplay: move |_| {
-                        if !first_uri.is_empty() {
-                            crate::player::launch(first_uri.clone());
+                        if let Some(t) = first_track.clone() {
+                            crate::player::launch_track(t);
                         }
                     },
                     onshuffle: move |_| {
@@ -53,7 +48,7 @@ pub fn Playlist(id: String) -> Element {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.subsec_nanos() as usize)
                                 .unwrap_or(0);
-                            crate::player::launch(shuffle_tracks[i % shuffle_tracks.len()].uri.clone());
+                            crate::player::launch_track(shuffle_tracks[i % shuffle_tracks.len()].clone());
                         }
                     },
                 }

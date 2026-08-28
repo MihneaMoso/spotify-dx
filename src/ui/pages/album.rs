@@ -50,7 +50,7 @@ pub fn Album(id: String) -> Element {
                 .map(|p| p.total)
                 .unwrap_or(tracks.len() as u32);
 
-            let first_uri = tracks.first().map(|t| t.uri.clone()).unwrap_or_default();
+            let first_track = tracks.first().cloned();
             let shuffle_tracks = tracks.clone();
             let tracks_empty = tracks.is_empty();
 
@@ -63,8 +63,8 @@ pub fn Album(id: String) -> Element {
                         image_url: art_url,
                         seed: album.id.clone(),
                         onplay: move |_| {
-                            if !first_uri.is_empty() {
-                                crate::player::launch(first_uri.clone());
+                            if let Some(t) = first_track.clone() {
+                                crate::player::launch_track(t);
                             }
                         },
                         onshuffle: move |_| {
@@ -73,7 +73,7 @@ pub fn Album(id: String) -> Element {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.subsec_nanos() as usize)
                                     .unwrap_or(0);
-                                crate::player::launch(shuffle_tracks[i % shuffle_tracks.len()].uri.clone());
+                                crate::player::launch_track(shuffle_tracks[i % shuffle_tracks.len()].clone());
                             }
                         },
                     }

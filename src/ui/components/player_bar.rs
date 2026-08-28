@@ -10,11 +10,12 @@ use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 #[component]
 pub fn PlayerBar() -> Element {
     use_coroutine(|_rx: UnboundedReceiver<()>| async move {
-        // Keep the clock ticking while playing.
+        // Keep the clock ticking while playing. On the open engine the sink
+        // thread publishes the real position, so only fake-advance the SDK path.
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
         loop {
             ticker.tick().await;
-            if PLAYER_STATE.peek().is_playing {
+            if PLAYER_STATE.peek().is_playing && !crate::player::is_open_engine() {
                 PLAYER_STATE.write().position_ms =
                     PLAYER_STATE.peek().position_ms.saturating_add(250);
             }
@@ -48,8 +49,16 @@ pub fn PlayerBar() -> Element {
 
     let _ = playing; // toggling is state-driven from the SDK / connect API.
 
+    let bg_style = if art_url.is_empty() {
+        String::new()
+    } else {
+        format!("background-image: url(\"{art_url}\");")
+    };
+
     rsx! {
         footer { class: "player-bar",
+            div { class: "player-bg", style: "{bg_style}" }
+            div { class: "player-bg-overlay" }
             div { class: "player-left",
                 AlbumArt { url: art_url, seed: seed, class: Some("player-art".to_string()) }
                 div { class: "player-meta",

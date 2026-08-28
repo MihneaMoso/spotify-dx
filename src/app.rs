@@ -31,6 +31,10 @@ pub fn App() -> Element {
         if !*theme_applied.peek() {
             theme_applied.set(true);
             crate::ui::theme::apply_persisted_theme();
+            // Seed the player's volume from the persisted setting once. Without
+            // this, PLAYER_STATE.volume stays at its derive-default 0.0 and the
+            // open engine would set the audio sink to volume 0 → silence.
+            crate::player::seed_volume_from_settings();
         }
     });
 

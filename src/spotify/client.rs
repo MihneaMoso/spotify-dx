@@ -105,3 +105,28 @@ pub async fn filtered_post_auth(
         .await
         .map_err(AppError::from)
 }
+
+/// POST to Spotify's internal GraphQL API (`api-partner.spotify.com/pathfinder`).
+/// Mirrors what the web player sends: an `app-platform` header plus browser
+/// Origin/Referer so pathfinder accepts our web-player bearer token.
+pub async fn filtered_post_pathfinder(
+    url: &str,
+    access_token: &str,
+    body: serde_json::Value,
+) -> Result<Response, AppError> {
+    if adblock::should_block(url) {
+        adblock::record_drop();
+        tracing::debug!("ad-block: dropped {url}");
+        return Err(AppError::AdBlock(url.to_owned()));
+    }
+    CLIENT
+        .post(url)
+        .header(AUTHORIZATION, format!("Bearer {access_token}"))
+        .header("app-platform", "WebPlayer")
+        .header("Origin", "https://open.spotify.com")
+        .header("Referer", "https://open.spotify.com/")
+        .json(&body)
+        .send()
+        .await
+        .map_err(AppError::from)
+}

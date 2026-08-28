@@ -9,13 +9,17 @@
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Commands sent from the UI thread to the audio sink thread.
+#[derive(Debug)]
 pub enum SinkCommand {
     /// Load and play a new track from a URL.
-    Play { url: String, format: String },
+    Play {
+        url: String,
+        format: crate::streaming::provider::AudioFormat,
+    },
     /// Pause playback.
     Pause,
     /// Resume playback.
@@ -26,6 +30,20 @@ pub enum SinkCommand {
     Volume(f32),
     /// Stop everything and shut down.
     Shutdown,
+}
+
+/// Global sink handle: command sender + shared state. Lazily spawned on first
+/// open-engine use; lives for the whole process.
+type SinkHandle = (std::sync::mpsc::Sender<SinkCommand>, Arc<SinkState>);
+
+static GLOBAL: OnceLock<SinkHandle> = OnceLock::new();
+
+/// Get (and on first call, spawn) the process-wide audio sink thread.
+///
+/// `initial_volume` is only used for the initial spawn; subsequent volume
+/// adjustments go through `SinkCommand::Volume`.
+pub fn global_sink(initial_volume: f32) -> &'static SinkHandle {
+    GLOBAL.get_or_init(|| spawn_sink(initial_volume))
 }
 
 /// Shared state between the UI and the sink thread.
@@ -80,86 +98,131 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
 
     let mut current_player: Option<rodio::Player> = None;
 
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            SinkCommand::Play { url, format } => {
-                state.is_buffering.store(true, Ordering::Relaxed);
-                state.is_playing.store(false, Ordering::Relaxed);
-
-                // Stop any current playback.
-                if let Some(p) = current_player.take() {
-                    p.stop();
-                }
-
-                // Fetch the audio data.
-                let data = match fetch_audio_bytes(&url) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::error!("audio sink: fetch failed: {e}");
-                        state.is_buffering.store(false, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-
-                let cursor = Cursor::new(data);
-                match rodio::play(mixer, cursor) {
-                    Ok(player) => {
-                        player.set_volume(initial_vol);
-                        state.is_buffering.store(false, Ordering::Relaxed);
-                        state.is_playing.store(true, Ordering::Relaxed);
-                        current_player = Some(player);
-                        tracing::info!("audio sink: playing track ({format})");
-                    }
-                    Err(e) => {
-                        tracing::error!("audio sink: decode/play failed: {e}");
-                        state.is_buffering.store(false, Ordering::Relaxed);
-                    }
-                }
+    loop {
+        // Periodically publish the current playback position so the UI clock
+        // stays accurate even when no commands arrive.
+        if current_player.is_some() && state.is_playing.load(Ordering::Relaxed) {
+            if let Some(p) = current_player.as_ref() {
+                state.position_ms.store(
+                    p.get_pos().as_millis() as u64,
+                    Ordering::Relaxed,
+                );
             }
-            SinkCommand::Pause => {
-                if let Some(ref p) = current_player {
-                    p.pause();
+        }
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(cmd) => match cmd {
+                SinkCommand::Play { url, format } => {
+                    state.is_buffering.store(true, Ordering::Relaxed);
                     state.is_playing.store(false, Ordering::Relaxed);
-                }
-            }
-            SinkCommand::Resume => {
-                if let Some(ref p) = current_player {
-                    p.play();
+                    state.position_ms.store(0, Ordering::Relaxed);
+
+                    // Stop any current playback.
+                    if let Some(p) = current_player.take() {
+                        p.stop();
+                    }
+
+                    // Fetch the audio data.
+                    let data = match fetch_audio_bytes(&url) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::error!("audio sink: fetch failed: {e}");
+                            state.is_buffering.store(false, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
+                    tracing::debug!("audio sink: downloaded {} bytes for {format:?}", data.len());
+
+                    let cursor = Cursor::new(data);
+                    use rodio::Source as _;
+                    let decoder = match rodio::Decoder::new(cursor) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::error!("audio sink: decode failed: {e}");
+                            state.is_buffering.store(false, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
+                    let duration_ms = decoder
+                        .total_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    state.duration_ms.store(duration_ms, Ordering::Relaxed);
+
+                    let player = rodio::Player::connect_new(mixer);
+                    player.set_volume(initial_vol);
+                    player.append(decoder);
+                    state.is_buffering.store(false, Ordering::Relaxed);
                     state.is_playing.store(true, Ordering::Relaxed);
+                    current_player = Some(player);
+                    tracing::info!("audio sink: playing track ({format:?}, {duration_ms} ms)");
                 }
-            }
-            SinkCommand::Seek(ms) => {
-                if let Some(ref p) = current_player {
-                    let _ = p.try_seek(Duration::from_millis(ms));
-                    state.position_ms.store(ms, Ordering::Relaxed);
+                SinkCommand::Pause => {
+                    if let Some(ref p) = current_player {
+                        p.pause();
+                        state.is_playing.store(false, Ordering::Relaxed);
+                    }
                 }
-            }
-            SinkCommand::Volume(v) => {
-                if let Some(ref p) = current_player {
-                    p.set_volume(v);
+                SinkCommand::Resume => {
+                    if let Some(ref p) = current_player {
+                        p.play();
+                        state.is_playing.store(true, Ordering::Relaxed);
+                    }
                 }
-            }
-            SinkCommand::Shutdown => {
-                if let Some(p) = current_player.take() {
-                    p.stop();
+                SinkCommand::Seek(ms) => {
+                    if let Some(ref p) = current_player {
+                        let _ = p.try_seek(Duration::from_millis(ms));
+                        state.position_ms.store(ms, Ordering::Relaxed);
+                    }
                 }
-                break;
-            }
+                SinkCommand::Volume(v) => {
+                    if let Some(ref p) = current_player {
+                        p.set_volume(v);
+                    }
+                }
+                SinkCommand::Shutdown => {
+                    if let Some(p) = current_player.take() {
+                        p.stop();
+                    }
+                    break;
+                }
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     tracing::info!("audio sink: thread exiting");
 }
 
-/// Fetch audio bytes from a URL. Uses the ad-blocked client.
+/// Fetch audio bytes from a URL.
+///
+/// Uses a dedicated, generously-timed client so large downloads don't trip the
+/// spotify client's 20s request timeout, and deliberately bypasses the ad
+/// filter — the audio CDN (e.g. googlevideo.com) is media, not an ad host.
 fn fetch_audio_bytes(url: &str) -> Result<Vec<u8>, String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
     rt.block_on(async {
-        let resp = crate::spotify::client::filtered_get(url).await
-            .map_err(|e| format!("ad-block filter: {e}"))?;
-        let bytes = resp.bytes().await
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(180))
+            .user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            .build()
+            .map_err(|e| format!("http client: {e}"))?;
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("download: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("download: HTTP {}", resp.status()));
+        }
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| format!("download: {e}"))?;
         Ok(bytes.to_vec())
     })

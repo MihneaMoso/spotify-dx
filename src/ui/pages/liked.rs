@@ -65,7 +65,7 @@ pub fn Liked() -> Element {
         .iter()
         .filter_map(|s| s.playable().cloned())
         .collect();
-    let first_uri = playable.first().map(|t| t.uri.clone()).unwrap_or_default();
+    let first_track = playable.first().cloned();
     let shuffle_pool = playable.clone();
 
     rsx! {
@@ -77,8 +77,8 @@ pub fn Liked() -> Element {
                 image_url: String::new(),
                 seed: "liked-songs".to_string(),
                 onplay: move |_| {
-                    if !first_uri.is_empty() {
-                        crate::player::launch(first_uri.clone());
+                    if let Some(t) = first_track.clone() {
+                        crate::player::launch_track(t);
                     }
                 },
                 onshuffle: move |_| {
@@ -87,7 +87,7 @@ pub fn Liked() -> Element {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.subsec_nanos() as usize)
                             .unwrap_or(0);
-                        crate::player::launch(shuffle_pool[i % shuffle_pool.len()].uri.clone());
+                        crate::player::launch_track(shuffle_pool[i % shuffle_pool.len()].clone());
                     }
                 },
             }
@@ -97,12 +97,12 @@ pub fn Liked() -> Element {
             }
 
             div { class: "track-list",
-                for (i, uri, t) in playable.into_iter().enumerate().map(|(i, t)| (i, t.uri.clone(), t)) {
+                for (i, t) in playable.into_iter().enumerate() {
                     TrackRow {
                         key: "{t.id}-{i}",
                         track: t,
                         index: Some((i + 1) as u32),
-                        onplay: move |_| crate::player::launch(uri.clone()),
+                        onplay: crate::player::launch_track,
                     }
                 }
             }

@@ -201,11 +201,11 @@ let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
 /// Minimal list row for the library's liked section.
 #[component]
 fn TrackRowLite(track: crate::spotify::models::Track, index_by_id: String) -> Element {
-    let uri = track.uri.clone();
+    let played = track.clone();
     rsx! {
         button {
             class: "lib-row",
-            onclick: move |_| crate::player::launch(uri.clone()),
+            onclick: move |_| crate::player::launch_track(played.clone()),
             span { class: "track-index", "{index_by_id}" }
             span { class: "lib-row-name", "{track.name}" }
             span { class: "np-duration", "{crate::state::format_duration(track.duration_ms)}" }

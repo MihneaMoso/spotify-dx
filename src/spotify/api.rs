@@ -1,5 +1,6 @@
 use crate::app_error::AppError;
 use crate::spotify::client;
+use crate::spotify::gql;
 use crate::spotify::models::*;
 use crate::spotify::session;
 use crate::spotify::store;
@@ -231,14 +232,14 @@ pub async fn get_current_user_profile() -> Result<UserProfile, AppError> {
 }
 
 pub async fn get_home() -> Result<HomeData, AppError> {
-    tracing::info!("api: get_home start -- fanning out");
+    tracing::info!("api: get_home start -- fanning out (GQL pathfinder)");
     let (playlists_res, liked_res) = tokio::join!(
         get_user_playlists(),
         get_user_saved_tracks(20, 0),
     );
     let playlists = playlists_res.unwrap_or_default();
     let liked_tracks: Vec<Track> = liked_res
-        .map(|page| page.items.into_iter().filter_map(|st| st.track).collect())
+        .map(|p| p.items.into_iter().filter_map(|st| st.track).collect())
         .unwrap_or_default();
     tracing::info!("api: get_home done -- playlists={} liked={}", playlists.len(), liked_tracks.len());
     Ok(HomeData { playlists, liked_tracks })
@@ -287,41 +288,34 @@ pub async fn get_artist_top_tracks(id: &str) -> Result<Vec<Track>, AppError> {
 }
 
 pub async fn get_playlist(id: &str) -> Result<Playlist, AppError> {
-    let url = format!("{API_BASE}/playlists/{id}?market=from_token");
-    let value = cached_get_json(&url).await?;
-    let mut playlist: Playlist = serde_json::from_value(value.clone())
-        .map_err(|e| AppError::Spotify(e.to_string()))?;
-
-    // Spotify nests each playlist entry under `items[].track`; flatten it back
-    // into the plain track list our model expects.
-    if let Some(items) = value
-        .get("tracks")
-        .and_then(|t| t.get("items"))
-        .and_then(|a| a.as_array())
-    {
-        let tracks: Vec<Track> = items
-            .iter()
-            .filter_map(|item| item.get("track").filter(|t| !t.is_null()))
-            .filter_map(|track| serde_json::from_value::<Track>(track.clone()).ok())
-            .collect();
-        playlist.tracks.items = tracks;
-        playlist.tracks.total = value
-            .get("tracks")
-            .and_then(|t| t.get("total"))
-            .and_then(|n| n.as_u64())
-            .unwrap_or(playlist.tracks.items.len() as u64) as u32;
-    }
-    Ok(playlist)
+    // Playlist detail goes through the internal GraphQL API (pathfinder), not
+    // the hard-rate-limited `/v1`. Returns playlist metadata + its tracks.
+    gql::gql_playlist(id).await
 }
 
 pub async fn get_user_playlists() -> Result<Vec<Playlist>, AppError> {
-    fetch_page::<Playlist>("/me/playlists", 50, 0)
-        .await
-        .map(|page| page.items)
+    // User-owned data goes through Spotify's internal GraphQL API, which accepts
+    // our web-player token and is not subject to the `/v1` hard rate limit.
+    gql::gql_user_playlists(50, 0).await
 }
 
-pub async fn get_user_saved_tracks(limit: u32, offset: u32) -> Result<Paged<crate::spotify::models::SavedTrack>, AppError> {
-    fetch_page::<crate::spotify::models::SavedTrack>("/me/tracks", limit, offset).await
+pub async fn get_user_saved_tracks(limit: u32, offset: u32) -> Result<Paged<SavedTrack>, AppError> {
+    let tracks = gql::gql_user_liked_tracks(limit, offset).await?;
+    let total = tracks.len() as u32;
+    Ok(Paged {
+        items: tracks
+            .into_iter()
+            .map(|t| SavedTrack {
+                added_at: String::new(),
+                track: Some(t),
+            })
+            .collect(),
+        total,
+        limit,
+        offset,
+        next: None,
+        previous: None,
+    })
 }
 
 /// An artist's albums ("discography"), newest-first per Spotify.
@@ -403,7 +397,9 @@ pub async fn get_album_tracks(id: &str) -> Result<Vec<Track>, AppError> {
 
 /// Fetch a single track by ID.
 pub async fn get_track(id: &str) -> Result<Track, AppError> {
-    let url = format!("{API_BASE}/tracks/{id}");
-    let value = cached_get_json(&url).await?;
-    serde_json::from_value(value).map_err(|e| AppError::Spotify(e.to_string()))
+    // Single-track metadata goes through the internal GraphQL API (pathfinder),
+    // not the hard-rate-limited `/v1/tracks/{id}`.
+    gql::gql_track(id)
+        .await?
+        .ok_or_else(|| AppError::Spotify(format!("track {id} not found via GQL search")))
 }

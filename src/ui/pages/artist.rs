@@ -81,7 +81,7 @@ pub fn Artist(id: String) -> Element {
     } else {
         top.iter().take(5).cloned().collect()
     };
-    let top_uri = top.first().map(|t| t.uri.clone()).unwrap_or_default();
+    let top_track = top.first().cloned();
     let shuffle_pool = top.clone();
     let top_len = top.len();
 
@@ -111,8 +111,8 @@ pub fn Artist(id: String) -> Element {
                 image_url: art_url,
                 seed: seed,
                 onplay: move |_| {
-                    if !top_uri.is_empty() {
-                        crate::player::launch(top_uri.clone());
+                    if let Some(t) = top_track.clone() {
+                        crate::player::launch_track(t);
                     }
                 },
                 onshuffle: move |_| {
@@ -121,7 +121,7 @@ pub fn Artist(id: String) -> Element {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.subsec_nanos() as usize)
                             .unwrap_or(0);
-                        crate::player::launch(shuffle_pool[i % shuffle_pool.len()].uri.clone());
+                        crate::player::launch_track(shuffle_pool[i % shuffle_pool.len()].clone());
                     }
                 },
             }
