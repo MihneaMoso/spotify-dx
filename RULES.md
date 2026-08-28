@@ -100,7 +100,7 @@ lists) drops third-party ad/tracker requests.
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
-| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — incl. `get_artist_albums`/`get_artist_related`), GraphQL persisted-query client (`gql.rs` — `api-partner.spotify.com/pathfinder`, used for user playlists + liked songs + home), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
+| `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — thin wrappers delegating to GQL), GraphQL persisted-query client (`gql.rs` — `api-partner.spotify.com/pathfinder`, used for user playlists + liked songs + saved albums + home + search + album/artist detail), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
 | `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
 | `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
@@ -500,11 +500,27 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   rejects the token.
 - **The sha256 hashes are the load-bearing secret and Spotify rotates them.**
   On `412 PersistedQueryNotFound`, refresh the hash (Spotufi pulls a remote
-  registry; we keep the current hashes inline in `gql.rs::hashes`). Already routed
-  through GQL: user playlists (`libraryV3`), liked songs (`fetchLibraryTracks`),
-  playlist detail + tracks (`fetchPlaylist`), and single-track metadata
-  (`searchDesktop`, matched by exact URI). Album/artist/search still read `/v1`
-  (still rate-limited) — migrate them when practical.
+  registry; we keep the current hashes inline in `gql.rs::hashes`). Routed through
+  GQL (names + hashes): user playlists (`libraryV3` `973e511c…`), liked songs
+  (`fetchLibraryTracks` `087278b2…`), saved albums (`libraryV3` filter=Albums),
+  playlist detail + tracks (`fetchPlaylist` `346811f8…`), single-track metadata
+  (`searchDesktop` `4801118d…`), album detail + tracks (`getAlbum`/`queryAlbumTracks`
+  `b9bfabef…` — NOTE: the server projects a *reduced* response when the request
+  `operationName` is `queryAlbumTracks` vs the full metadata+tracks when it is
+  `getAlbum`; keep `operationName = "getAlbum"` in `gql_album`), artist page
+  (`queryArtistOverview` `ae0e2958…` → hero + discography albums/singles + popular
+  tracks in one call), and related artists (`queryArtistRelated` `3d031d6c…`).
+  The op-name→hash map is extracted from `open.spotifycdn.com/cdn/build/web-player/web-player.*.js`
+  (pattern: `new <x>.l("<OpName>","query","<64-hex>",null)`).
+- **`/v1` reads are now fully eliminated** for the app's data views (search,
+  library, playlist, album, artist, home). The only remaining `/v1` calls are the
+  single, low-volume `get_current_user_profile` (`/v1/me` at login,
+  `src/spotify/api.rs`) and `/v1/me/player` playback-control *writes*
+  (`src/spotify/player_api.rs`, user-initiated). Everything else goes through
+  pathfinder. The old `/v1` GET pipeline (`cached_get_json`, `pipeline_load`,
+  `request_once`, `request_after_backoff`, `classify`, `ResponseOutcome`,
+  `get_object`, `get_featured_playlists`, `get_new_releases`,
+  `get_recommendations`, `get_artist*`) was removed as dead.
 - **Playlist track counts from `libraryV3` are unreliable** — the item carries a
   count only under a few schema-dependent keys (`trackCount` /
   `content.totalCount` / `totalLength`), often 0 for library playlists. The home
@@ -556,6 +572,23 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   looks crammed to the left. Rows use the extra class `track-row--noindex`
   (`50px 1fr auto`) and the header `track-table-head--noindex` (same) when the
   index is absent; the header always emits an art-column spacer so labels align.
+- **`get_user_albums` used to hit `/v1/me/albums` → 429** → the whole Library
+  page showed "Couldn't load your library" (because the page treats ANY one of
+  the three parallel calls erroring as a hard failure). Migrated to the GQL
+  `libraryV3` operation with `filters: ["Albums"]` (same pattern as
+  `get_user_playlists`, which uses `filters: ["Playlists"]`). Album items use
+  `item._uri` on the wrapper + `data.coverArt.sources[]` / `artists.items[]`.
+  Lesson: keep ALL `/v1` reads off — any library/browse/page call must go
+  through pathfinder or it will 429 after a handful of requests.
+- **Search hit `/v1/search` → 429** → the "old design" / red
+  "rate-limiting…retrying" banner. Migrated `api::search` (and thus
+  `search_tracks`) to the GQL `searchDesktop` operation. Result nodes:
+  `searchV2.tracksV2.items[].item.data` (Track), `searchV2.albumsV2.items[].data`
+  (Album), `searchV2.artists.items[].data` (Artist, images at
+  `visuals.avatarImage.sources[]`). Albums in search expose `date` as
+  `{year}` (NOT `isoString`), so `album_release_date` tolerates both; artist
+  genre/followers aren't present and are left defaulted. `live_get_json` was
+  search's only caller and is now removed.
 - **GQL track duration field differs by operation.** `libraryV3`/`fetchLibraryTracks`
   expose duration as `duration.totalMilliseconds`; `fetchPlaylist` item tracks use
   `trackDuration.totalMilliseconds`. `parse_gql_track` checks both (plus

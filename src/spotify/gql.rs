@@ -25,6 +25,10 @@ mod hashes {
         "4801118d4a100f756e833d33984436a3899cff359c532f8fd3aaf174b60b3b49";
     pub const GET_ALBUM: &str =
         "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10";
+    pub const QUERY_ARTIST_OVERVIEW: &str =
+        "ae0e2958a4ab645b35ca19ac04d0495ae12d9c5d7b7286217674801a9aab281a";
+    pub const QUERY_ARTIST_RELATED: &str =
+        "3d031d6cb22a2aa7c8d203d49b49df731f58b1e2799cc38d9876d58771aa66f3";
 }
 
 /// POST a persisted query to pathfinder and return the decoded `data` object.
@@ -282,6 +286,109 @@ pub async fn gql_user_liked_tracks(limit: u32, offset: u32) -> Result<Vec<crate:
     Ok(tracks)
 }
 
+fn parse_gql_album(data: &Value, uri_override: Option<&str>) -> Option<crate::spotify::models::Album> {
+    let uri = match uri_override {
+        Some(u) => u.to_string(),
+        None => str(&data["uri"]),
+    };
+    if uri.is_empty() {
+        return None;
+    }
+    let id = uri_part(&Value::String(uri.clone()));
+    if id.is_empty() || id == uri {
+        return None;
+    }
+    Some(crate::spotify::models::Album {
+        id,
+        name: str(&data["name"]),
+        artists: parse_artists(data),
+        images: parse_images(&data["coverArt"]),
+        tracks: None,
+        release_date: album_release_date(data),
+        total_tracks: 0,
+        uri,
+        album_type: data["type"].as_str().map(|s| s.to_string()),
+    })
+}
+
+/// Best-effort release date string from the GQL `date` object, which varies by
+/// operation: libraryV3/search use `isoString`, others expose `{year}` and/or
+/// `{day,month,year}`.
+fn album_release_date(data: &Value) -> String {
+    let d = &data["date"];
+    if let Some(iso) = d["isoString"].as_str() {
+        if !iso.is_empty() {
+            return iso[..4].to_string();
+        }
+    }
+    let mut parts = Vec::new();
+    if let Some(day) = d["day"].as_u64() {
+        parts.push(format!("{day:02}"));
+    }
+    if let Some(month) = d["month"].as_u64() {
+        parts.push(format!("{month:02}"));
+    }
+    if let Some(year) = d["year"].as_u64() {
+        parts.push(format!("{year:04}"));
+    }
+    parts.join("-")
+}
+
+/// Artist node from `searchV2.artists`: `profile.name`, `uri`,
+/// `visuals.avatarImage.sources[]`.
+fn parse_gql_artist(data: &Value) -> Option<crate::spotify::models::Artist> {
+    let uri = str(&data["uri"]);
+    if uri.is_empty() {
+        return None;
+    }
+    let id = uri_part(&Value::String(uri.clone()));
+    if id.is_empty() || id == uri {
+        return None;
+    }
+    Some(crate::spotify::models::Artist {
+        id,
+        name: data["profile"]["name"].as_str().unwrap_or_default().to_string(),
+        images: parse_images(&data["visuals"]["avatarImage"]),
+        ..crate::spotify::models::Artist::default()
+    })
+}
+
+/// Saved albums via `libraryV3` (filter=Albums). Mirrors `/me/albums` in
+/// shape without the hard `/v1` rate limit.
+pub async fn gql_user_albums(limit: u32, offset: u32) -> Result<Vec<crate::spotify::models::Album>, AppError> {
+    let vars = json!({
+        "filters": ["Albums"],
+        "order": null,
+        "textFilter": "",
+        "features": ["LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS"],
+        "limit": limit,
+        "offset": offset,
+        "flatten": true,
+        "expandedFolders": [],
+        "folderUri": null,
+        "includeFoldersWhenFlattening": false
+    });
+
+    let data = graphql_post("libraryV3", hashes::LIBRARY_V3, vars).await?;
+    let library = &data["me"]["libraryV3"];
+
+    let mut albums = Vec::new();
+    if let Some(items) = library["items"].as_array() {
+        for elem in items {
+            let wrapper = &elem["item"];
+            let inner = &wrapper["data"];
+            if inner["__typename"].as_str() != Some("Album") {
+                continue;
+            }
+            let uri_override = wrapper["_uri"].as_str();
+            if let Some(a) = parse_gql_album(inner, uri_override) {
+                albums.push(a);
+            }
+        }
+    }
+    Ok(albums)
+}
+
 /// Playlist detail + its tracks via `fetchPlaylist`. Populates `tracks.items`
 /// and `tracks.total`, so the detail page renders (and shows a real count).
 pub async fn gql_playlist(id: &str) -> Result<crate::spotify::models::Playlist, AppError> {
@@ -366,6 +473,234 @@ pub async fn gql_track(id: &str) -> Result<Option<crate::spotify::models::Track>
     Ok(None)
 }
 
+/// Full-text search over tracks, albums, and artists via the `searchDesktop`
+/// GQL operation. Same idea as `/v1/search` but routed through pathfinder so it
+/// is free of the `/v1` hard 429 rate limit.
+pub async fn gql_search(
+    q: &str,
+    limit: u32,
+) -> Result<crate::spotify::models::SearchResults, AppError> {
+    let vars = json!({
+        "searchTerm": q,
+        "offset": 0,
+        "limit": limit,
+        "numberOfTopResults": limit,
+        "includeAudiobooks": true,
+        "includeArtistHasConcertsField": false,
+        "includePreReleases": false,
+        "includeLocalConcertsField": false,
+        "includeAuthors": false
+    });
+
+    let data = graphql_post("searchDesktop", hashes::SEARCH_DESKTOP, vars).await?;
+    let sv = &data["searchV2"];
+
+    let mut tracks = Vec::new();
+    if let Some(items) = sv["tracksV2"]["items"].as_array() {
+        for elem in items {
+            let wrapper = &elem["item"];
+            let track_data = &wrapper["data"];
+            if track_data["__typename"].as_str() != Some("Track") {
+                continue;
+            }
+            let uri_override = wrapper["_uri"].as_str().or_else(|| wrapper["uri"].as_str());
+            if let Some(t) = parse_gql_track(track_data, uri_override) {
+                tracks.push(t);
+            }
+        }
+    }
+
+    let mut albums = Vec::new();
+    if let Some(items) = sv["albumsV2"]["items"].as_array() {
+        for elem in items {
+            let inner = &elem["data"];
+            if inner["__typename"].as_str() != Some("Album") {
+                continue;
+            }
+            if let Some(a) = parse_gql_album(inner, None) {
+                albums.push(a);
+            }
+        }
+    }
+
+    let mut artists = Vec::new();
+    if let Some(items) = sv["artists"]["items"].as_array() {
+        for elem in items {
+            let inner = &elem["data"];
+            if inner["__typename"].as_str() != Some("Artist") {
+                continue;
+            }
+            if let Some(a) = parse_gql_artist(inner) {
+                artists.push(a);
+            }
+        }
+    }
+
+    Ok(crate::spotify::models::SearchResults {
+        tracks: page_of(&tracks),
+        albums: page_of(&albums),
+        artists: page_of(&artists),
+        playlists: None,
+    })
+}
+
+fn page_of<T: Clone>(v: &[T]) -> Option<crate::spotify::models::Paged<T>> {
+    if v.is_empty() {
+        None
+    } else {
+        Some(crate::spotify::models::Paged {
+            items: v.to_vec(),
+            total: v.len() as u32,
+            limit: 0,
+            offset: 0,
+            next: None,
+            previous: None,
+        })
+    }
+}
+
+/// Album detail + its tracks via the `getAlbum` GQL operation (same idea as
+/// `/v1/albums/{id}`, but through pathfinder so it avoids the 429 limit).
+/// Populates `tracks.items` so the album page renders a real track list and
+/// count.
+pub async fn gql_album(id: &str) -> Result<crate::spotify::models::Album, AppError> {
+    let vars = json!({
+        "uri": format!("spotify:album:{id}"),
+        "offset": 0,
+        "limit": 100
+    });
+
+    let data = graphql_post("getAlbum", hashes::GET_ALBUM, vars).await?;
+    let album_union = &data["albumUnion"];
+    if album_union["__typename"].as_str() != Some("Album") {
+        return Err(AppError::Spotify(format!("album {id} not found via GQL")));
+    }
+    let mut album = parse_gql_album(album_union, None)
+        .ok_or_else(|| AppError::Spotify(format!("album {id} could not be parsed")))?;
+
+    let mut tracks = Vec::new();
+    if let Some(items) = album_union["tracksV2"]["items"].as_array() {
+        for elem in items {
+            let track_data = &elem["track"];
+            if track_data["__typename"].as_str().is_some_and(|t| t != "Track") {
+                continue;
+            }
+            if let Some(t) = parse_gql_track(track_data, None) {
+                tracks.push(t);
+            }
+        }
+    }
+    album.tracks = Some(page_of(&tracks).unwrap_or_default());
+    album.total_tracks = tracks.len() as u32;
+    Ok(album)
+}
+
+/// Artist hero node from `queryArtistOverview`: `profile.name`, `uri`,
+/// `visuals.avatarImage.sources[]`, `stats.followers`.
+fn parse_gql_artist_hero(data: &Value) -> Option<crate::spotify::models::Artist> {
+    let uri = str(&data["uri"]);
+    if uri.is_empty() {
+        return None;
+    }
+    let id = uri_part(&Value::String(uri.clone()));
+    if id.is_empty() || id == uri {
+        return None;
+    }
+    Some(crate::spotify::models::Artist {
+        id,
+        name: data["profile"]["name"].as_str().unwrap_or_default().to_string(),
+        images: parse_images(&data["visuals"]["avatarImage"]),
+        followers: crate::spotify::models::Followers {
+            total: data["stats"]["followers"].as_u64().unwrap_or(0),
+        },
+        uri,
+        ..crate::spotify::models::Artist::default()
+    })
+}
+
+/// Flatten `discography.<group>.items[].releases.items[]` (albums or singles)
+/// into `Album` models. The `queryArtistOverview` discography nests releases
+/// inside per-group nodes; the artist page shows them as its "Discography".
+fn parse_discography(data: &Value) -> Vec<crate::spotify::models::Album> {
+    let mut out = Vec::new();
+    for group in ["albums", "singles"] {
+        if let Some(items) = data["discography"][group]["items"].as_array() {
+            for group_node in items {
+                if let Some(releases) = group_node["releases"]["items"].as_array() {
+                    for release in releases {
+                        if release["__typename"].as_str().is_some_and(|t| t != "Album") {
+                            continue;
+                        }
+                        if let Some(a) = parse_gql_album(release, None) {
+                            out.push(a);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Full artist page via `queryArtistOverview` + `queryArtistRelated`, replacing
+/// four separate `/v1/artists/{id}` calls with (two) pathfinder queries that
+/// are free of the 429 hard limit. Returns (hero, discography, popular tracks,
+/// related artists).
+pub async fn gql_artist_page(
+    id: &str,
+) -> Result<
+    (
+        crate::spotify::models::Artist,
+        Vec<crate::spotify::models::Album>,
+        Vec<crate::spotify::models::Track>,
+        Vec<crate::spotify::models::Artist>,
+    ),
+    AppError,
+> {
+    let vars = json!({ "uri": format!("spotify:artist:{id}") });
+
+    let data = graphql_post("queryArtistOverview", hashes::QUERY_ARTIST_OVERVIEW, vars.clone()).await?;
+    let artist = &data["artistUnion"];
+    if artist["__typename"].as_str() != Some("Artist") {
+        return Err(AppError::Spotify(format!("artist {id} not found via GQL")));
+    }
+    let hero = parse_gql_artist_hero(artist)
+        .ok_or_else(|| AppError::Spotify(format!("artist {id} could not be parsed")))?;
+    let albums = parse_discography(artist);
+    let mut top_tracks = Vec::new();
+    if let Some(items) = artist["discography"]["topTracks"]["items"].as_array() {
+        for elem in items {
+            let track_data = &elem["track"];
+            if let Some(t) = parse_gql_track(track_data, None) {
+                top_tracks.push(t);
+            }
+        }
+    }
+
+    let related = gql_artist_related(id).await.unwrap_or_default();
+
+    Ok((hero, albums, top_tracks, related))
+}
+
+/// "Fans also like" artists via `queryArtistRelated`.
+pub async fn gql_artist_related(id: &str) -> Result<Vec<crate::spotify::models::Artist>, AppError> {
+    let vars = json!({
+        "uri": format!("spotify:artist:{id}"),
+        "offset": 0,
+        "limit": 12
+    });
+    let data = graphql_post("queryArtistRelated", hashes::QUERY_ARTIST_RELATED, vars).await?;
+    let mut artists = Vec::new();
+    if let Some(items) = data["artistUnion"]["relatedContent"]["relatedArtists"]["items"].as_array() {
+        for node in items {
+            if let Some(a) = parse_gql_artist(node) {
+                artists.push(a);
+            }
+        }
+    }
+    Ok(artists)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +769,79 @@ mod tests {
         assert_eq!(parse_playlist_track_total(&inner2), 7);
         let inner3 = json!({});
         assert_eq!(parse_playlist_track_total(&inner3), 0);
+    }
+
+    #[test]
+    fn parse_gql_album_reads_search_shape() {
+        let v = json!({
+            "__typename": "Album",
+            "uri": "spotify:album:al1",
+            "name": "Starboy",
+            "type": "ALBUM",
+            "coverArt": { "sources": [ { "url": "https://i.scdn.co/c", "width": 640, "height": 640 } ] },
+            "date": { "year": 2016 },
+            "artists": { "items": [ { "uri": "spotify:artist:a1", "profile": { "name": "Weeknd" } } ] }
+        });
+        let a = parse_gql_album(&v, None).unwrap();
+        assert_eq!(a.id, "al1");
+        assert_eq!(a.name, "Starboy");
+        assert_eq!(a.release_date, "2016");
+        assert_eq!(a.images[0].url, "https://i.scdn.co/c");
+        assert_eq!(a.artists[0].name, "Weeknd");
+    }
+
+    #[test]
+    fn parse_discography_flattens_album_and_single_groups() {
+        let v = json!({
+            "discography": {
+                "albums": { "items": [ { "releases": { "items": [
+                    { "__typename": "Album", "uri": "spotify:album:al1", "name": "A" }
+                ] } } ] },
+                "singles": { "items": [ { "releases": { "items": [
+                    { "__typename": "Album", "uri": "spotify:album:al2", "name": "S" }
+                ] } } ] },
+                "compilations": { "items": [ { "releases": { "items": [
+                    { "__typename": "Album", "uri": "spotify:album:co1", "name": "C" }
+                ] } } ] }
+            }
+        });
+        let albums = parse_discography(&v);
+        let ids: Vec<&str> = albums.iter().map(|a| a.id.as_str()).collect();
+        // Compilations are intentionally excluded from the artist shelf.
+        assert_eq!(ids, vec!["al1", "al2"]);
+    }
+
+    #[test]
+    fn parse_gql_artist_hero_reads_stats_and_avatar() {
+        let v = json!({
+            "__typename": "Artist",
+            "uri": "spotify:artist:ar1",
+            "profile": { "name": "Future" },
+            "stats": { "followers": 25136525 },
+            "visuals": { "avatarImage": { "sources": [
+                { "url": "https://i.scdn.co/av", "width": 640, "height": 640 }
+            ] } }
+        });
+        let a = parse_gql_artist_hero(&v).unwrap();
+        assert_eq!(a.id, "ar1");
+        assert_eq!(a.name, "Future");
+        assert_eq!(a.followers.total, 25136525);
+        assert_eq!(a.images[0].url, "https://i.scdn.co/av");
+    }
+
+    #[test]
+    fn parse_gql_artist_reads_related_node() {
+        let v = json!({
+            "__typename": "Artist",
+            "uri": "spotify:artist:ar2",
+            "profile": { "name": "Young Thug" },
+            "visuals": { "avatarImage": { "sources": [
+                { "url": "https://i.scdn.co/yt", "width": 320, "height": 320 }
+            ] } }
+        });
+        let a = parse_gql_artist(&v).unwrap();
+        assert_eq!(a.id, "ar2");
+        assert_eq!(a.name, "Young Thug");
+        assert_eq!(a.images[0].url, "https://i.scdn.co/yt");
     }
 }

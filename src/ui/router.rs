@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::ui::components::AppLayout;
 use crate::ui::pages::{
-    Album, Artist, ArtistTopTracks, Home, Library, Liked, Playlist, Queue, Search, Settings,
+    Album, Artist, Home, Library, Liked, Playlist, Queue, Search, Settings,
 };
 
 /// Router: authenticated pages. Nested layout wraps every page with the
@@ -33,9 +33,6 @@ pub enum Route {
 
     #[route("/artist/:id")]
     Artist { id: String },
-
-    #[route("/artist/:id/top")]
-    ArtistTopTracks { id: String },
 
     #[route("/playlist/:id")]
     Playlist { id: String },

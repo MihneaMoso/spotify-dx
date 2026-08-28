@@ -9,50 +9,20 @@ use crate::ui::router::Route;
 pub fn Artist(id: String) -> Element {
     let navigator = use_navigator();
 
-    let id_artist = id.clone();
-    let id_top = id.clone();
-    let id_albums = id.clone();
-    let id_related = id.clone();
-    let artist_resource = use_resource(move || {
-        let id = id_artist.clone();
-        async move { api::get_artist(&id).await }
-    });
-    let top_resource = use_resource(move || {
-        let id = id_top.clone();
-        async move { api::get_artist_top_tracks(&id).await.unwrap_or_default() }
-    });
-    let albums_resource = use_resource(move || {
-        let id = id_albums.clone();
-        async move { api::get_artist_albums(&id, 20).await.unwrap_or_default() }
-    });
-    let related_resource = use_resource(move || {
-        let id = id_related.clone();
-        async move { api::get_artist_related(&id).await.unwrap_or_default() }
+    let resource = use_resource(move || {
+        let id = id.clone();
+        async move { api::get_artist_page(&id).await }
     });
 
-    // Clone results out of resources so no read guards cross the rsx boundary.
-    let artist = artist_resource
+    // Clone the Ok payload out so no read guard crosses the rsx boundary.
+    let loaded = resource
         .read()
         .as_ref()
         .and_then(|r| r.as_ref().ok())
         .cloned();
-    let top = top_resource.read().as_ref().cloned().unwrap_or_default();
-    let albums_owned = albums_resource
-        .read()
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
-    let related_owned = related_resource
-        .read()
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
-    let is_err = matches!(
-        artist_resource.read().as_ref(),
-        Some(Err(_))
-    );
+    let is_err = matches!(resource.read().as_ref(), Some(Err(_)));
 
-    if artist.is_none() {
+    let Some(page) = loaded else {
         return if is_err {
             rsx! {
                 div { class: "page detail",
@@ -66,8 +36,11 @@ pub fn Artist(id: String) -> Element {
                 }
             }
         };
-    }
-    let artist = artist.unwrap();
+    };
+    let artist = page.artist;
+    let top = page.top_tracks;
+    let albums_owned = page.albums;
+    let related_owned = page.related;
 
     let mut expanded = use_signal(|| false);
     let name = artist.name.clone();
@@ -191,29 +164,5 @@ mod tests {
         assert_eq!(format_count(940), "940");
         assert_eq!(format_count(12_400), "12.4K");
         assert_eq!(format_count(3_452_901), "3.5M");
-    }
-}
-
-/// Lightweight "top tracks" route (kept from the original router).
-#[component]
-pub fn ArtistTopTracks(id: String) -> Element {
-    let navigator = use_navigator();
-    let id_for_resource = id.clone();
-    let resource = use_resource(move || {
-        let id = id_for_resource.clone();
-        async move { api::get_artist_top_tracks(&id).await.unwrap_or_default() }
-    });
-
-    rsx! {
-        div { class: "page detail",
-            div { class: "detail-header-bar",
-                button {
-                    class: "ghost",
-                    onclick: move |_| { navigator.push(Route::Artist { id: id.clone() }); },
-                    "\u{21e6} Back"
-                }
-            }
-            TrackTable { tracks: resource.read().as_ref().cloned().unwrap_or_default(), numbered: true }
-        }
     }
 }

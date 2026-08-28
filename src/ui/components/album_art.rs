@@ -1,7 +1,5 @@
 use dioxus::prelude::*;
 
-use crate::spotify::client;
-
 /// Colored placeholder shown while artwork loads. Biased toward the cool blue
 /// family so placeholders sit naturally on the blue-tinted surfaces.
 pub fn color_from_seed(seed: &str) -> String {

@@ -76,7 +76,7 @@ pub async fn load(url: &str) -> Result<std::sync::Arc<Vec<u8>>, AppError> {
 /// file mtime, remove oldest until under cap.
 fn trim_cache() {
     let dir = root();
-    let Ok(mut entries) = std::fs::read_dir(&dir) else { return; };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return; };
     let mut files: Vec<(PathBuf, SystemTime)> = Vec::new();
     for entry in entries.flatten() {
         let p = entry.path();

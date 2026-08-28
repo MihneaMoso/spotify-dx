@@ -10,7 +10,7 @@ mod search;
 mod settings;
 
 pub use album::Album;
-pub use artist::{Artist, ArtistTopTracks};
+pub use artist::Artist;
 pub use home::Home;
 pub use library::Library;
 pub use liked::Liked;
