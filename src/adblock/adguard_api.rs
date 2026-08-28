@@ -22,6 +22,11 @@ static STATS: Lazy<RwLock<AdblockStats>> = Lazy::new(|| {
     })
 });
 
+/// Notified whenever the counters change (`record_drop`, blocklist refresh), so
+/// the UI can mirror `ADBLOCK_STATS` event-driven instead of polling on a 1s
+/// timer.
+pub static STATS_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// Load the bundled snapshot, spawn the engine thread, and kick off a
 /// background refresh.  The engine thread builds the `adblock::Engine` lazily
 /// on first URL check; the text cache is loaded here so the rule count can be
@@ -78,6 +83,7 @@ async fn refresh_lists() {
         stats.tracked = engine::block_count();
         stats.cached_entries = engine::block_count();
     }
+    STATS_CHANGED.notify_waiters();
     tracing::info!("adblock: refreshed blocklist, engine now has {} rules", engine::block_count());
 
     // Store the merged text for version-change detection on next boot.
@@ -89,12 +95,19 @@ async fn refresh_lists() {
 /// Record one dropped request. Safe to call from any thread.
 pub fn record_drop() {
     STATS.write().blocked += 1;
+    STATS_CHANGED.notify_waiters();
 }
 
 /// Thread-safe snapshot of the current filter state, for the UI to mirror into
 /// the `ADBLOCK_STATS` global signal on the UI thread.
 pub fn snapshot() -> AdblockStats {
     *STATS.read()
+}
+
+/// Await until the blocker counters change (`record_drop` / refresh). Lets the
+/// UI mirror `ADBLOCK_STATS` event-driven instead of polling.
+pub async fn stats_changed() {
+    STATS_CHANGED.notified().await;
 }
 
 /// A *plain* reqwest client — deliberately NOT the filtered client, because the

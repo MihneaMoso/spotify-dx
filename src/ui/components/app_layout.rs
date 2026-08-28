@@ -27,15 +27,31 @@ pub fn AppLayout() -> Element {
     // handle) so the whole app-shell can subscribe to pointer moves during it.
     let mut resizing = use_signal(|| false);
 
-    // Keep blocker stats fresh for the nav footer.
+    // Mirror blocker stats into the nav footer. Event-driven: we await the
+    // adblock module's `STATS_CHANGED` notify (fired on drop / blocklist
+    // refresh) rather than polling on a 1s timer, so this task sleeps forever
+    // while idle. Compare-before-write keeps no-op state changes from
+    // re-rendering every subscribed component.
     use_coroutine(|_rx: UnboundedReceiver<()>| async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
-            interval.tick().await;
-            let stats = crate::adblock::stats_snapshot();
-            ADBLOCK_STATS.write().blocked = stats.blocked;
-            ADBLOCK_STATS.write().cached_entries = stats.cached_entries;
-            ADBLOCK_STATS.write().ad_fetch_failures = stats.ad_fetch_failures;
+            crate::adblock::stats_changed().await;
+            // Drain coalesced notifies by re-reading until the snapshot stops
+            // changing; a burst of drops lands as at most one render.
+            loop {
+                let stats = crate::adblock::stats_snapshot();
+                let prev = *ADBLOCK_STATS.peek();
+                if prev != stats {
+                    ADBLOCK_STATS.write().blocked = stats.blocked;
+                    ADBLOCK_STATS.write().cached_entries = stats.cached_entries;
+                    ADBLOCK_STATS.write().ad_fetch_failures = stats.ad_fetch_failures;
+                    // Snapshot may have changed again while we were writing.
+                    if crate::adblock::stats_snapshot() == *ADBLOCK_STATS.peek() {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
         }
     });
 

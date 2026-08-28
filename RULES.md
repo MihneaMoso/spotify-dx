@@ -364,6 +364,21 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   stored token that went stale server-side (e.g. rate-limited to 429 on
   `api.spotify.com`) previously landed the app on a Home screen that spun
   forever.
+- **Stop the periodic pollers once the session is captured (idle-CPU fix).**
+  The hidden session WebView keeps the full `open.spotify.com` page rendered
+  forever, and `POLL_JS`'s original `check()` ran on a fixed `setInterval(check,
+  1500)` FOREVER (dropping the interval handle / checking `reported`). Each tick
+  fired `tryApiToken()` (2× `/api/token` HTTP + a full pure-JS HMAC/TOTP) **and**
+  a legacy `get_access_token` fetch — i.e. ~3 network requests + crypto every
+  1.5s, even after login was already captured, keeping the hidden webview busy
+  and contributing to the 5-10% idle CPU. `post()` now `clearInterval`s both the
+  1.5s `check` timer and the 1s `flushIpc` timer the moment a non-anonymous token
+  is reported (and `check()` early-returns once `reported`). On-demand token
+  refresh is UNAFFECTED: `_relay.refreshToken()` calls `tryApiToken()` / re-reads
+  `window.__spotifyDxToken` itself, and the fetch hook still forwards the page's
+  own later captures via `notifyToken` (`token_refresh_result`), which keeps
+  `AUTH_STATE` fresh just as before. Do not reintroduce an unconditional polling
+  interval here.
 - **Late token captures must not be dropped.** After login completes
   (`reported` is latched), `store()` still posts `token_refresh_result` so
   `AUTH_STATE` stays current. **But do NOT make page fetches reactive to
@@ -629,6 +644,108 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   403 from this IP). YouTube-muxed is currently the only reliable full-track
   path. If ever blocked, the fallback is Spotify 30s previews via
   `p.scdn.co/mp3-preview` using the captured web session.
+
+### 6.9a Idle CPU & timer hygiene (learned fighting a 5-10% idle / 20% startup spike)
+
+The app was burning ~4-10% CPU fully idle. Culprits and the fixes (keep these
+patterns in mind so new code doesn't reintroduce them):
+
+- **Never write a `GlobalSignal` on a timer unless a value actually changed.**
+  An unconditional `PLAYER_STATE.write()` every 250ms (the open-engine position
+  poller in `player::open_play_track`) and an unconditional `ADBLOCK_STATS`
+  write every 1s (`ui::components::app_layout`) each marked the signal dirty on
+  every tick, re-rendering `PlayerBar`/`NowPlayingView`/SideNav even with
+  nothing changing. Fix: `peek()` the current value first and only acquire the
+  write lock when a field really differs (dioxus re-renders a signal's
+  subscribers when the write guard is dropped, so merely taking a write lock to
+  "assign the same value" still triggers a render). `AdblockStats` and
+  `PlayerState` are `Copy`/`PartialEq`-derived so `*ADBLOCK_STATS.peek() != new`
+  is a cheap gate.
+- **Prefer event-driven over polling — a shared ticker should await a signal,
+  not `interval()`.** `open_play_track` used to `spawn` a fresh 250ms poller
+  every time a track played, never cancelling the old ones (N tracks → N
+  concurrent pollers fighting over `PLAYER_STATE`). The position sync is now a
+  single process-wide task started once via a `static POSITION_TICKER:
+  OnceLock<()>` and reused for every track. It no longer `interval(250ms)`s:
+  `media::sink::SinkState` carries a `position_changed: tokio::sync::Notify`,
+  and the ticker `await`s `position_changed.notified()` — the sink only notifies
+  while it is actually playing/publishing, so once playback stops the task
+  sleeps forever (zero wakeups). It reads state via the non-spawning
+  `sink_state()` getter (never forcing the audio thread into existence) and
+  still does peek-then-write. `Notify::const_new()` lets a `static Notify` live
+  alongside a `Lazy` RwLock.
+- **Don't `peek()`/`write()` a dioxus `GlobalSignal` from an event-driven task
+  with the panicking API — use `try_write_unchecked()`.**
+  `GlobalSignal`s (`PLAYER_STATE` etc.) are backed by **thread-local ("unsync")
+  storage**, and `dioxus::prelude::spawn` tasks run on the **single UI-thread
+  executor**. If another UI task transiently holds the write lock across an
+  `.await`, the executor can poll your task mid-borrow and its `peek()`/`write()`
+  call panics with `AlreadyBorrowed` — a hard crash we hit on first playback. The
+  event-driven position ticker now takes the whole read-and-write through ONE
+  `PLAYER_STATE.try_write_unchecked()` (needs `use dioxus::prelude::Writable;`),
+  and on `Err` simply `continue`s to the next sink publish (≤250ms later), so it
+  can never abort. Also: never read+write the same signal in one expression
+  (`PLAYER_STATE.write().x = PLAYER_STATE.peek().y...`) — the write guard lives
+  for the whole statement, so the RHS `peek()` re-borrows and panics; hoist the
+  read into a local first.
+- **A dedicated OS thread should block (not poll) when it has no work.**
+  `media::sink` ran `recv_timeout(250ms)` forever; it now branches on whether a
+  player is active — while idle (`current_player == None`) it calls the blocking
+  `recv()` so it sleeps with zero wakeups, and only uses `recv_timeout(250ms)`
+  for position publishing while something is playing (and it is this publish
+  that `notify_waiters()`es `position_changed` for the ticker above).
+- **Recheck-loops should sleep longer when idle, or be gated off entirely.**
+  The `PlayerBar` clock coroutine used to `interval(250ms)` forever; it now only
+  runs on the SDK path at all — it is gated on `!is_open_engine()` (the free
+  account uses the open/YouTube engine, so there is no SDK clock to fake-advance
+  and the coroutine body is dead code there). While on the SDK path it
+  busy-ticks at 250ms only when advancing the clock, else `sleep(500ms)`.
+- **Mirror stats with a `Notify`, not a 1s timer.** `app_layout` used to write
+  `ADBLOCK_STATS` every 1s (compare-then-write since v4). It now `await`s
+  `adblock::stats_changed()`, a `static STATS_CHANGED: Notify` fired by
+  `adguard_api::record_drop()` and after a blocklist refresh — so the task
+  sleeps forever while no ads are being blocked. An inner re-read loop coalesces
+  bursts into a single render. (The `ADBLOCK_STATS.read()` in `nav.rs` still
+  subscribes the component, but with event-driven writes there are no periodic
+  re-renders.)
+- **The hidden session WebView's injected JS pollers must stop after login.**
+  `POLL_JS` in `auth::webview_login` used a fixed `setInterval(check, 1500)`
+  forever (≈3 fetch()s to `/api/token` + a pure-JS HMAC/TOTP per tick, even
+  after the session was captured). `post()` now `clearInterval`s the `check` and
+  `flushIpc` timers the moment a non-anonymous token is reported, and `check()`
+  early-returns once `reported`. On-demand `_relay.refreshToken()` and the page
+  fetch-hook forwards are unaffected.
+- **Park the session WebView at `about:blank` when idle (the biggest idle-CPU
+  win).** Even with our JS pollers halted, the session WebView was keeping the
+  whole `open.spotify.com` SPA rendered offscreen
+  forever just to be a same-origin token-refresh channel. `hide()` (login
+  capture) and `ensure_session()` (safety net) now navigate it to `about:blank`
+  (a per-instance `ready: Arc<AtomicBool>` + `suspended: bool` on the
+  `LoginWebView`; `ready` is driven by the `PageLoadEvent::Finished` handler and
+  cleared on `Started`). `refresh_token()` is now `async`: if `suspended`, it
+  revives the page (`load_url(SPOTIFY_LOGIN_URL)`) and waits (polling
+  `ready`, ≤6s) for the page + `POLL_JS` to finish loading before eval'ing
+  `_relay.refreshToken()`. `webview_bridge::request_token_refresh()` is `async`
+  and awaits the revive WITHOUT holding `REFRESH_TX` (clippy
+  `await_holding_lock` — a 6s lock across await would block all other
+  refreshes/drains). `session::ensure_token` awaits it. Revival only happens on
+  real token expiry (once per ~hour), so the visible cost (a page reload) is
+  negligible and absorbed by the existing 10s timeout. NOTE: parking is safe
+  for restored sessions too — `AUTH_STATE` already holds the captured token
+  after `login()`/`hide()`, so first page loads don't revive; and the visible
+  `start()` WebView (not `ensure_session`, which is a no-op once `start()` has
+  run) is what flips `is_authenticated` on both fresh and restored launches.
+- **No `infinite` CSS animations on ever-present elements.** The sidebar's
+  `.nav-ready::before` "blocker active" dot ran
+  `animation: pulse 2.2s ease-in-out infinite`, keeping WebKitGTK's compositor
+  repainting the main WebView forever even with a fully static page — a real,
+  continuous idle-CPU cost that browsers avoid (their idle tabs stop running
+  decorative animation timelines). Changed to a one-shot `pulse 2.2s ease-in-out`
+  (single fade-in on mount; dot stays lit after). Loading-only animations
+  (`.spinner` 0.75s spin, `.skeleton` 1.4s shimmer) are fine because they unmount
+  once content loads — the rule is: an animation that renders at idle must not
+  loop. When auditing idle CPU in a WebView, grep `assets/main.css` for
+  `animation:.*infinite` as a first pass.
 
 ## 7. Testing
 

@@ -644,11 +644,14 @@ img { display: block; max-width: 100%; }
   border-radius: 50%;
   background: var(--cyan);
   box-shadow: 0 0 8px var(--cyan);
-  animation: pulse 2.2s ease-in-out infinite;
+  /* One-shot fade-in, NOT an infinite loop — a perpetually animating dot would
+     keep WebKit's compositor repainting forever, a constant idle-CPU cost. */
+  animation: pulse 2.2s ease-in-out;
 }
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.8); }
+  /* leave the final keyframe at full opacity so the dot stays lit after the
+     single fade-in completes */
+  50% { opacity: 0.75; transform: scale(0.9); }
 }
 
 /* ── 5. Bottom nav (mobile) ────────────────────────────────────────────────── */

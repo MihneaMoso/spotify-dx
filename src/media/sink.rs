@@ -46,12 +46,23 @@ pub fn global_sink(initial_volume: f32) -> &'static SinkHandle {
     GLOBAL.get_or_init(|| spawn_sink(initial_volume))
 }
 
+/// Non-spawning access to the sink's shared state, if the sink thread has been
+/// started at all. Lets a single shared UI clock poll the position without
+/// forcing the audio thread into existence.
+pub fn sink_state() -> Option<&'static SinkState> {
+    GLOBAL.get().map(|(_, state)| &**state)
+}
+
 /// Shared state between the UI and the sink thread.
 pub struct SinkState {
     pub position_ms: AtomicU64,
     pub duration_ms: AtomicU64,
     pub is_playing: AtomicBool,
     pub is_buffering: AtomicBool,
+    /// Notified by the sink thread each time it publishes a fresh `position_ms`
+    /// (i.e. while actually playing). The UI position-sync task awaits this so
+    /// it stays event-driven — zero wakeups when nothing is playing.
+    pub position_changed: tokio::sync::Notify,
 }
 
 impl Default for SinkState {
@@ -61,6 +72,7 @@ impl Default for SinkState {
             duration_ms: AtomicU64::new(0),
             is_playing: AtomicBool::new(false),
             is_buffering: AtomicBool::new(true),
+            position_changed: tokio::sync::Notify::new(),
         }
     }
 }
@@ -99,17 +111,25 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
     let mut current_player: Option<rodio::Player> = None;
 
     loop {
-        // Periodically publish the current playback position so the UI clock
-        // stays accurate even when no commands arrive.
-        if current_player.is_some() && state.is_playing.load(Ordering::Relaxed) {
-            if let Some(p) = current_player.as_ref() {
-                state.position_ms.store(
-                    p.get_pos().as_millis() as u64,
-                    Ordering::Relaxed,
-                );
+        // Publish the current playback position so the UI clock stays accurate.
+        // Only while a player is active — the position comes from the playback
+        // thread, so when nothing is playing there is no position to publish.
+        if let Some(p) = current_player.as_ref() {
+            if state.is_playing.load(Ordering::Relaxed) {
+                state.position_ms.store(p.get_pos().as_millis() as u64, Ordering::Relaxed);
+                state.position_changed.notify_waiters();
             }
         }
-        match rx.recv_timeout(Duration::from_millis(250)) {
+
+        // While a player is active we poll position at 250ms for a smooth clock;
+        // when idle (no player) we block on recv() so the thread sleeps with
+        // zero wakeups. A command (Play/Pause/etc.) wakes it either way.
+        let recv = if current_player.is_some() {
+            rx.recv_timeout(Duration::from_millis(250))
+        } else {
+            rx.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+        };
+        match recv {
             Ok(cmd) => match cmd {
                 SinkCommand::Play { url, format } => {
                     state.is_buffering.store(true, Ordering::Relaxed);
@@ -172,6 +192,7 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
                     if let Some(ref p) = current_player {
                         let _ = p.try_seek(Duration::from_millis(ms));
                         state.position_ms.store(ms, Ordering::Relaxed);
+                        state.position_changed.notify_waiters();
                     }
                 }
                 SinkCommand::Volume(v) => {

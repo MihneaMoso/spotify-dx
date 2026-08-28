@@ -13,7 +13,7 @@ pub mod engine;
 
 use crate::app_error::AppError;
 use crate::state::{AUTH_STATE, PLAYER_STATE};
-use dioxus::prelude::ReadableExt;
+use dioxus::prelude::{ReadableExt, Writable};
 
 /// Fire-and-forget playback launch used by every play button in the UI.
 pub fn launch(uri: String) {
@@ -166,7 +166,7 @@ async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), Ap
 
             // (Lazily) start the audio sink and hand it the stream URL.
             let sink = crate::media::sink::global_sink(current_volume());
-            let (tx, state) = sink;
+            let (tx, _state) = sink;
             let current_vol = current_volume();
             let _ = tx.send(crate::media::sink::SinkCommand::Play {
                 url: s.url.clone(),
@@ -176,36 +176,10 @@ async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), Ap
             // volume captured on its first spawn, which may be stale now).
             let _ = tx.send(crate::media::sink::SinkCommand::Volume(current_vol));
 
-            // Keep the UI clock in sync with the sink thread. Runs until the
-            // next track's open_play_track spawns a fresh poller (no break on
-            // pause so resume keeps syncing).
-            dioxus::prelude::spawn(async move {
-                let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
-                loop {
-                    ticker.tick().await;
-                    let mut st = PLAYER_STATE.write();
-                    st.position_ms = state
-                        .position_ms
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        .min(st.duration_ms.max(1));
-                    // Only fall back to the sink's metadata duration when we
-                    // don't already have the real track duration (symphonia's
-                    // `total_duration()` is unreliable for muxed MP4).
-                    if st.duration_ms == 0 {
-                        st.duration_ms = state
-                            .duration_ms
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                    }
-                    // Mirror the sink play state once it has actually begun
-                    // playing (`duration_ms` is set right before playback starts),
-                    // avoiding a brief false "paused" during buffering.
-                    if state.duration_ms.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-                        st.is_playing = state
-                            .is_playing
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-            });
+            // Keep the UI clock in sync with the sink thread. A single shared
+            // ticker does this for every track (see `start_position_ticker`),
+            // so playing many tracks doesn't pile up one 250ms poller each.
+            start_position_ticker();
 
             Ok(())
         }
@@ -213,6 +187,67 @@ async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), Ap
             "could not find this track on any provider".into(),
         )),
     }
+}
+
+/// One process-wide 250ms ticker that mirrors the audio sink's position into
+/// `PLAYER_STATE`. Started lazily on first (open-engine) playback and reused
+/// for every subsequent track, so it never stacks.
+///
+/// Cheap at idle: we `peek()` the current UI state and only acquire the write
+/// lock + mark the signal dirty when a value actually changed, so a paused /
+/// constant-position state does not re-render `PlayerBar`/`NowPlayingView`
+/// every 250ms.
+static POSITION_TICKER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+fn start_position_ticker() {
+    let _ = POSITION_TICKER.get_or_init(|| {
+        let _handle = dioxus::prelude::spawn(async move {
+            use std::sync::atomic::Ordering::*;
+            loop {
+                // Wait for the sink to publish a fresh position. This is
+                // event-driven: the sink only notifies while actually playing,
+                // so once playback stops this task sleeps indefinitely instead
+                // of waking on a fixed 250ms interval (no idle CPU).
+                let Some(state) = crate::media::sink::sink_state() else {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    continue;
+                };
+                state.position_changed.notified().await;
+
+                let pos = state.position_ms.load(Relaxed);
+                let dur = state.duration_ms.load(Relaxed);
+                let playing = state.is_playing.load(Relaxed);
+                // Acquire the whole read-and-write of `PLAYER_STATE` through ONE
+                // non-panicking `try_write_unchecked()`. `PLAYER_STATE` is a
+                // dioxus `GlobalSignal` backed by thread-local (unsync) storage,
+                // and this task runs on the single UI-thread executor, so another
+                // UI task can transiently hold the write lock across an await.
+                // The panicking `write()`/`peek()` would then abort here; instead
+                // we skip this wakeup and let the sink's next 250ms publish
+                // re-sync us (never more than one tick behind).
+                let Ok(mut st) = PLAYER_STATE.try_write_unchecked() else {
+                    continue;
+                };
+                let has_real_dur = st.duration_ms != 0;
+                let real_pos = pos.min(st.duration_ms.max(1));
+                let new_dur = if has_real_dur { st.duration_ms } else { dur };
+                let new_playing = if dur != 0 { playing } else { st.is_playing };
+
+                if real_pos != st.position_ms
+                    || new_dur != st.duration_ms
+                    || new_playing != st.is_playing
+                {
+                    if !has_real_dur {
+                        st.duration_ms = new_dur;
+                    }
+                    if dur != 0 {
+                        st.is_playing = new_playing;
+                    }
+                    st.position_ms = real_pos;
+                }
+            }
+        });
+    });
 }
 
 /// Current desired volume (0.0–1.0), used to seed the sink and adjust it.

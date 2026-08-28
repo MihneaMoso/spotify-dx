@@ -43,7 +43,7 @@ pub async fn ensure_token() -> Result<String> {
         tracing::info!(
             "session: token expired, refreshing via hidden WebView (has_token={has_token}, expires_ms={expires_ms}, now_ms={now_ms})",
         );
-        let rx = crate::player::webview_bridge::request_token_refresh();
+        let rx = crate::player::webview_bridge::request_token_refresh().await;
         match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(Ok(fresh_token))) => {
                 // AUTH_STATE was already updated in the IPC handler.

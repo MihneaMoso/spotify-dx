@@ -9,18 +9,27 @@ use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 /// inside the app shell, so it stays mounted across route changes.
 #[component]
 pub fn PlayerBar() -> Element {
-    use_coroutine(|_rx: UnboundedReceiver<()>| async move {
-        // Keep the clock ticking while playing. On the open engine the sink
-        // thread publishes the real position, so only fake-advance the SDK path.
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
-        loop {
-            ticker.tick().await;
-            if PLAYER_STATE.peek().is_playing && !crate::player::is_open_engine() {
-                PLAYER_STATE.write().position_ms =
-                    PLAYER_STATE.peek().position_ms.saturating_add(250);
+    // On the open engine the sink + shared position task publish the real
+    // position, so this fake-advance clock is only needed on the SDK path.
+    // Skipping the coroutine entirely here means zero timer wakeups while
+    // idle (the common open-engine case); it only busy-ticks at 250ms when
+    // actually advancing the SDK clock.
+    if !crate::player::is_open_engine() {
+        use_coroutine(|_rx: UnboundedReceiver<()>| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                // Single non-re-entrant write: take the current position first,
+                // then write, so the write guard is never alive during the read
+                // (writing and peeking in one expression re-borrows the same
+                // `GlobalSignal` and panics with AlreadyBorrowed).
+                let pos = PLAYER_STATE.peek().position_ms;
+                if PLAYER_STATE.peek().is_playing {
+                    PLAYER_STATE.write().position_ms = pos.saturating_add(250);
+                }
             }
-        }
-    });
+        });
+    }
 
     let playing = PLAYER_STATE.read().is_playing;
     let volume = PLAYER_STATE.read().volume;

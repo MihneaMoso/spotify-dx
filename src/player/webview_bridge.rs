@@ -43,6 +43,42 @@ static REFRESH_TX: Mutex<Vec<tokio::sync::oneshot::Sender<Result<String, String>
 /// user's Spotify session cookies and can fetch its own access tokens — Rust
 /// never has to hand it a token.
 pub fn init() -> anyhow::Result<()> {
+    // The IPC channel + drain is always needed (the session WebView forwards
+    // its non-login messages here too), so set it up unconditionally.
+    ensure_ipc();
+
+    // Only boot the hidden SDK WebView when we're actually on the SDK backend.
+    // On the free / open-engine path the SDK is never used for playback, so
+    // booting + connect()ing it would hold a Web Playback SDK WebSocket and its
+    // JS timers open on a hidden webkit thread forever, burning idle CPU. It is
+    // instead created lazily if a token-refresh fallback ever needs it (see
+    // `ensure_sdk_if_needed`).
+    if crate::player::is_open_engine() {
+        return Ok(());
+    }
+    ensure_sdk_webview()
+}
+
+/// Ensure the shared JS↔Rust message channel and its drain task exist (safe to
+/// call repeatedly; idempotent).
+fn ensure_ipc() {
+    if IPC_QUEUE.get().is_none() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let _ = IPC_QUEUE.set(tx);
+        dioxus::prelude::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                handle_message(&msg);
+            }
+        });
+    }
+}
+
+/// Create (once) the hidden SDK WebView hosting `SDK_HTML`.
+///
+/// The WebView shares the login WebView's data directory, so it inherits the
+/// user's Spotify session cookies and can fetch its own access tokens — Rust
+/// never has to hand it a token.
+fn ensure_sdk_webview() -> anyhow::Result<()> {
     if WEBVIEW.with(|cell| cell.borrow().is_some()) {
         return Ok(());
     }
@@ -89,17 +125,6 @@ pub fn init() -> anyhow::Result<()> {
     WEBVIEW.with(move |cell| {
         *cell.borrow_mut() = Some(SdkWebView { webview })
     });
-
-    // Spawn the message dispatcher so IPC is handled inside a dioxus runtime.
-    if IPC_QUEUE.get().is_none() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-        let _ = IPC_QUEUE.set(tx);
-        dioxus::prelude::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                handle_message(&msg);
-            }
-        });
-    }
     Ok(())
 }
 
@@ -107,6 +132,24 @@ pub fn init() -> anyhow::Result<()> {
 /// a fresh WebView (and fresh login) starts from a clean state.
 pub fn shutdown() {
     WEBVIEW.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Lazily create the hidden SDK WebView on the open-engine path, where
+/// `init()` deliberately skipped it. Used by the token-refresh fallback so it
+/// still has a WebView to eval against even when the SDK backend isn't active.
+/// Returns whether the SDK WebView is available. Must run on the UI thread
+/// (webkitgtk builds into the window's container).
+pub fn ensure_sdk_if_needed() -> bool {
+    if WEBVIEW.with(|cell| cell.borrow().is_some()) {
+        return true;
+    }
+    match ensure_sdk_webview() {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!("webview: could not create SDK WebView on demand: {err:#}");
+            false
+        }
+    }
 }
 
 /// JS → Rust: parse `window.ipc.postMessage` payloads. Runs on the webkit
@@ -236,13 +279,23 @@ fn eval(js: &str) {
 /// fails with `TypeError: Load failed`). Falls back to the SDK WebView when no
 /// session WebView is alive. The receiver resolves when the IPC answer
 /// arrives, or errors immediately if no WebView is available.
-pub fn request_token_refresh() -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+///
+/// Async because the session WebView may be parked at `about:blank` (idle-CPU
+/// optimization) and needs to be revived + loaded before the refresh can run.
+pub async fn request_token_refresh() -> tokio::sync::oneshot::Receiver<Result<String, String>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    // Revive the possibly-parked session WebView (an await) WITHOUT holding
+    // REFRESH_TX, so concurrent refreshes / the IPC drain aren't blocked for up
+    // to the page-load timeout.
+    let session_ok = crate::auth::webview_login::refresh_token().await;
     let mut guard = REFRESH_TX.lock().unwrap();
-    if crate::auth::webview_login::refresh_token() {
+    if session_ok {
         guard.push(tx);
         return rx;
     }
+    // Session WebView unavailable — fall back to the SDK WebView. On the
+    // open-engine path that WebView is normally not running, so boot it lazily.
+    ensure_sdk_if_needed();
     let has_webview = WEBVIEW.with(|cell| cell.borrow().is_some());
     if !has_webview {
         // No WebView alive (session torn down): fail fast so callers can route

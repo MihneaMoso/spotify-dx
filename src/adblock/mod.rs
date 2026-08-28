@@ -43,6 +43,12 @@ pub fn stats_snapshot() -> AdblockStats {
     adguard_api::snapshot()
 }
 
+/// Await until the blocker counters change, so the UI mirrors `ADBLOCK_STATS`
+/// event-driven (zero idle wakeups) instead of polling.
+pub async fn stats_changed() {
+    adguard_api::stats_changed().await
+}
+
 /// Resolve a hostname through DNS-over-HTTPS (Cloudflare).
 pub async fn dns_resolve(host: &str) -> Result<Vec<std::net::IpAddr>, AppError> {
     engine::dns_resolve(host)

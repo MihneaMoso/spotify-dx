@@ -55,6 +55,13 @@ const POLL_JS: &str = r#"
   function post(obj) {
     if (reported) { return; }
     reported = true;
+    // Session captured — the aggressive login detection no longer needs to run.
+    // Kill the fixed-interval pollers so a hidden, fully-rendered live web app
+    // isn't hammering /api/token (TOTP/HMAC + ~3 fetch()s per tick) forever.
+    // On-demand token refresh still works via the explicit _relay.refreshToken()
+    // path, and the fetch hook below keeps forwarding the page's own captures.
+    try { clearInterval(window.__spotifyDxCheckTimer); } catch (e) {}
+    try { clearInterval(window.__spotifyDxFlushTimer); } catch (e) {}
     try { window.ipc.postMessage(JSON.stringify(obj)); } catch (e) {}
   }
   function reportToken(d) {
@@ -99,7 +106,7 @@ const POLL_JS: &str = r#"
   }
 
   debug('poll js loaded, ipc=' + (typeof window.ipc !== 'undefined'));
-  setInterval(flushIpc, 1000);
+  window.__spotifyDxFlushTimer = setInterval(flushIpc, 1000);
 
   var origFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
@@ -248,6 +255,7 @@ const POLL_JS: &str = r#"
 
   var domTicks = 0;
   function check() {
+    if (reported) { return; }
     // 1) The page's own TOTP-gated endpoint (primary token source).
     tryApiToken();
 
@@ -281,7 +289,7 @@ const POLL_JS: &str = r#"
     }
   }
   check();
-  setInterval(check, 1500);
+  window.__spotifyDxCheckTimer = setInterval(check, 1500);
 
   // Token refresh for Rust. Same-origin (this page IS open.spotify.com), so
   // unlike the null-origin SDK WebView this path is not CORS-blocked. Serves
@@ -339,6 +347,13 @@ struct LoginWebView {
     /// The native UI children we hid under the sign-in page (the dioxus
     /// webview). Re-shown when the session is captured.
     hidden: Vec<gtk::Widget>,
+    /// Set `true` by the page-load handler once `open.spotify.com` finishes
+    /// loading (so `POLL_JS` ran and `window._relay` exists). Cleared on every
+    /// navigation start.
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the page is currently parked at `about:blank` (see `park`).
+    /// When `true`, `refresh_token` must revive it before refreshing.
+    suspended: bool,
 }
 
 thread_local! {
@@ -363,7 +378,8 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
 
     let vbox = main_vbox()?;
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-    let webview = build_webview(&vbox, true, tx)?;
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let webview = build_webview(&vbox, true, tx, ready.clone())?;
 
     // The sign-in WebView was packed at the end of the vbox. Hide every other
     // child (the dioxus UI) so the sign-in page fills the window.
@@ -388,6 +404,8 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
             webview,
             widget,
             hidden,
+            ready,
+            suspended: false,
         })
     });
     Ok(())
@@ -407,15 +425,23 @@ pub fn ensure_session() -> anyhow::Result<()> {
     }
     let vbox = main_vbox()?;
     let tx = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let webview = build_webview(&vbox, false, tx)?;
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let webview = build_webview(&vbox, false, tx, ready.clone())?;
     let widget: gtk::Widget = webview.webview().upcast();
     LOGIN.with(|cell| {
         *cell.borrow_mut() = Some(LoginWebView {
             webview,
             widget,
             hidden: Vec::new(),
+            ready,
+            suspended: false,
         })
     });
+    // Park the hidden page at `about:blank` so the offscreen Spotify SPA stops
+    // rendering and burning CPU. Tokens are captured on demand via
+    // `refresh_token` (which revives the page), so no background capture is
+    // needed here.
+    park_if_loaded();
     tracing::info!("webview login: hidden session webview ready for token refreshes");
     Ok(())
 }
@@ -438,6 +464,7 @@ fn build_webview(
     vbox: &gtk::Box,
     visible: bool,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<WebView> {
     use wry::WebViewBuilderExtUnix as _;
     with_session_context(|context| {
@@ -449,12 +476,17 @@ fn build_webview(
                 tracing::info!("webview login: navigating to {url}");
                 true
             })
-            .with_on_page_load_handler(|event, url| match event {
-                wry::PageLoadEvent::Started => {
-                    tracing::info!("webview login: page load started: {url}");
-                }
-                wry::PageLoadEvent::Finished => {
-                    tracing::info!("webview login: page load finished: {url}");
+            .with_on_page_load_handler({
+                let ready = ready.clone();
+                move |event, url| match event {
+                    wry::PageLoadEvent::Started => {
+                        ready.store(false, std::sync::atomic::Ordering::SeqCst);
+                        tracing::info!("webview login: page load started: {url}");
+                    }
+                    wry::PageLoadEvent::Finished => {
+                        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                        tracing::info!("webview login: page load finished: {url}");
+                    }
                 }
             })
             .with_ipc_handler({
@@ -472,6 +504,10 @@ fn build_webview(
 /// Hide the sign-in WebView and reveal the native UI, but keep the WebView
 /// alive as the session WebView: its page is same-origin with open.spotify.com,
 /// so it remains the working path for token refreshes (see `refresh_token`).
+///
+/// As an idle-CPU optimization the page is then parked at `about:blank` (see
+/// `park`), which stops the offscreen Spotify SPA from rendering/animating
+/// forever. Token refreshes revive it on demand.
 pub fn hide() {
     use gtk::prelude::*;
     LOGIN.with(|cell| {
@@ -479,6 +515,26 @@ pub fn hide() {
             login.widget.hide();
             for child in &login.hidden {
                 child.show();
+            }
+        }
+    });
+    park_if_loaded();
+}
+
+/// Navigate the session WebView's page to `about:blank` to stop the offscreen
+/// `open.spotify.com` SPA from burning CPU while nothing needs it. The widget,
+/// cookies and WebContext all stay alive, so `refresh_token` can revive the
+/// page at any time. Idempotent.
+fn park_if_loaded() {
+    LOGIN.with(|cell| {
+        if let Some(login) = cell.borrow_mut().as_mut() {
+            if login.suspended {
+                return;
+            }
+            login.suspended = true;
+            login.ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Err(err) = login.webview.load_url("about:blank") {
+                tracing::warn!("webview login: park failed: {err}");
             }
         }
     });
@@ -500,8 +556,55 @@ pub fn shutdown() {
 /// session cookies. Same-origin, so unlike the SDK WebView's null-origin page
 /// this `get_access_token` fetch is not CORS-blocked. Returns `false` when no
 /// session WebView is alive (caller falls back to the SDK WebView).
-pub fn refresh_token() -> bool {
-    let ok = LOGIN.with(|cell| {
+///
+/// If the page was parked at `about:blank` (idle-CPU optimization), this first
+/// revives it by navigating back to `open.spotify.com` and waits for the page
+/// to finish loading (so `POLL_JS` has run and `window._relay` exists) before
+/// triggering the refresh. Revival happens on the UI thread; async so the wait
+/// doesn't block it.
+pub async fn refresh_token() -> bool {
+    use std::sync::atomic::Ordering::*;
+
+    let revived = LOGIN.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(login) = guard.as_mut() else { return false };
+        if login.suspended {
+            login.suspended = false;
+            login.ready.store(false, SeqCst);
+            if let Err(err) = login.webview.load_url(SPOTIFY_LOGIN_URL) {
+                tracing::warn!("webview login: revive failed: {err}");
+                login.suspended = true;
+                return false;
+            }
+        }
+        true
+    });
+    if !revived {
+        return false;
+    }
+
+    // Wait for the page to load so `window._relay` is defined before we eval.
+    // The actual refresh then runs in JS (it polls /api/token itself), so a
+    // short settle here is all we need.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+    loop {
+        let ready = LOGIN.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|login| login.ready.load(SeqCst))
+                .unwrap_or(false)
+        });
+        if ready {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("webview login: page did not finish loading for token refresh");
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    LOGIN.with(|cell| {
         cell.borrow()
             .as_ref()
             .map(|login| {
@@ -513,8 +616,7 @@ pub fn refresh_token() -> bool {
                     .is_ok()
             })
             .unwrap_or(false)
-    });
-    ok
+    })
 }
 
 /// JS → Rust: the poller succeeded, so forward the web-player session. Runs on
