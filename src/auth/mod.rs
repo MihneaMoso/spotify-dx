@@ -2,11 +2,33 @@ use crate::state::{AUTH_STATE, AuthState};
 pub mod token_store;
 
 /// Desktop-only: hosts the real `open.spotify.com` sign-in in the main window.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 pub mod webview_login;
 
 #[cfg(feature = "desktop")]
 use std::cell::RefCell;
+
+#[cfg(all(feature = "desktop", not(target_os = "linux")))]
+pub mod webview_login {
+    use super::WebSessionResult;
+
+    pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Result<()> {
+        let _ = tx;
+        anyhow::bail!("desktop in-window login webview is currently only supported on Linux")
+    }
+
+    pub fn ensure_session() -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    pub fn hide() {}
+
+    pub fn shutdown() {}
+
+    pub async fn refresh_token() -> bool {
+        false
+    }
+}
 
 /// The one WebView data directory shared by the login WebView AND the hidden
 /// SDK WebView. Cookies and localStorage persist here.
