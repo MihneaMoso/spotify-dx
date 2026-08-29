@@ -60,6 +60,45 @@ cargo build --no-default-features --features mobile
 No `SPOTIFY_CLIENT_ID` or Spotify Developer app is required — the app uses the
 same web session that open.spotify.com uses.
 
+## Releases
+
+Desktop binaries for Linux (glibc, x86_64), macOS (arm64 + x86_64) and Windows
+(x86_64) are built in GitHub Actions and published as a GitHub Release whenever a
+version tag is pushed. The pipeline lives in `.github/workflows/release.yml` and
+is adapted from the reference `magic-run` project — with one key difference:
+Spotify DX is a GTK/WebKit GUI, so Linux uses the system WebKit dev packages
+(glibc), **not** a musl static build.
+
+Trigger a release automatically:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+or use the manual script (validates semver, tags, pushes, and waits for CI):
+
+```bash
+./scripts/release.sh 0.1.1          # release version 0.1.1 (tag v0.1.1)
+./scripts/release.sh --dry-run 0.1.1  # show the plan without doing anything
+```
+
+Assets per release target:
+
+| Asset | Platform |
+| --- | --- |
+| `spotify-dx-<version>-x86_64-unknown-linux-gnu.tar.gz` (+ alias `spotify-dx-<target>.tar.gz`) | Linux |
+| `spotify-dx-<version>-aarch64-apple-darwin.tar.gz` / `...-x86_64-apple-darwin.tar.gz` (+ aliases) | macOS |
+| `spotify-dx-<version>-x86_64-pc-windows-msvc.zip` (+ alias `spotify-dx-<target>.zip`) | Windows |
+
+Each asset ships with a `.sha256` checksum, and each target has an unversioned
+alias so `…/releases/latest/download/…` always fetches the newest build.
+
+> **Note on web / Android / iOS:** those renderers currently fall back to the
+> Connect API (no full-track playback engine, different login path). Unifying
+> them on the desktop API is tracked separately — see
+> `docs/PLATFORM_PARITY.md`.
+
 ## Configuration
 
 | Variable | Default | Purpose |

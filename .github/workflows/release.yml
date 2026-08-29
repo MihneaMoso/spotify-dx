@@ -1,0 +1,152 @@
+# Builds optimized desktop release binaries for all supported desktop platforms
+# and publishes them as a GitHub Release.
+#
+# Triggered by pushing a version tag:
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# (or run ./scripts/release.sh which does the tag + push for you.)
+#
+# Assets uploaded per target (consumed by install shells):
+#   spotify-dx-<version>-<target>.tar.gz      (+ .sha256)   Linux/macOS
+#   spotify-dx-<target>.tar.gz                unversioned alias (+ .sha256),
+#                                              used for "latest" installs via
+#                                              /releases/latest/download/
+#   spotify-dx-<version>-<target>.zip         (+ .sha256)   Windows
+#   spotify-dx-<target>.zip                   unversioned alias (+ .sha256)
+#
+# Unlike magic-run (a pure-Rust CLI), Spotify DX is a GTK/WebKit GUI, so the
+# Linux targets are glibc (`*-linux-gnu`) with the system WebKit/GTK dev
+# packages installed — a musl static build is not possible for a WebKit shell.
+# macOS uses the native arm64 runner and Apple's toolchain for x86_64.
+# Windows uses the system WebView2 (no GTK).
+
+name: release
+
+on:
+  push:
+    tags: ["v*", "[0-9]+.[0-9]+.[0-9]*"]
+
+# Allow the "publish" job to create the GitHub Release and attach assets.
+permissions:
+  contents: write
+
+env:
+  BIN: spotify-dx
+  # Release profile with LTO + strip (matches [profile.release] in Cargo.toml).
+  PROFILE: release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (GTK / WebKit webview)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Build release binary (desktop feature)
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} --features desktop
+
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          base="${BIN}-${version}-${{ matrix.target }}"
+          alias="${BIN}-${{ matrix.target }}"
+          bin="target/${{ matrix.target }}/release/${BIN}"
+          test -x "$bin"
+          tar czf "${base}.tar.gz" -C "target/${{ matrix.target }}/release" "${BIN}"
+          cp "${base}.tar.gz" "${alias}.tar.gz"
+          hash() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
+          for f in "${base}.tar.gz" "${alias}.tar.gz"; do
+            hash "$f" > "${f}.sha256"
+          done
+          # NOTE: macOS ships as a raw binary in the tarball for now (matching
+          # the reference project). A proper .app bundle (+ codesigning +
+          # notarization, and an .msi on Windows) is future platform tooling.
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          base="${BIN}-${version}-${{ matrix.target }}"
+          alias="${BIN}-${{ matrix.target }}"
+          rel="target/${{ matrix.target }}/release"
+          bin="${rel}/${BIN}.exe"
+          test -f "$bin"
+          powershell -Command "Compress-Archive -Path '$(cygpath -w "${rel}/${BIN}.exe")' -DestinationPath '$(cygpath -w "${GITHUB_WORKSPACE}/${base}.zip")'"
+          cp "${base}.zip" "${alias}.zip"
+          hash() { sha256sum "$1"; }
+          for f in "${base}.zip" "${alias}.zip"; do
+            hash "$f" > "${f}.sha256"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            *.tar.gz
+            *.zip
+            *.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Create release and attach binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "spotify-dx ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/* \
+          || gh release upload "${GITHUB_REF_NAME}" dist/* --clobber --repo "${GITHUB_REPOSITORY}"

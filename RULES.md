@@ -160,6 +160,13 @@ lists) drops third-party ad/tracker requests.
   add the route in `ui/router.rs`. Components similarly via
   `ui/components/mod.rs`.
 - Formatting follows `cargo fmt` defaults; edition 2021.
+- **Releases run through `.github/workflows/release.yml`, triggered by a
+  `v*` tag push (or `./scripts/release.sh <ver>`).** It builds the `desktop`
+  feature for linux-gnu / macOS (arm64+x86_64) / windows-msvc and publishes a
+  GitHub Release. Because this is a GTK/WebKit GUI, Linux is **glibc with the
+  system webkit2gtk dev packages**, never musl. Web/Android/iOS are still
+  Connect-only and tracked in `docs/PLATFORM_PARITY.md` (do not add them to the
+  release matrix yet).
 
 ## 6. Discoveries & gotchas (learned the hard way)
 
