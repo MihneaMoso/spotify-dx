@@ -5531,6 +5531,7 @@ dependencies = [
  "dioxus-router",
  "dirs 5.0.1",
  "futures",
+ "getrandom 0.2.17",
  "gtk",
  "hickory-resolver",
  "image",
@@ -5549,7 +5550,9 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
- "webbrowser",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wry",
 ]
 

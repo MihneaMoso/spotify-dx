@@ -142,7 +142,12 @@ lists) drops third-party ad/tracker requests.
 - `src/ui/router.rs`: `Route` enum with `#[layout(AppLayout)]` and
   `#[route(...)]`. Pages: `/`, `/search`, `/library`, `/album/:id`,
   `/artist/:id`, `/artist/:id/top`, `/playlist/:id`.
-- Cargo features: `default = ["desktop"]`; `desktop`, `web`, `mobile`.
+- Cargo features: `default = ["desktop"]`; `desktop`, `mobile`, `web`, plus a
+  shared `native` feature (`dep:wry`) enabled by **both** `desktop` and `mobile`
+  — `dioxus::mobile` is a re-export of `dioxus::desktop` (both wry-based), so
+  "native non-WASM" code (media sink, adblock, `playback_sdk` bootstrap) is
+  gated on `#[cfg(feature = "native")]` and compiles for desktop and mobile
+  alike. Only WASM (`web`) diverges.
 - `#![forbid(unsafe_code)]` at crate level — the whole crate is unsafe-free,
   and the WebView bridge is deliberately `Send`-free via `thread_local!` to
   keep it that way. Keep it that way.
@@ -166,9 +171,7 @@ lists) drops third-party ad/tracker requests.
   GitHub Release. Because this is a GTK/WebKit GUI, Linux is **glibc with the
   system webkit2gtk dev packages**, never musl. Web/Android/iOS are still
   Connect-only and tracked in `docs/PLATFORM_PARITY.md` (do not add them to the
-  release matrix yet).
-
-## 6. Discoveries & gotchas (learned the hard way)
+  release matrix yet).## 6. Discoveries & gotchas (learned the hard way)
 
 ### 6.1 The dioxus 0.6 → 0.7 migration (important!)
 
@@ -753,6 +756,78 @@ patterns in mind so new code doesn't reintroduce them):
   once content loads — the rule is: an animation that renders at idle must not
   loop. When auditing idle CPU in a WebView, grep `assets/main.css` for
   `animation:.*infinite` as a first pass.
+
+### 6.9b Mobile/platform parity (the `native` seam + GTK-coupled webviews)
+
+- **`dioxus::mobile` is literally a re-export of `dioxus::desktop`** (both wrap
+  wry/tao; `dioxus-0.7.10/src/lib.rs` does `pub use dioxus_desktop as mobile`).
+  So   native renderers (desktop + mobile) share the wry stack; only WASM differs.
+  The feature graph now has a shared `native = ["dep:wry"]` enabled by both
+  `desktop` and `mobile`; gate truly platform-agnostic native code (media sink,
+  adblock, `playback_sdk` HTML bootstrap) on `#[cfg(feature = "native")]`.
+- **The SDK webview is now `native`-gated, not desktop-gated** (Phase C landed):
+  `player/webview_bridge.rs` and the `playback_sdk` module now compile for mobile
+  too, so mobile plays via the SDK like desktop instead of the old Connect-API
+  shell. `main.rs` mobile `main` runs `rt.block_on(bootstrap())` then
+  `dioxus::launch(App)`.
+- **The session/sign-in webview is `native` too**, so `open.spotify.com` opens
+  INSIDE the app on mobile, exactly as on desktop: `auth/webview_login.rs` is
+  shared, with two hosts — GTK-packed (`build_gtk`) on Linux desktop vs wry's
+  cross-platform `build(&window)` (fills the window in-app) on mobile /
+  non-Linux desktop (iOS = WKWebView, Android = AndroidView). `auth::login()`
+  and `ensure_session()` now run for every native renderer, so mobile gets the
+  same in-app login + same-origin token-refresh session WebView as desktop.
+  Mobile anti-pattern to avoid: the builder borrows `&mut WebContext`, so the
+  build must happen inside `with_session_context` (see `build_in_context`) —
+  you can never return a `WebViewBuilder` out of that closure.
+- **Pure-mobile build command:** `cargo check --no-default-features --features
+  mobile`. `cargo check --features mobile` still pulls the default `desktop`
+  feature, so it exercises desktop+mobile together and **masks** renderer-only
+  problems — always use `--no-default-features` to test mobile meaningfully.
+- **Shared native code cannot name `dioxus::desktop`** (that module only exists
+  when the `dioxus/desktop` feature is on, else `dioxus::mobile` re-export is
+  used). `src/platform/webview.rs` picks the right alias with `#[cfg(feature =
+  "mobile")]` vs `#[cfg(all(desktop, not(mobile)))]` so webview_bridge builds on
+  every native platform; both features can be on at once (`--features mobile`).
+- **Android cross-build works with a plain `.cargo/config.toml`** — no
+  `cargo-ndk` needed. `cargo-ndk` isn't installed here; instead `.cargo/
+  config.toml` sets `linker`/`ar` for `aarch64-linux-android`, plus two
+  **un-versioned symlinks** (`aarch64-linux-android-clang` →
+  `aarch64-linux-android21-clang`, `aarch64-linux-android-ar` → `llvm-ar`) created
+  in the NDK bin dir — `cc-rs` resolves those exact names and won't accept the
+  versioned ones. Command: `cargo check --no-default-features --features mobile
+  --target aarch64-linux-android` (pass with NDK bin on `$PATH`); verified clean
+  here on NDK `25.2.9519653`. iOS targets aren't rustup-installed so iOS cannot
+  build on this Linux host.
+
+### 6.9c Web (WASM) parity seams — storage, audio, adblock, login
+
+- **wasm build command:** `cargo check --no-default-features --features web --target
+  wasm32-unknown-unknown` (must exclude the default `desktop` feature, which pulls
+  dioxus-desktop→tungstenite→native-tls→openssl-sys). Desktop/mobile/native are
+  the default- and native-`feature` combinations.
+- **reqwest has no `wasm` feature** — its fetch backend is picked automatically
+  from the target arch. Nothing in `Cargo.toml` says `features = ["wasm"]`.
+- **Native-only client config** (`cookie_store`, `gzip`/`brotli`, `timeout`) is
+  gated `#[cfg(not(target_arch = "wasm32"))]`; the shared HTTP type stays
+  `reqwest::Response`.
+- **`#[async_trait(?Send)]`** (not plain `async_trait`) for the streaming
+  `Provider` trait so wasm's `!Send` futures are allowed.
+- **The `src/platform/` seam** is where native/desktop vs wasm diverge: `storage`
+  (fs vs localStorage), `spawn_background` (tokio::spawn vs spawn_local), and
+  `web_login`. Token store, settings, image/media/stream caches, and store
+  snapshots all route through `platform::storage`.
+- **Web login = whole-tab redirect.** The browser can't host the GTK login
+  WebView, so `auth::login()` on wasm redirects to `open.spotify.com` and then
+  fetches `get_access_token` with `credentials: include` (like the desktop
+  `fetchAccessToken`). **This credentialed cross-origin fetch is UNVERIFIED** —
+  no headless sandbox can confirm Spotify's CORS / third-party-cookie behavior
+  for it. It's the one runtime item left before full web parity; if it fails
+  live, the login gate surfaces a clear CORS error and needs a different capture
+  mechanism. Do not claim web login "works" until validated in a real browser.
+- **build wasm via `web-sys` fetch, not reqwest**, for the login capture so the
+  `credentials: include` request mode is explicitly controllable (reqwest's wasm
+  fetch backend doesn't expose that the same way).
 
 ## 7. Testing
 

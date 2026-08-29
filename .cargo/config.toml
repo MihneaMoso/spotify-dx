@@ -1,0 +1,8 @@
+# Android cross-compilation (Phase C). Keyed to the android targets only, so
+# host (desktop/mobile-on-Linux) and wasm builds are unaffected. Uses the NDK
+# toolchain's clang so `cc`-based deps (ring, reqwest rustls, etc.) and the
+# final link find the cross compiler. Requires `ANDROID_HOME` set and the NDK
+# path below to exist — see RULES.md §6.9b for the installed NDK version.
+[target.aarch64-linux-android]
+linker = "/home/moso/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+ar = "/home/moso/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"

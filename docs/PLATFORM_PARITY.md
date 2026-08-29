@@ -1,6 +1,8 @@
 # Platform Parity — web / android / ios on the same API as desktop
 
-Status: **planned** (not started). Tracked separately from the release pipeline.
+Status: **in progress** — web (WASM) parity foundation landed and fully green;
+remaining item is live browser validation of the Spotify session token capture
+(see Phase B). Android/iOS still planned.
 
 ## Goal
 
@@ -15,18 +17,39 @@ We want `web` / `android` / `ios` to expose **the exact same API surface as
 desktop** — sign-in, ad-block, sessions, full-track playback — with
 platform-specific implementations only where the OS forces one.
 
-## What differs per platform (the seams)
+## Decisive findings (research confirms — big simplification)
 
-These are the only places a platform forces a different implementation. Keep
-everything else shared.
+- **Mobile ≈ desktop already.** `dioxus::mobile` is a re-export of
+  `dioxus::desktop` (both wrap `wry` + `tao`; iOS = WKWebView, Android =
+  system WebView). So the wry webview login (`webview_login.rs` + `POLL_JS`)
+  and `dioxus::document::eval()` IPC work on iOS/Android **almost unchanged**
+  — only the *GTK window* bits (`cfg(target_os = "linux")`) differ, and they
+  are already gated.
+- **The `audio` seam dissolves.** `rodio` + `cpal` + `symphonia` cover **all
+  six** platforms with no per-OS backend abstraction: Linux (ALSA), macOS
+  (CoreAudio), Windows (WASAPI), Android (AAudio), iOS (CoreAudio), and web
+  (rodio `wasm-bindgen` → WebAudio). `media/sink.rs` needs **zero changes** on
+  Android/iOS; only the web WebAudio single-thread model is a caveat.
+- **The "Connect API only" limit is a feature-gating artifact, not an
+  architecture.** `main.rs` gives web/mobile a trivial `dioxus::launch(App)`
+  while the real backends are behind `#[cfg(feature = "desktop")]`. If we gate
+  on `cfg(target_os)` / `cfg(target_arch = "wasm32")` instead, the same code
+  compiles for mobile.
+- **Storage:** `keyring` v4 now ships first-class Android
+  (`android-native-keyring-store`, `android-keyring` — works out of the box
+  with dioxus-mobile since it initializes `ndk-context`) and iOS (Keychain)
+  stores under the same API. Desktop `keyring` call sites need only the right
+  store selected per target.
 
-| Seam | Desktop (today) | Web (WASM) | Android | iOS |
-| --- | --- | --- | --- | --- |
-| **Login webview** | `src/auth/webview_login.rs` — GTK window hosting open.spotify.com + `POLL_JS` | The browser tab itself is the webview; capture via injected fetch hook (same `POLL_JS`) | dioxus-mobile webview surface (WebViewCompat) | WKWebView via dioxus-mobile |
-| **Audio output / playback** | `src/media/sink.rs` — `rodio` + `cpal` device sink + `symphonia` decode | WebAudio (no raw file write possible) | `oboe`/AAudio + `MediaCodec` (or ffmpeg) | `AVAudioEngine` + `AVAudioPlayer`/`AudioToolbox` |
-| **Persistent key-value store** | OS keychain (`keyring`) + `dirs` files | no fs — needs IndexedDB/LocalStorage abstraction | `EncryptedSharedPreferences` / data dir | Keychain / UserDefaults |
-| **Disk cache / images / blocklist bin** | `std::fs` under `dirs` cache dirs | IndexedDB / Cache API | app data dir | app sandbox data dir |
-| **Ad-block engine thread** | `adblock` crate on a std thread + serialized `.bin` | WASM — single thread; sync engine call or Web Worker | native thread OK | native thread OK |
+## The seams that actually remain
+
+| Seam | Desktop / Android / iOS (shared) | Web (WASM — the only true divergence) |
+| --- | --- | --- |
+| **Login** | wry webview + `POLL_JS` (already written, desktop-gated today) | the browser *is* the webview — open.spotify.com in a route; same `POLL_JS` fetch hook |
+| **Audio** | `media/sink.rs` rodio/cpal/symphonia — **no changes** | WebAudio via rodio `wasm-bindgen` (`noise-suppression`/single-thread caveats) |
+| **KV store** | `keyring` v4 (Keychain/KeyStore stores) | no fs — localStorage/IndexedDB (`dioxus-sdk-storage`, `use_persistent`) |
+| **Disk cache/blocklist bin** | `std::fs` under `dirs` | IndexedDB / Cache API; `std::fs` gated out of WASM |
+| **Ad-block thread** | `adblock` crate on std thread | WASM single-thread — sync engine call or Web Worker
 
 ### Non-goals for parity
 - Not shipping identical *binaries* — only an identical *API/UX*. The UI
@@ -41,37 +64,89 @@ Every phase must leave the repo green:
 `cargo check --features desktop`, `cargo clippy --features desktop` (0 warnings),
 `cargo test` + `cargo test --no-default-features`.
 
-### Phase A — Define a `platform` layer (the seams, behind one crate module)
-- New `src/platform/` module with traits, each with a **desktop implementation
-  (std)** that delegates to today's code, so desktop behavior is byte-identical:
-  - `Storage` (persistent KV + cache dirs) — desktop = keyring + `dirs`.
-  - `AudioBackend` (open a stream URL, get position/duration callbacks) —
-    desktop = thin wrapper over `media::sink`.
-  - `LoginWebview` — desktop = the existing GTK `LoginWebView` (keep the
-    `ready`/`suspended` park + revive logic).
-- Move feature-gated calls in `auth`, `player`, `adblock`, `media` to go through
-  these traits. Keep `#[cfg(feature = "desktop")]` as *the std impl*.
-- Verify: desktop suite still 79/79 + green clippy.
+### Phase A — Introduce the native/non-wasm seam ✅ (landed)
+- **Done:** added a `native` feature (`dep:wry`) that both `desktop` and
+  `mobile` enable, expressing the real boundary: native (desktop **+** mobile,
+  both wry-based because `dioxus::mobile` re-exports `dioxus::desktop`) vs
+  WASM (`web`). Moved the platform-agnostic `playback_sdk` bootstrap from
+  `#[cfg(feature = "desktop")]` to `#[cfg(feature = "native")]`.
+- **Verified:** `cargo check --features desktop` and `cargo check --features
+  mobile` both compile on the native host; clippy clean for both; 79/79 tests
+  pass on `--features desktop` and `--no-default-features`.
+- **Key finding that scopes Phase C:** the sign-in webview (`auth/webview_login.rs`)
+  and hidden SDK webview (`player/webview_bridge.rs`) are **GTK-coupled**
+  (they host/upcast the wry `WebView` into a `gtk::Widget` container, gated to
+  Linux + `feature = "desktop"`). So they cannot compile for mobile until
+  Phase C re-hosts them on the dioxus-mobile webview surface. They are left
+  desktop-only for now; mobile keeps the Connect-API fallback for that one
+  SDK path until Phase C.
+- Media / adblock / auth-token / open-engine logic is already platform-agnostic
+  (not gated on `desktop`) and is shared as-is.
 
-### Phase B — Web (WASM) build of the same code
-- Add a `web` native impl of the traits: `Storage` → `web_sys` IndexedDB,
-  `AudioBackend` → WebAudio via `web-audio-api` crate, `LoginWebview` → the
-  dioxus-web window hosting the login + the same `POLL_JS` fetch hook.
-- `player/mod.rs` already dispatches to open-engine; on web the open engine's
-  *resolution* (Odesli/TIDAL/Qobuz/YouTube URLs) is shared — only the "sink"
-  becomes WebAudio.
-- Make the `web` feature compile with the full module set (today only `main.rs`
-  differs). Gate GTK/wry/rodio deps so `--features web` has no Linux/GUI deps.
-- Verify a `wasm32-unknown-unknown` release build succeeds (add to the CI matrix
-  as an artifact build, not required to run).
-- iOS/Android reusable: the `Storage`/`AudioBackend`/`LoginWebview` trait
-  contract is identical; only impls differ.
+> Remaining Phase A intent (not yet done): introduce the small `src/platform/`
+> seam (`Storage` keyring-store selection, `DiskCache`) for mobile — this is
+> pulled forward with the Phase C webview work since both touch auth/media.
+
+### Phase B — Web (WASM) build of the same code ✅ (foundation landed)
+- **Cargo restructure:** single general `[dependencies]` block plus per-target
+  blocks — `cfg(not(target_arch = "wasm32"))` (tokio-full, reqwest
+  cookies+gzip+brotli+stream+rustls-tls, hickory-resolver, keyring, dirs,
+  symphonia, rodio), `cfg(target_arch = "wasm32")` (tokio rt+time+sync+macros,
+  reqwest json, getrandom js, wasm-bindgen, wasm-bindgen-futures, web-sys), and
+  `android`/`linux` blocks. `wry`/`gtk`/`keyring`/`dirs`/`symphonia`/`rodio` are
+  gated out of WASM.
+- **`src/platform/` seam created:** `storage.rs` (set/get/remove bytes —
+  native fs under `data_dir`, wasm localStorage base64) via `Storage`/`Element`,
+  plus `spawn_background` (tokio::spawn / spawn_local) and `web_login.rs`.
+- **Token store / settings / media images / streaming cache / store snapshots**
+  all refactored onto the storage seam; keyring stays native-only.
+- **Audio:** `media/sink_wasm.rs` — an `HtmlAudioElement` sink exposing the same
+  public API as the native rodio sink (`SinkCommand`, `SinkState`,
+  `global_sink`, `spawn_sink`); native symphonia/rodio gated `not(wasm32)`.
+- **Ad-block:** native thread/DoH (`hickory`) vs wasm `thread_local!` inline
+  engine; blocklist fetch gates the forbidden `Accept-Encoding` header to native.
+- **HTTP seams:** `spotify/client.rs` + streaming providers gate
+  `cookie_store`/`gzip`/`brotli`/`timeout` to native; shared `#[async_trait(?Send)]`
+  `Provider` trait; `Accept-Encoding` and `Accept-Language` gated to native.
+- **Login:** `auth::login()` on wasm uses `platform::web_login` — whole-tab
+  redirect to `open.spotify.com`, then a credentialed
+  `get_access_token` capture (same as the desktop WebView's `fetchAccessToken`).
+- **Verified:** `cargo check --no-default-features --features web --target
+  wasm32-unknown-unknown` and `cargo clippy` for that target both clean (0
+  warnings). Desktop + mobile + headless all stay clean;  79/79 tests pass on
+  desktop and no-default.
+- **Validation-pending (the one runtime item):** whether Spotify's
+  `open.spotify.com/get_access_token` actually permits a **credentialed
+  cross-origin** fetch from the web app's own origin (CORS + the browser
+  sending the `sp_dc` HttpOnly cookie). This cannot be verified from a headless
+  sandbox — it requires a real logged-in browser. If Spotify denies it, the
+  token capture returns a clear CORS error via the login gate and needs a
+  different capture mechanism. The redirect itself is correct regardless. This
+  is the sole remaining Phase B item.
+- Also follow as validation: Web Playback SDK playback (`player/` dispatch) on
+  wasm uses the open engine resolution; actual streaming needs the SDK/token
+  path confirmed in-browser.
 
 ### Phase C — Android + iOS builds of the same code
-- `cargo-ndk` for Android; `--target aarch64-apple-ios` etc. for iOS.
-- Implement `LoginWebview` and `AudioBackend` for each OS (see seam table).
-- Wire dioxus-mobile entry point (already present in `main.rs`) to run the full
-  app, not the Connect-only shell.
+- ✅ **SDK playback un-gated to `native`** (`player/webview_bridge.rs`,
+  `playback_sdk`) so mobile runs the full app via the SDK, not the Connect-API
+  shell. `main.rs` mobile entry runs `rt.block_on(bootstrap())` then
+  `dioxus::launch(App)`.
+- ✅ **Pure-mobile build** `cargo check --no-default-features --features mobile`
+  and **Android cross-build** `cargo check --no-default-features --features
+  mobile --target aarch64-linux-android` are both green (0 warnings; see
+  RULES.md §6.9b for the NDK symlink trick — no `cargo-ndk` needed). iOS targets
+  aren't installed on this Linux host.
+- ✅ **In-app login on mobile.** `auth/webview_login.rs` is now `native`-gated
+  with two hosts: GTK-packed on Linux desktop vs wry's cross-platform
+  `build(&window)` on mobile / non-Linux desktop, so `open.spotify.com` opens
+  INSIDE the app (fills the window) exactly like desktop — same session
+  WebContext, cookies, `POLL_JS`, and same-origin token-refresh path. `auth::
+  login()` and `ensure_session()` run for every native renderer (see RULES.md
+  §6.9b). Runtime stacking of the login WebView over the dioxus webview on
+  Android/iOS is the one item that can't be exercised in this Linux sandbox.
+- Keyring store selection per OS (`android-keyring` initializes ndk-context
+  itself; iOS Keychain store).
 
 ### Phase D — Mobile/web release CI
 - Extend `.github/workflows/release.yml` with `wasm32` (web) and Android/iOS

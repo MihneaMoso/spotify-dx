@@ -7,8 +7,13 @@ license = "MIT"
 
 [features]
 default  = ["desktop"]
-desktop  = ["dioxus/desktop", "dep:wry", "dep:gtk"]
-mobile   = ["dioxus/mobile"]
+# `native` = a non-WASM renderer is present (desktop OR mobile). Both are wry
+# based: dioxus::mobile is a re-export of dioxus::desktop. Platform-agnostic
+# native code (media sink, adblock, playback_sdk bootstrap) is gated here so it
+# compiles for desktop and mobile alike; only WASM (web) diverges.
+native   = ["dep:wry"]
+desktop  = ["dioxus/desktop", "native", "dep:gtk"]
+mobile   = ["dioxus/mobile", "native"]
 web      = ["dioxus/web"]
 
 [dependencies]
@@ -19,52 +24,62 @@ dioxus-router = { version = "0.7" }
 # otherwise cargo resolves two different wry copies into the same binary.
 wry           = { version = "0.53", optional = true }   # hidden webview for Web Playback SDK
 
-# ── Async runtime ─────────────────────────────────────────────────────────────
-tokio         = { version = "1", features = ["full", "sync"] }
-futures       = "0.3"
-
-# ── HTTP / networking ─────────────────────────────────────────────────────────
-# rustls-tls (instead of the native-tls default) keeps the tree OpenSSL-free and
-# unifies with oauth2's own rustls reqwest feature.
-reqwest       = { version = "0.12", default-features = false, features = ["json","cookies","gzip","brotli","stream","rustls-tls"] }
+# ── Networking ────────────────────────────────────────────────────────────────
 url           = "2"
-webbrowser    = "1"
 
 # ── Auth / crypto ─────────────────────────────────────────────────────────────
-# sha2/base64 are NOT auth-only: cache.rs hashes URLs and album_art.rs base64s
+# sha2/base64 are NOT auth-only: store.rs hashes URLs and media/images.rs base64s
 # images. Keep them. oauth2/rand were only used by the deleted PKCE flow.
 sha2          = "0.10"
 base64        = "0.22"
 
-# ── Ad-block / DNS ────────────────────────────────────────────────────────────
-# Brave-style ad-block engine (replaces the old radix_trie + custom parser)
+# ── Ad-block ──────────────────────────────────────────────────────────────────
+# Brave-style ad-block engine. Compiles to wasm; its DNS-over-HTTPS helper
+# (`hickory-resolver`) is native-only and lives in the target-gated block below.
 adblock = "0.13"
-# Async DNS resolver for DNS-over-HTTPS (used by adblock bootstrap only)
-hickory-resolver = { version = "0.24", default-features = false, features = ["dns-over-https-rustls","tokio-runtime"] }
 
 # ── Serialization ─────────────────────────────────────────────────────────────
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 
-# ── Secure storage ────────────────────────────────────────────────────────────
-keyring       = { version = "3", features = ["sync-secret-service", "linux-native"] }   # cross-platform keychain
-
-# ── Image / media ─────────────────────────────────────────────────────────────
+# ── Image / media (decode only; output is target-specific) ────────────────────
 image         = { version = "0.25", default-features = false, features = ["jpeg","png","webp"] }
 
-# ── Utilities ─────────────────────────────────────────────────────────────────
-anyhow        = "1"
-thiserror     = "1"
-tracing       = "0.1"
+# ── Async / misc ──────────────────────────────────────────────────────────────
+futures         = "0.3"
+anyhow          = "1"
+thiserror       = "1"
+tracing         = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-once_cell     = "1"
-parking_lot   = "0.12"
-chrono        = { version = "0.4", features = ["serde"] }
+once_cell       = "1"
+parking_lot     = "0.12"
+chrono          = { version = "0.4", features = ["serde"] }
+urlencoding     = "2"
+async-trait     = "0.1"
+
+# ── Per-target deps ───────────────────────────────────────────────────────────
+# Native (desktop/mobile): full multi-threaded tokio, native reqwest, OS
+# keychain/filesystem/DNS, and the local symphonia + rodio/cpal pipeline.
+# Replaced on wasm by the `platform` seam (browser fetch, localStorage, WebAudio).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio         = { version = "1", features = ["full", "sync"] }
+reqwest       = { version = "0.12", default-features = false, features = ["json","cookies","gzip","brotli","stream","rustls-tls"] }
+hickory-resolver = { version = "0.24", default-features = false, features = ["dns-over-https-rustls","tokio-runtime"] }
+keyring       = { version = "3", features = ["sync-secret-service", "linux-native"] }   # cross-platform keychain
 dirs          = "5"
-symphonia = { version = "0.6.1", features = ["flac", "aac", "mp3", "isomp4", "ogg", "pcm"] }
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp4"] }
-urlencoding = "2"
-async-trait = "0.1"
+symphonia     = { version = "0.6.1", features = ["flac", "aac", "mp3", "isomp4", "ogg", "pcm"] }
+rodio         = { version = "0.22.2", default-features = false, features = ["playback", "mp4"] }
+
+# wasm: single-threaded current-thread tokio (no net/process/signal/mio), reqwest
+# with just `json` (its wasm/fetch backend is selected automatically), plus the
+# JS glue and web APIs for the storage/audio seams.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio         = { version = "1", features = ["rt", "time", "sync", "macros"] }
+reqwest       = { version = "0.12", default-features = false, features = ["json"] }
+getrandom     = { version = "0.2", features = ["js"] }
+wasm-bindgen  = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys       = { version = "0.3", features = ["Window", "Storage", "HtmlAudioElement", "HtmlMediaElement", "Document", "Element", "Location", "Request", "RequestInit", "RequestCredentials", "RequestMode", "Response", "Headers"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }

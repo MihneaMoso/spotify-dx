@@ -5,7 +5,6 @@
 //! hitting the network.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -102,10 +101,9 @@ pub fn put(track_id: &str, provider: &str, url: &str, format: &str) {
     }
 }
 
-/// Disk-persisted cache for surviving restarts.
-fn disk_path() -> PathBuf {
-    crate::util::cache_dir().join("stream_url_cache.json")
-}
+/// Storage key for the persisted stream-URL cache (files on native, localStorage
+/// on wasm).
+const DISK_KEY: &str = "stream://url_cache";
 
 /// Save the memory cache to disk (best-effort, called on shutdown).
 pub fn save_to_disk() {
@@ -118,22 +116,16 @@ pub fn save_to_disk() {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
-    let path = disk_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&snapshot).unwrap_or_default(),
-    );
+    let json = serde_json::to_string(&snapshot).unwrap_or_default();
+    crate::platform::storage::set_bytes(DISK_KEY, json.as_bytes());
 }
 
 /// Load the disk cache into memory on startup (best-effort).
 pub fn load_from_disk() {
-    let path = disk_path();
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Some(raw) = crate::platform::storage::get_bytes(DISK_KEY) else {
         return;
     };
+    let Ok(raw) = String::from_utf8(raw) else { return };
     let Ok(entries): Result<Vec<(CacheKey, CachedUrl)>, _> = serde_json::from_str(&raw) else {
         return;
     };

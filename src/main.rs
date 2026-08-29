@@ -12,6 +12,7 @@ pub mod app_error;
 pub mod auth;
 pub mod media;
 pub mod player;
+pub mod platform;
 pub mod settings;
 pub mod spotify;
 pub mod state;
@@ -29,10 +30,15 @@ async fn bootstrap() -> bool {
 }
 
 fn init_logging() {
+    // `std::env::var` does not exist on wasm (no process environment), so the
+    // log filter is fixed there.
+    #[cfg(not(target_arch = "wasm32"))]
     let filter = tracing_subscriber::EnvFilter::new(
         std::env::var("SPOTIFY_DX_LOG")
             .unwrap_or_else(|_| "wry=warn,tao=warn,tokio=info,spotify_dx=info".into()),
     );
+    #[cfg(target_arch = "wasm32")]
+    let filter = tracing_subscriber::EnvFilter::new("tokio=info,spotify_dx=info");
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
@@ -69,18 +75,33 @@ fn main() {
     dioxus::LaunchBuilder::desktop().with_cfg(config).launch(App);
 }
 
-/// Other renderers fall back to the Connect API (no local WebView).
+/// Mobile renderer: the full app (bootstrap + SDK/open-engine playback via the
+/// shared native path). `mobile` is dioxus-desktop under the hood, so it uses
+/// the same multi-threaded tokio bootstrap as desktop.
+#[cfg(all(not(feature = "desktop"), not(feature = "web"), feature = "mobile"))]
+fn main() {
+    use app::App;
+    init_logging();
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
+    rt.block_on(bootstrap());
+    drop(rt);
+
+    dioxus::launch(App);
+}
+
+/// Web renderer: run the full web-parity startup (adblock + auth session init)
+/// concurrently with mounting the app. On wasm there is no multi-threaded runtime
+/// or blocking executor, so bootstrap runs as a `spawn_local` background task.
 #[cfg(all(not(feature = "desktop"), feature = "web"))]
 fn main() {
     use app::App;
     init_logging();
-    dioxus::launch(App);
-}
-
-#[cfg(all(not(feature = "desktop"), feature = "mobile"))]
-fn main() {
-    use app::App;
-    init_logging();
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move {
+        let restored = bootstrap().await;
+        tracing::info!("web: bootstrap complete, session restored={restored}");
+    });
     dioxus::launch(App);
 }
 

@@ -1,15 +1,20 @@
 use crate::state::{AUTH_STATE, AuthState};
 pub mod token_store;
 
-/// Desktop-only: hosts the real `open.spotify.com` sign-in in the main window.
-#[cfg(feature = "desktop")]
+/// Every native renderer (desktop + mobile) hosts the real `open.spotify.com`
+/// sign-in in the app's window (GTK-packed on Linux desktop, a wry window
+/// WebView elsewhere; see RULES.md §6.9b).
+#[cfg(feature = "native")]
 pub mod webview_login;
 
-#[cfg(feature = "desktop")]
+/// `mobile` is a re-export of `dioxus::desktop`, so every native renderer
+/// (desktop + mobile) shares the wry WebView stack and can host hidden WebViews.
+#[cfg(feature = "native")]
 use std::cell::RefCell;
 
 /// The one WebView data directory shared by the login WebView AND the hidden
 /// SDK WebView. Cookies and localStorage persist here.
+#[cfg(feature = "native")]
 pub fn webview_data_dir() -> std::path::PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -22,7 +27,7 @@ pub fn webview_data_dir() -> std::path::PathBuf {
 // `WebContext` claims a data directory still held by a live (cached) web
 // process, so two contexts on one directory — as the old login-window design
 // did — is a hard crash.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native")]
 thread_local! {
     static SESSION_CONTEXT: RefCell<Option<wry::WebContext>> = const { RefCell::new(None) };
 }
@@ -34,7 +39,7 @@ thread_local! {
 /// The borrow only lives for the duration of the closure (the guard cannot
 /// escape a `thread_local`'s `.with`), so build the WebView inside the closure
 /// and return it from `f`.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native")]
 pub fn with_session_context<R>(f: impl FnOnce(&mut wry::WebContext) -> R) -> R {
     SESSION_CONTEXT.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -61,11 +66,12 @@ pub async fn await_session(
         .map_err(|_| anyhow::anyhow!("Login window closed before session captured"))
 }
 
-/// Desktop: open the Spotify sign-in window, capture the web-player session,
-/// persist it and flip `AUTH_STATE` to authenticated. The login WebView writes
-/// the HttpOnly session cookies into the shared data directory, so once the
-/// token is stored here the user stays logged in on future launches.
-#[cfg(feature = "desktop")]
+/// Desktop/mobile: open the Spotify sign-in INSIDE the app's window, capture the
+/// web-player session, persist it and flip `AUTH_STATE` to authenticated. The
+/// login WebView writes the HttpOnly session cookies into the shared data
+/// directory, so once the token is stored here the user stays logged in on
+/// future launches.
+#[cfg(feature = "native")]
 pub async fn login() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     webview_login::start(tx)?;
@@ -89,10 +95,31 @@ pub async fn login() -> anyhow::Result<()> {
     on_session_captured(session.access_token, session.expires_at_ms).await
 }
 
-/// Non-desktop renderers have no WebView to host the login page.
-#[cfg(not(feature = "desktop"))]
+/// Non-native renderers have no WebView to host the login page. On web the
+/// browser *is* the session holder, so try to capture a live session from the
+/// Spotify cookies; if the user isn't signed in, redirect the whole tab to
+/// `open.spotify.com` to sign in.
+#[cfg(not(feature = "native"))]
 pub async fn login() -> anyhow::Result<()> {
-    anyhow::bail!("this build cannot open the Spotify login window")
+    #[cfg(target_arch = "wasm32")]
+    {
+        match crate::platform::web_login::capture_session().await {
+            Ok(Some((token, expires_at_ms))) => {
+                on_session_captured(token, expires_at_ms).await
+            }
+            Ok(None) => {
+                crate::platform::web_login::redirect_to_spotify();
+                anyhow::bail!("no Spotify session yet — opening open.spotify.com to sign in");
+            }
+            Err(e) => {
+                anyhow::bail!("could not read the Spotify session (CORS or logged out?): {e:#}")
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        anyhow::bail!("this build cannot open the Spotify login window")
+    }
 }
 
 /// Called at app startup. Reports whether a clock-valid session exists in the
@@ -135,7 +162,7 @@ pub async fn on_session_captured(token: String, expires_at_ms: u64) -> anyhow::R
 pub fn logout() {
     token_store::clear();
     *AUTH_STATE.write() = AuthState::default();
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         // Drop the cookie-holding WebViews so a fresh login starts clean.
         crate::player::shutdown();

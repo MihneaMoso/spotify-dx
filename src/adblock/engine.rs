@@ -2,9 +2,8 @@ use adblock::lists::{FilterFormat, FilterSet, ParseOptions};
 use adblock::request::Request;
 use adblock::Engine;
 use once_cell::sync::Lazy;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 /// Hostnames that must never be blocked regardless of the blocklist content.
@@ -31,36 +30,95 @@ pub const ALWAYS_ALLOW: &[&str] = &[
 /// Wildcard domains whose subdomains are also whitelisted.
 const WILDCARD_ALLOW: &[&str] = &["spotify.com", "spotifycdn.com", "scdn.co"];
 
-const ENGINE_CACHE_FILE: &str = "adblock_engine.bin";
+#[cfg(target_arch = "wasm32")]
+const ENGINE_CACHE_FILE: &str = "adblock://engine";
+#[cfg(target_arch = "wasm32")]
+const BLOCKLIST_CACHE_KEY: &str = "adblock://blocklist";
 
 /// Source hostname assumed for all outbound requests when constructing
 /// `Request` objects for the blocker.
 const SOURCE_HOSTNAME: &str = "open.spotify.com";
 
-// ── Engine thread communication ────────────────────────────────────────────
+// ── Engine thread communication (native) ────────────────────────────────────
 //
-// `adblock::Engine` is `!Send + !Sync` (uses `Rc`/`RefCell` internally), so
-// it cannot live in a `static` shared across threads.  Instead, a dedicated
-// std thread owns the Engine and checks URLs on demand via `mpsc` channels.
-// `should_block_url` is the only public entry point and is safe to call from
-// any thread (including tokio worker threads used by reqwest).
+// `adblock::Engine` is `!Send + !Sync` (uses `Rc`/`RefCell` internally), so it
+// cannot live in a `static` shared across threads. On native a dedicated std
+// thread owns the Engine and checks URLs via `mpsc`. On wasm (single-threaded)
+// the engine lives in a `thread_local` and is checked synchronously.
 
+#[cfg(not(target_arch = "wasm32"))]
 struct CheckRequest {
     url: String,
-    reply: mpsc::SyncSender<bool>,
+    reply: std::sync::mpsc::SyncSender<bool>,
 }
 
-static ENGINE_TX: OnceLock<mpsc::SyncSender<CheckRequest>> = OnceLock::new();
+#[cfg(not(target_arch = "wasm32"))]
+static ENGINE_TX: OnceLock<std::sync::mpsc::SyncSender<CheckRequest>> = OnceLock::new();
 
 static BLOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-// ── Engine thread lifecycle ────────────────────────────────────────────────
+/// Build the engine lazily on first need (native thread / wasm main thread),
+/// loading the serialized cache or compiling the bundled/fresh blocklist.
+fn build_or_load_engine() -> Option<Engine> {
+    // 1. Try the serialized engine cache (fast restart).
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(bytes) = std::fs::read(engine_path()) {
+        let mut engine = Engine::default();
+        if engine.deserialize(&bytes).is_ok() {
+            tracing::info!("adblock: loaded cached engine");
+            return Some(engine);
+        }
+        tracing::warn!("adblock: cached engine corrupted, rebuilding");
+    }
+    #[cfg(target_arch = "wasm32")]
+    if let Some(bytes) = crate::platform::storage::get_bytes(ENGINE_CACHE_FILE) {
+        let mut engine = Engine::default();
+        if engine.deserialize(&bytes).is_ok() {
+            tracing::info!("adblock: loaded cached engine from storage");
+            return Some(engine);
+        }
+        tracing::warn!("adblock: cached engine corrupted, rebuilding");
+    }
+
+    // 2. Build from the blocklist text (bundled, or fresher persisted copy).
+    #[cfg(not(target_arch = "wasm32"))]
+    let blocklist = {
+        let mut text = include_str!("../../assets/blocklist_cache.txt").to_owned();
+        if let Ok(from_disk) = std::fs::read_to_string(cache_path()) {
+            text = from_disk;
+        }
+        text
+    };
+    #[cfg(target_arch = "wasm32")]
+    let blocklist = {
+        let mut text = include_str!("../../assets/blocklist_cache.txt").to_owned();
+        if let Some(bytes) = crate::platform::storage::get_bytes(BLOCKLIST_CACHE_KEY) {
+            if let Ok(s) = String::from_utf8(bytes) {
+                text = s;
+            }
+        }
+        text
+    };
+
+    let (engine, rule_count) = build_engine_with_count(&blocklist);
+    BLOCK_COUNT.store(rule_count, Ordering::Relaxed);
+    tracing::info!("adblock: compiled engine with {rule_count} rules from blocklist");
+
+    #[cfg(not(target_arch = "wasm32"))]
+    save_engine_cache(&engine);
+    #[cfg(target_arch = "wasm32")]
+    save_engine_cache_to_storage(&engine);
+    Some(engine)
+}
+
+// ── Engine thread lifecycle (native) ────────────────────────────────────────
 
 /// Spawn the dedicated engine thread.  Must be called once during
 /// `adguard_api::init()`.  The thread owns the `Engine` (which is `!Send`)
-/// and processes URL check requests over an `mpsc` channel.
+/// and processes URL check requests over an `mpsc` channel. No-op on wasm.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_engine_thread() {
-    let (tx, rx) = mpsc::sync_channel(64);
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
 
     std::thread::Builder::new()
         .name("adblock-engine".into())
@@ -71,14 +129,20 @@ pub fn spawn_engine_thread() {
     tracing::info!("adblock: engine thread spawned");
 }
 
-// ── Engine thread ──────────────────────────────────────────────────────────
+#[cfg(target_arch = "wasm32")]
+pub fn spawn_engine_thread() {
+    // Nothing to spawn: the engine is built lazily and checked in-line on the
+    // single wasm thread. Mark ready so `is_ready()` is honest about lifecycle.
+    tracing::info!("adblock: engine runs in-line on wasm (no thread)");
+}
 
-fn engine_thread(rx: mpsc::Receiver<CheckRequest>) {
+#[cfg(not(target_arch = "wasm32"))]
+fn engine_thread(rx: std::sync::mpsc::Receiver<CheckRequest>) {
     let mut engine: Option<Engine> = None;
 
     for req in rx {
         if engine.is_none() {
-            engine = build_engine_from_disk_or_bundled();
+            engine = build_or_load_engine();
         }
         let Some(ref eng) = engine else {
             let _ = req.reply.send(false);
@@ -92,33 +156,6 @@ fn engine_thread(rx: mpsc::Receiver<CheckRequest>) {
 
         let _ = req.reply.send(eng.check_network_request(&request).should_block());
     }
-}
-
-fn build_engine_from_disk_or_bundled() -> Option<Engine> {
-    let engine_path = engine_path();
-
-    // 1. Try the serialized engine cache (fast restart).
-    if let Ok(bytes) = std::fs::read(&engine_path) {
-        let mut engine = Engine::default();
-        if engine.deserialize(&bytes).is_ok() {
-            tracing::info!("adblock: loaded cached engine from {}", engine_path.display());
-            return Some(engine);
-        }
-        tracing::warn!("adblock: cached engine corrupted, rebuilding");
-    }
-
-    // 2. Build from the blocklist text.
-    let mut cached_text = include_str!("../../assets/blocklist_cache.txt").to_owned();
-    if let Ok(from_disk) = std::fs::read_to_string(cache_path()) {
-        cached_text = from_disk;
-    }
-
-    let (engine, rule_count) = build_engine_with_count(&cached_text);
-    BLOCK_COUNT.store(rule_count, Ordering::Relaxed);
-    tracing::info!("adblock: compiled engine with {rule_count} rules from blocklist");
-
-    save_engine_cache(&engine_path, &engine);
-    Some(engine)
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -218,9 +255,24 @@ fn count_filter_lines(text: &str) -> usize {
         .count()
 }
 
-/// Save the engine binary cache to disk.
-fn save_engine_cache(engine_path: &Path, engine: &Engine) {
-    let Some(dir) = engine_path.parent() else {
+// ── Engine persistence (native) ─────────────────────────────────────────────
+
+/// Full path of the serialized engine cache (native only).
+#[cfg(not(target_arch = "wasm32"))]
+fn engine_path() -> std::path::PathBuf {
+    crate::util::data_dir().join("adblock_engine.bin")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cache_path() -> std::path::PathBuf {
+    crate::util::data_dir().join("blocklist_cache.txt")
+}
+
+/// Save the engine binary cache to disk (native).
+#[cfg(not(target_arch = "wasm32"))]
+fn save_engine_cache(engine: &Engine) {
+    let path = engine_path();
+    let Some(dir) = path.parent() else {
         tracing::error!("adblock: engine cache path has no parent directory");
         return;
     };
@@ -229,44 +281,79 @@ fn save_engine_cache(engine_path: &Path, engine: &Engine) {
         return;
     }
     let bytes = engine.serialize();
-    let tmp = engine_path.with_extension("tmp");
-    let result = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, engine_path));
+    let tmp = path.with_extension("tmp");
+    let result = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &path));
     if let Err(err) = result {
         tracing::warn!("adblock: failed to persist engine cache: {err}");
         let _ = std::fs::remove_file(&tmp);
     }
 }
 
-/// Full path of the serialized engine cache.
-fn engine_path() -> PathBuf {
-    crate::util::cache_dir().join(ENGINE_CACHE_FILE)
+/// Save the engine binary cache to storage (wasm).
+#[cfg(target_arch = "wasm32")]
+fn save_engine_cache_to_storage(engine: &Engine) {
+    let bytes = engine.serialize();
+    crate::platform::storage::set_bytes(ENGINE_CACHE_FILE, &bytes);
 }
 
-fn cache_path() -> PathBuf {
-    crate::util::cache_dir().join("blocklist_cache.txt")
+// ── In-line engine (wasm) ───────────────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The compiled engine, owned by the single wasm thread.
+    static WASM_ENGINE: std::cell::RefCell<Option<Engine>> = const {
+        std::cell::RefCell::new(None)
+    };
 }
 
 /// Check whether a URL should be blocked.  Safe to call from any thread.
 ///
-/// Sends the URL to the engine thread and waits for a reply.  If the engine
-/// thread is not running (init not called), returns `false` (fail-open).
+/// Native: sends the URL to the engine thread and waits for a reply.  Wasm: the
+/// engine is built lazily on first use and checked in-line.  Either way a
+/// missing engine (init not called) returns `false` (fail-open).
 pub fn should_block_url(url: &str) -> bool {
-    let Some(tx) = ENGINE_TX.get() else {
-        return false;
-    };
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    if tx
-        .send(CheckRequest { url: url.to_owned(), reply: reply_tx })
-        .is_err()
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        return false;
+        let Some(tx) = ENGINE_TX.get() else {
+            return false;
+        };
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        if tx
+            .send(CheckRequest { url: url.to_owned(), reply: reply_tx })
+            .is_err()
+        {
+            return false;
+        }
+        reply_rx.recv().unwrap_or(false)
     }
-    reply_rx.recv().unwrap_or(false)
+    #[cfg(target_arch = "wasm32")]
+    {
+        WASM_ENGINE.with(|cell| {
+            let mut eng = cell.borrow_mut();
+            if eng.is_none() {
+                *eng = build_or_load_engine();
+            }
+            let Some(engine) = eng.as_ref() else {
+                return false;
+            };
+            let Ok(request) = Request::new(url, SOURCE_HOSTNAME, "xhr", "GET") else {
+                return false;
+            };
+            engine.check_network_request(&request).should_block()
+        })
+    }
 }
 
-/// Whether the engine thread has been started.
+/// Whether the engine has been started/initialised.
 pub fn is_ready() -> bool {
-    ENGINE_TX.get().is_some()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ENGINE_TX.get().is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        WASM_ENGINE.with(|c| !c.borrow().is_none())
+    }
 }
 
 /// Number of compiled rules in the engine.  Updated after each build/cache
@@ -277,16 +364,22 @@ pub fn block_count() -> usize {
 
 /// Rebuild the engine from fresh blocklist text (called by `adguard_api` after
 /// a background refresh).  Builds and caches for next boot; the running engine
-/// thread picks up the new rules on its next lazy init.
+/// picks up the new rules on its next lazy init.
 pub fn rebuild_engine(blocklist_text: &str) {
     let (engine, rule_count) = build_engine_with_count(blocklist_text);
     BLOCK_COUNT.store(rule_count, Ordering::Relaxed);
-    save_engine_cache(&engine_path(), &engine);
+    #[cfg(not(target_arch = "wasm32"))]
+    save_engine_cache(&engine);
+    #[cfg(target_arch = "wasm32")]
+    save_engine_cache_to_storage(&engine);
     tracing::info!("adblock: engine rebuilt with {rule_count} rules, cached for next boot");
 }
 
-/// DNS-over-HTTPS resolver using Cloudflare (`1.1.1.1/dns-query`).
-pub async fn dns_resolve(host: &str) -> Result<Vec<std::net::IpAddr>, anyhow::Error> {
+/// DNS-over-HTTPS resolver using Cloudflare (`1.1.1.1/dns-query`). Native only.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn dns_resolve(
+    host: &str,
+) -> Result<Vec<std::net::IpAddr>, anyhow::Error> {
     use hickory_resolver::config::{ResolverConfig, ResolverOpts};
     use hickory_resolver::TokioAsyncResolver;
 
@@ -298,6 +391,13 @@ pub async fn dns_resolve(host: &str) -> Result<Vec<std::net::IpAddr>, anyhow::Er
         anyhow::bail!("no A/AAAA records for {host}");
     }
     Ok(ips)
+}
+
+/// DNS-over-HTTPS is a native bootstrap diagnostic; wasm relies on the browser's
+/// resolver, so it is a no-op error (callers treat it as best-effort).
+#[cfg(target_arch = "wasm32")]
+pub async fn dns_resolve(_host: &str) -> Result<Vec<std::net::IpAddr>, anyhow::Error> {
+    anyhow::bail!("DNS-over-HTTPS is not used on wasm")
 }
 
 /// The most recent merged blocklist text, stored after a background refresh

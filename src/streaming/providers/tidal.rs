@@ -100,15 +100,17 @@ impl Default for TidalProvider {
 impl TidalProvider {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .unwrap_or_default(),
+            client: {
+                let builder = reqwest::Client::builder();
+                #[cfg(not(target_arch = "wasm32"))]
+                let builder = builder.timeout(Duration::from_secs(10));
+                builder.build().unwrap_or_default()
+            },
         }
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for TidalProvider {
     fn name(&self) -> &'static str {
         "tidal"

@@ -50,8 +50,12 @@ pub async fn init() -> anyhow::Result<()> {
         tracing::debug!("adblock: api.spotify.com resolves to {ips:?}");
     }
 
-    // Background refresh — never blocks UI startup.
+    // Background refresh — never blocks UI startup. Native uses a tokio task;
+    // wasm's reqwest futures are !Send so `spawn` won't do — use spawn_local.
+    #[cfg(not(target_arch = "wasm32"))]
     tokio::spawn(refresh_lists());
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(refresh_lists());
     Ok(())
 }
 
@@ -113,20 +117,32 @@ pub async fn stats_changed() {
 /// A *plain* reqwest client — deliberately NOT the filtered client, because the
 /// blocklist has to be fetchable even if it would block itself (bootstrap).
 fn remote_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        )
+    let builder = reqwest::Client::builder().user_agent(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+         (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    );
+    // `timeout` is native-only in reqwest; the wasm/fetch backend has its own
+    // (untunable) timeouts.
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder.timeout(std::time::Duration::from_secs(30));
+    builder
         .build()
         .expect("reqwest client for blocklist bootstrap")
 }
 
 async fn fetch_list(url: &str) -> anyhow::Result<String> {
+    // `Accept-Encoding` is a forbidden header under fetch; browsers negotiate it
+    // transparently, so only set it on native.
+    #[cfg(not(target_arch = "wasm32"))]
     let resp = remote_client()
         .get(url)
         .header("Accept-Encoding", "gzip")
+        .send()
+        .await
+        .context("blocklist request failed")?;
+    #[cfg(target_arch = "wasm32")]
+    let resp = remote_client()
+        .get(url)
         .send()
         .await
         .context("blocklist request failed")?;

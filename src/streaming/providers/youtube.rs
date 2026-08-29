@@ -19,6 +19,7 @@
 //! throttled by YouTube (sustained downloads 403 after ~1MB), whereas the
 //! muxed URL serves the entire file with a plain GET.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -52,11 +53,12 @@ impl Default for YoutubeProvider {
 impl YoutubeProvider {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .user_agent(USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: {
+                let builder = reqwest::Client::builder().user_agent(USER_AGENT);
+                #[cfg(not(target_arch = "wasm32"))]
+                let builder = builder.timeout(Duration::from_secs(15));
+                builder.build().unwrap_or_default()
+            },
         }
     }
 
@@ -263,7 +265,7 @@ impl YoutubeProvider {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for YoutubeProvider {
     fn name(&self) -> &'static str {
         "youtube"

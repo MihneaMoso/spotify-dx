@@ -1,8 +1,8 @@
-//! Desktop-only sign-in, hosted INSIDE the main window. While the user isn't
-//! authenticated, a full-screen WebView showing `open.spotify.com` fills the
-//! window; the dioxus UI is merely hidden underneath it. The moment the
-//! web-player session is captured, the WebView is hidden and the native UI is
-//! shown again — no separate window, and no reparenting of any WebView.
+//! Native sign-in, hosted INSIDE the main window (desktop and mobile). While the
+//! user isn't authenticated, a full-screen WebView showing `open.spotify.com`
+//! fills the window; the dioxus UI is merely hidden underneath it. The moment
+//! the web-player session is captured, the WebView is hidden and the native UI
+//! is shown again — no separate window, and no reparenting of any WebView.
 //!
 //! The WebView stays alive as the process's **session WebView**: because its
 //! page IS `open.spotify.com`, it is the only WebView whose
@@ -14,6 +14,16 @@
 //! ([`crate::auth::with_session_context`]), so the session cookies (`sp_dc`,
 //! `sp_key`, …) persist there — that is what keeps the user logged in across
 //! app restarts.
+//!
+//! Two hosting strategies, selected by cfg:
+//! - **Linux desktop** (`all(feature = "desktop", target_os = "linux")`): the
+//!   WebView is packed into the window's GTK container and the dioxus UI is
+//!   shown/hidden next to it (webkitgtk).
+//! - **Mobile and non-Linux desktop** (`not(all(...))`): the WebView is built
+//!   with wry's cross-platform `WebViewBuilder::build(&window)`, sized and
+//!   positioned to fill the window on sign-in and moved off-screen + hidden
+//!   once the session is captured. `dioxus::mobile` re-exports `dioxus::desktop`,
+//!   so both share this path (iOS = WKWebView, Android = AndroidView).
 
 use crate::auth::{with_session_context, WebSessionResult};
 use std::cell::RefCell;
@@ -141,7 +151,7 @@ const POLL_JS: &str = r#"
   var TOTP_KEY = '376136387538459893883312310911992847112448894410210511297108';
   function rotl(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
   function sha1(bytes) {
-    var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+    var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFC, h3 = 0x10325476, h4 = 0xC3D2E1F0;
     var len = bytes.length, ml = len * 8;
     var paddedLen = (((len + 8) >> 6) + 1) << 6;
     var p = new Array(paddedLen);
@@ -341,11 +351,14 @@ struct LoginWebView {
     /// WebViews are dropped along with their owner).
     #[allow(dead_code)]
     webview: WebView,
-    /// The sign-in widget packed into the window's vbox. Hidden on session
-    /// capture, removed on shutdown.
+    /// Linux desktop: the sign-in widget packed into the window's vbox. Hidden
+    /// on session capture, removed on shutdown. Absent on other native
+    /// platforms, where show/hide is driven by `set_visible`/`set_bounds`.
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
     widget: gtk::Widget,
-    /// The native UI children we hid under the sign-in page (the dioxus
-    /// webview). Re-shown when the session is captured.
+    /// Linux desktop: the native UI children we hid under the sign-in page (the
+    /// dioxus webview). Re-shown when the session is captured.
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
     hidden: Vec<gtk::Widget>,
     /// Set `true` by the page-load handler once `open.spotify.com` finishes
     /// loading (so `POLL_JS` ran and `window._relay` exists). Cleared on every
@@ -361,53 +374,72 @@ thread_local! {
 }
 
 /// Start the in-window Spotify sign-in and deliver the captured session over
-/// `tx`. Must be called on the UI thread (webkitgtk is not thread-safe).
-/// Returns without doing anything if a sign-in is already in progress.
+/// `tx`. Must be called on the UI thread (webkitgtk / the wry window are not
+/// thread-safe). Returns without doing anything if a sign-in is already in
+/// progress.
 ///
-/// The sign-in WebView is packed straight into the window's existing `vbox`
-/// (next to the dioxus UI), and the dioxus UI is hidden. Nothing is
-/// reparented: moving a realized WebView between containers is exactly what
-/// produced the blank screen, so we only ever show/hide widgets.
+/// Linux desktop: the sign-in WebView is packed straight into the window's
+/// existing `vbox` (next to the dioxus UI), and the dioxus UI is hidden.
+/// Nothing is reparented: moving a realized WebView between containers is
+/// exactly what produced the blank screen, so we only ever show/hide widgets.
+///
+/// Other native platforms (mobile / non-Linux desktop): the WebView is built to
+/// fill the whole window.
 pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Result<()> {
-    use gtk::prelude::*;
-    use wry::WebViewExtUnix as _;
-
     if LOGIN.with(|cell| cell.borrow().is_some()) {
         return Ok(());
     }
 
-    let vbox = main_vbox()?;
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let webview = build_webview(&vbox, true, tx, ready.clone())?;
 
-    // The sign-in WebView was packed at the end of the vbox. Hide every other
-    // child (the dioxus UI) so the sign-in page fills the window.
-    let widget: gtk::Widget = webview.webview().upcast();
-    let hidden: Vec<gtk::Widget> = vbox
-        .children()
-        .into_iter()
-        .filter(|child| child != &widget)
-        .collect();
-    tracing::info!(
-        "webview login: hiding {} native child(ren) under the sign-in page",
-        hidden.len()
-    );
-    for child in &hidden {
-        child.hide();
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    {
+        use gtk::prelude::*;
+        use wry::WebViewExtUnix as _;
+        let vbox = main_vbox()?;
+        let webview = build_webview_gtk(&vbox, true, tx, ready.clone())?;
+        let widget: gtk::Widget = webview.webview().upcast();
+
+        // The sign-in WebView was packed at the end of the vbox. Hide every
+        // other child (the dioxus UI) so the sign-in page fills the window.
+        let hidden: Vec<gtk::Widget> = vbox
+            .children()
+            .into_iter()
+            .filter(|child| child != &widget)
+            .collect();
+        tracing::info!(
+            "webview login: hiding {} native child(ren) under the sign-in page",
+            hidden.len()
+        );
+        for child in &hidden {
+            child.hide();
+        }
+        widget.show();
+        widget.grab_focus();
+
+        LOGIN.with(|cell| {
+            *cell.borrow_mut() = Some(LoginWebView {
+                webview,
+                widget,
+                hidden,
+                ready,
+                suspended: false,
+            })
+        });
     }
-    widget.show();
-    widget.grab_focus();
 
-    LOGIN.with(|cell| {
-        *cell.borrow_mut() = Some(LoginWebView {
-            webview,
-            widget,
-            hidden,
-            ready,
-            suspended: false,
-        })
-    });
+    #[cfg(not(all(feature = "desktop", target_os = "linux")))]
+    {
+        let webview = build_webview_cross(true, tx, ready.clone())?;
+        LOGIN.with(|cell| {
+            *cell.borrow_mut() = Some(LoginWebView {
+                webview,
+                ready,
+                suspended: false,
+            })
+        });
+    }
     Ok(())
 }
 
@@ -417,26 +449,42 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
 /// hook captures tokens in the background. Built like the sign-in WebView but
 /// never shown; the native UI stays put. Idempotent.
 pub fn ensure_session() -> anyhow::Result<()> {
-    use gtk::prelude::*;
-    use wry::WebViewExtUnix as _;
-
     if LOGIN.with(|cell| cell.borrow().is_some()) {
         return Ok(());
     }
-    let vbox = main_vbox()?;
     let tx = std::sync::Arc::new(std::sync::Mutex::new(None));
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let webview = build_webview(&vbox, false, tx, ready.clone())?;
-    let widget: gtk::Widget = webview.webview().upcast();
-    LOGIN.with(|cell| {
-        *cell.borrow_mut() = Some(LoginWebView {
-            webview,
-            widget,
-            hidden: Vec::new(),
-            ready,
-            suspended: false,
-        })
-    });
+
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    {
+        use gtk::prelude::*;
+        use wry::WebViewExtUnix as _;
+        let vbox = main_vbox()?;
+        let webview = build_webview_gtk(&vbox, false, tx, ready.clone())?;
+        let widget: gtk::Widget = webview.webview().upcast();
+        LOGIN.with(|cell| {
+            *cell.borrow_mut() = Some(LoginWebView {
+                webview,
+                widget,
+                hidden: Vec::new(),
+                ready,
+                suspended: false,
+            })
+        });
+    }
+
+    #[cfg(not(all(feature = "desktop", target_os = "linux")))]
+    {
+        let webview = build_webview_cross(false, tx, ready.clone())?;
+        LOGIN.with(|cell| {
+            *cell.borrow_mut() = Some(LoginWebView {
+                webview,
+                ready,
+                suspended: false,
+            })
+        });
+    }
+
     // Park the hidden page at `about:blank` so the offscreen Spotify SPA stops
     // rendering and burning CPU. Tokens are captured on demand via
     // `refresh_token` (which revives the page), so no background capture is
@@ -447,7 +495,8 @@ pub fn ensure_session() -> anyhow::Result<()> {
 }
 
 /// The window's `default_vbox()` — contains the dioxus UI; every WebView is
-/// packed into it. Errors if the window isn't ready yet.
+/// packed into it. Errors if the window isn't ready yet. Linux desktop only.
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn main_vbox() -> anyhow::Result<gtk::Box> {
     use dioxus::desktop::tao::platform::unix::WindowExtUnix;
     let desktop = dioxus::desktop::window();
@@ -458,46 +507,108 @@ fn main_vbox() -> anyhow::Result<gtk::Box> {
         .clone())
 }
 
-/// Build a WebView hosting `open.spotify.com` + `POLL_JS` in `vbox`, sharing
-/// the process-wide session `WebContext`.
-fn build_webview(
+/// Build a sign-in WebView inside the process-wide session `WebContext`, with
+/// the shared URL + `POLL_JS` + navigation/page-load/IPC handlers attached.
+/// `build` receives the `WebViewBuilder` and must finish it with a backend
+/// build (`.build_gtk(&vbox)` on Linux desktop, `.with_bounds(..).build(..)`
+/// elsewhere). It runs inside `with_session_context` because the builder borrows
+/// `&mut WebContext`, so the borrow cannot escape that closure.
+fn build_in_context(
+    tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    build: impl FnOnce(WebViewBuilder<'_>) -> wry::Result<WebView>,
+) -> anyhow::Result<WebView> {
+    with_session_context(|context| {
+        render(&mut *context, &tx, &ready, build)
+    })
+}
+
+fn render(
+    context: &mut wry::WebContext,
+    tx: &std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    build: impl FnOnce(WebViewBuilder<'_>) -> wry::Result<WebView>,
+) -> anyhow::Result<WebView> {
+    let builder = WebViewBuilder::new_with_web_context(context)
+        .with_url(SPOTIFY_LOGIN_URL)
+        .with_initialization_script(POLL_JS)
+        .with_navigation_handler(|url| {
+            tracing::info!("webview login: navigating to {url}");
+            true
+        })
+        .with_on_page_load_handler({
+            let ready = ready.clone();
+            move |event, url| match event {
+                wry::PageLoadEvent::Started => {
+                    ready.store(false, std::sync::atomic::Ordering::SeqCst);
+                    tracing::info!("webview login: page load started: {url}");
+                }
+                wry::PageLoadEvent::Finished => {
+                    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                    tracing::info!("webview login: page load finished: {url}");
+                }
+            }
+        })
+        .with_ipc_handler({
+            let tx = tx.clone();
+            move |request| {
+                let tx = tx.clone();
+                handle_ipc(tx, request)
+            }
+        });
+    build(builder).map_err(|e| anyhow::anyhow!("failed to build the sign-in webview: {e}"))
+}
+
+/// Build the sign-in WebView packed into `vbox` (Linux desktop).
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn build_webview_gtk(
     vbox: &gtk::Box,
     visible: bool,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<WebView> {
     use wry::WebViewBuilderExtUnix as _;
-    with_session_context(|context| {
-        WebViewBuilder::new_with_web_context(context)
-            .with_url(SPOTIFY_LOGIN_URL)
-            .with_initialization_script(POLL_JS)
+    build_in_context(tx, ready, |builder| {
+        builder.with_visible(visible).build_gtk(vbox)
+    })
+}
+
+/// Bounds filling the current window (mobile / non-Linux desktop sign-in).
+#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+fn full_window_bounds() -> wry::Rect {
+    let (w, h) = crate::platform::webview::window_logical_size();
+    wry::Rect {
+        position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(0.0, 0.0)),
+        size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(w.max(1.0), h.max(1.0))),
+    }
+}
+
+/// Bounds hiding the WebView once the session is captured / before sign-in on
+/// the cross-platform path (off-screen, 1×1).
+#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+fn hidden_bounds() -> wry::Rect {
+    wry::Rect {
+        position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, -9999)),
+        size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(1.0, 1.0)),
+    }
+}
+
+/// Build the sign-in WebView as a child of the wry window (mobile / non-Linux
+/// desktop). When `visible` it fills the window, overlaying the dioxus UI while
+/// the user signs in; otherwise it is parked off-screen, hidden.
+#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+fn build_webview_cross(
+    visible: bool,
+    tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<WebView> {
+    let desktop = crate::platform::webview::window();
+    let bounds = if visible { full_window_bounds() } else { hidden_bounds() };
+    build_in_context(tx, ready, |builder| {
+        builder
+            .with_bounds(bounds)
             .with_visible(visible)
-            .with_navigation_handler(|url| {
-                tracing::info!("webview login: navigating to {url}");
-                true
-            })
-            .with_on_page_load_handler({
-                let ready = ready.clone();
-                move |event, url| match event {
-                    wry::PageLoadEvent::Started => {
-                        ready.store(false, std::sync::atomic::Ordering::SeqCst);
-                        tracing::info!("webview login: page load started: {url}");
-                    }
-                    wry::PageLoadEvent::Finished => {
-                        ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                        tracing::info!("webview login: page load finished: {url}");
-                    }
-                }
-            })
-            .with_ipc_handler({
-                let tx = tx.clone();
-                move |request| {
-                    let tx = tx.clone();
-                    handle_ipc(tx, request)
-                }
-            })
-            .build_gtk(vbox)
-            .map_err(|e| anyhow::anyhow!("failed to build the sign-in webview: {e}"))
+            .build(&desktop.window)
     })
 }
 
@@ -509,12 +620,22 @@ fn build_webview(
 /// `park`), which stops the offscreen Spotify SPA from rendering/animating
 /// forever. Token refreshes revive it on demand.
 pub fn hide() {
-    use gtk::prelude::*;
     LOGIN.with(|cell| {
-        if let Some(login) = cell.borrow().as_ref() {
-            login.widget.hide();
-            for child in &login.hidden {
-                child.show();
+        if let Some(login) = cell.borrow_mut().as_mut() {
+            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            {
+                use gtk::prelude::*;
+                login.widget.hide();
+                for child in &login.hidden {
+                    child.show();
+                }
+            }
+            #[cfg(not(all(feature = "desktop", target_os = "linux")))]
+            {
+                let _ = login.webview.set_visible(false);
+                if let Err(err) = login.webview.set_bounds(hidden_bounds()) {
+                    tracing::warn!("webview login: hide (cross) failed: {err}");
+                }
             }
         }
     });
@@ -543,10 +664,13 @@ fn park_if_loaded() {
 /// Tear the session WebView down entirely (logout / session expiry). The next
 /// sign-in starts from a fresh WebView. Idempotent.
 pub fn shutdown() {
-    use gtk::prelude::*;
     LOGIN.with(|cell| {
         if let Some(login) = cell.borrow_mut().take() {
-            login.widget.unparent();
+            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            {
+                use gtk::prelude::*;
+                login.widget.unparent();
+            }
             drop(login);
         }
     });

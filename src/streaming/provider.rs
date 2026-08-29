@@ -110,7 +110,7 @@ pub struct TrackQuery {
 /// Providers are registered in priority order. The resolver tries each one;
 /// on `NotFound` or `Error` it moves to the next; on `Cooldown` it either
 /// skips or waits depending on the cooldown duration.
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 pub trait Provider: Send + Sync {
     /// Human-readable name for logging (e.g. "tidal", "qobuz").
     fn name(&self) -> &'static str;

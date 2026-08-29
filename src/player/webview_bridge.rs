@@ -83,7 +83,11 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let desktop = dioxus::desktop::window();
+    // The wry window handle is only needed by the cross-platform WebView build
+    // (non-GTK). On Linux desktop the WebView is packed into the GTK container
+    // via `platform::webview::default_vbox()`, which resolves the window itself.
+    #[cfg(not(all(target_os = "linux", feature = "desktop")))]
+    let desktop = crate::platform::webview::window();
 
     // Same shared cookie jar as the sign-in WebView: the SDK behaves as the
     // authenticated user with zero token wiring. ONE process-wide context is
@@ -101,20 +105,17 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
             .with_visible(false)
             .with_ipc_handler(handle_ipc);
 
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "desktop"))]
         {
-            use dioxus::desktop::tao::platform::unix::WindowExtUnix;
             use wry::WebViewBuilderExtUnix as _;
-            let vbox = desktop
-                .window
-                .default_vbox()
+            let vbox = crate::platform::webview::default_vbox()
                 .context("had no gtk container to host the hidden webview")?;
             builder
-                .build_gtk(vbox)
+                .build_gtk(&vbox)
                 .context("failed to build the hidden webview")
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(all(target_os = "linux", feature = "desktop")))]
         {
             builder
                 .build(&desktop.window)
@@ -217,8 +218,9 @@ fn apply_token_msg(msg: &serde_json::Value, answer_refresh: bool) {
         tracing::warn!("webview: session expired");
         crate::state::publish_error(AppError::SessionExpired);
         AUTH_STATE.write().is_authenticated = false;
-        // Tear the session WebView down so a fresh login can start (start()
-        // refuses to run while one is alive).
+        // Tear the session WebView down (native) so a fresh login can start
+        // (start() refuses to run while one is alive).
+        #[cfg(feature = "native")]
         crate::auth::webview_login::shutdown();
         if answer_refresh {
             for tx in REFRESH_TX.lock().unwrap().drain(..) {
@@ -284,10 +286,14 @@ fn eval(js: &str) {
 /// optimization) and needs to be revived + loaded before the refresh can run.
 pub async fn request_token_refresh() -> tokio::sync::oneshot::Receiver<Result<String, String>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    // Revive the possibly-parked session WebView (an await) WITHOUT holding
-    // REFRESH_TX, so concurrent refreshes / the IPC drain aren't blocked for up
-    // to the page-load timeout.
+    // Revive the possibly-parked session WebView (native) and have it fetch a
+    // token — an await, done WITHOUT holding REFRESH_TX so concurrent refreshes
+    // / the IPC drain aren't blocked for up to the page-load timeout. When no
+    // session WebView is alive it goes straight to the SDK WebView path.
+    #[cfg(feature = "native")]
     let session_ok = crate::auth::webview_login::refresh_token().await;
+    #[cfg(not(feature = "native"))]
+    let session_ok = false;
     let mut guard = REFRESH_TX.lock().unwrap();
     if session_ok {
         guard.push(tx);

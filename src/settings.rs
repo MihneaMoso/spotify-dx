@@ -6,7 +6,10 @@
 //! the theme attribute and playback defaults.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+
+/// Canonical storage key for the settings blob. Same value lands in
+/// `{data_dir}/settings.json` on native and a `localStorage` key on wasm.
+const SETTINGS_KEY: &str = "settings.json";
 
 /// Theme selection. Must stay in sync with `[data-theme="…"]` blocks in
 /// `assets/main.css`.
@@ -69,32 +72,58 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Canonical location: a durable-state file, not a cache entry.
-    pub fn path() -> PathBuf {
-        crate::util::data_dir().join("settings.json")
+    /// Canonical native location: a durable-state file, not a cache entry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn path() -> std::path::PathBuf {
+        crate::util::data_dir().join(SETTINGS_KEY)
     }
 
-    /// Load from the canonical path. ANY failure (missing file, bad JSON,
-    /// unknown fields shape) falls back to defaults — settings must never
-    /// block boot.
+    /// Load persisted settings. ANY failure (missing, bad JSON, unknown fields)
+    /// falls back to defaults — settings must never block boot.
     pub fn load() -> Self {
-        Self::load_from(&Self::path()).unwrap_or_default()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::load_from(&Self::path()).unwrap_or_default()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::platform::storage::get_bytes(SETTINGS_KEY)
+                .and_then(|raw| String::from_utf8(raw).ok())
+                .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
+                .map(|mut parsed| {
+                    parsed.normalize();
+                    parsed
+                })
+                .unwrap_or_default()
+        }
     }
 
-    pub fn load_from(path: &Path) -> Option<Self> {
+    /// Load from a filesystem path (native tests/tools only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_from(path: &std::path::Path) -> Option<Self> {
         let raw = std::fs::read_to_string(path).ok()?;
         let mut parsed: Self = serde_json::from_str(&raw).ok()?;
         parsed.normalize();
         Some(parsed)
     }
 
-    /// Persist to the canonical path, creating parent dirs. Best-effort by
-    /// callers; returns the error for tests/tools.
+    /// Persist settings. Best-effort by callers; returns the error for tests.
     pub fn save(&self) -> std::io::Result<()> {
-        self.save_to(&Self::path())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.save_to(&Self::path())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let json = serde_json::to_string(self)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            crate::platform::storage::set_bytes(SETTINGS_KEY, json.as_bytes());
+            Ok(())
+        }
     }
 
-    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -112,9 +141,10 @@ impl Settings {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

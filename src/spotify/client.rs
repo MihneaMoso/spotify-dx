@@ -26,13 +26,18 @@ pub fn build_client() -> Client {
         CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    Client::builder()
+    let builder = Client::builder()
         .default_headers(headers)
-        .user_agent(CHROME_UA)
+        .user_agent(CHROME_UA);
+    // Cookie jar, gzip/brotli and timeouts are native-only in reqwest; the
+    // wasm/fetch backend negotiates those itself.
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder
         .cookie_store(true)
         .gzip(true)
         .brotli(true)
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(20));
+    builder
         .build()
         .expect("failed to build spotify http client")
 }

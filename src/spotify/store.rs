@@ -112,6 +112,9 @@ struct Inner {
 /// Cheap-clonable handle; all state lives behind one `Arc`.
 #[derive(Clone)]
 pub struct Store {
+    // Filesystem root for disk snapshots (native). Deliberately unused on wasm,
+    // where `disk_get_fresh`/`disk_put` route through `platform::storage`.
+    #[allow(dead_code)]
     root: PathBuf,
     inner: Arc<Inner>,
 }
@@ -129,21 +132,35 @@ impl Store {
         }
     }
 
-    /// Production instance rooted at the app cache directory.
+    /// Production instance rooted at the app cache directory (native) or the
+    /// browser storage seam (wasm).
     pub fn global() -> &'static Store {
         use once_cell::sync::Lazy;
-        static GLOBAL: Lazy<Store> = Lazy::new(|| Store::new(crate::util::cache_dir()));
-        &GLOBAL
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static GLOBAL: Lazy<Store> = Lazy::new(|| Store::new(crate::util::cache_dir()));
+            &GLOBAL
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            static GLOBAL: Lazy<Store> = Lazy::new(|| Store::new(std::path::PathBuf::new()));
+            &GLOBAL
+        }
     }
 
-    /// SHA-256 URL-safe keyed snapshot path (deterministic — tested).
-    pub fn path_for(&self, key: &str) -> PathBuf {
+    /// SHA-256 URL-safe snapshot key (storage key on wasm, path basename native).
+    fn snap_key(&self, key: &str) -> String {
         use base64::Engine as _;
         use sha2::Digest as _;
         let mut hasher = sha2::Sha256::new();
         hasher.update(key.as_bytes());
-        let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
-        self.root.join("api").join(format!("{hash}.json"))
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize())
+    }
+
+    /// SHA-256 URL-safe keyed snapshot path (deterministic — tested). Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn path_for(&self, key: &str) -> PathBuf {
+        self.root.join("api").join(format!("{}.json", self.snap_key(key)))
     }
 
     fn inflight_has(&self, key: &str) -> bool {
@@ -278,24 +295,56 @@ impl Store {
         }
     }
 
-    /// Disk snapshot younger than `max_age`, judged by file mtime.
+    /// Disk snapshot younger than `max_age`, judged by file mtime (native) or a
+    /// timestamp header in the stored blob (wasm).
     pub fn disk_get_fresh(&self, key: &str, max_age: Duration) -> Option<Vec<u8>> {
-        let path = self.path_for(key);
-        let meta = std::fs::metadata(&path).ok()?;
-        let modified = meta.modified().ok()?;
-        let age = SystemTime::now().duration_since(modified).ok()?;
-        if age >= max_age {
-            return None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = self.path_for(key);
+            let meta = std::fs::metadata(&path).ok()?;
+            let modified = meta.modified().ok()?;
+            let age = SystemTime::now().duration_since(modified).ok()?;
+            if age >= max_age {
+                return None;
+            }
+            std::fs::read(path).ok()
         }
-        std::fs::read(path).ok()
+        #[cfg(target_arch = "wasm32")]
+        {
+            let blob = crate::platform::storage::get_bytes(&format!("api://{}", self.snap_key(key)))?;
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if blob.len() > 8 {
+                let written = u64::from_le_bytes(blob[..8].try_into().unwrap_or([0; 8]));
+                if now.saturating_sub(written) < max_age.as_secs() {
+                    return Some(blob[8..].to_vec());
+                }
+            }
+            None
+        }
     }
 
     pub fn disk_put(&self, key: &str, bytes: &[u8]) {
-        let path = self.path_for(key);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = self.path_for(key);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, bytes);
         }
-        let _ = std::fs::write(path, bytes);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut blob = now.to_le_bytes().to_vec();
+            blob.extend_from_slice(bytes);
+            crate::platform::storage::set_bytes(&format!("api://{}", self.snap_key(key)), &blob);
+        }
     }
 }
 

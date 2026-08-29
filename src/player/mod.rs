@@ -1,11 +1,15 @@
-/// The HTML+JS bootstrap for the Web Playback SDK. Compiled out of headless
-/// (non-desktop) builds, but always available under `cargo test`.
-#[cfg(any(feature = "desktop", test))]
+/// The HTML+JS bootstrap for the Web Playback SDK. Compiled for every native
+/// (non-WASM) renderer — desktop and mobile — since it is a plain string with
+/// no widget/wry coupling. Always available under `cargo test`.
+#[cfg(any(feature = "native", test))]
 pub mod playback_sdk;
 
-/// Desktop builds drive playback through the hidden wry WebView running the
-/// Spotify Web Playback SDK. Every other renderer falls back to the Connect API.
-#[cfg(feature = "desktop")]
+/// Native builds (desktop AND mobile — `mobile` re-exports `dioxus::desktop`,
+/// so both wrap wry) drive playback through the hidden wry WebView running the
+/// Spotify Web Playback SDK, plus its JS↔Rust IPC bridge. The Linux path trees
+/// the WebView into the GTK window; Android/iOS use wry's cross-platform
+/// `build(&window)` API. Headless/wasm fall back to the Connect API.
+#[cfg(feature = "native")]
 pub mod webview_bridge;
 
 /// PlaybackEngine trait: abstraction over SDK vs open engine.
@@ -50,15 +54,16 @@ pub fn enqueue(track: crate::spotify::models::Track) {
 
 /// Create (once) whichever playback backend this build uses.
 pub fn init() -> anyhow::Result<()> {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
-        // A hidden session WebView (open.spotify.com + token-capture) must exist
-        // for token refreshes even when no sign-in ran (keychain-restored
-        // session). The sign-in flow already leaves one behind.
+        // A hidden session WebView (open.spotify.com + token-capture) must
+        // exist for token refreshes even when no sign-in ran (keychain-restored
+        // session). The sign-in flow already leaves one behind. This holds for
+        // every native renderer (desktop + mobile).
         crate::auth::webview_login::ensure_session()?;
         webview_bridge::init()
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         Ok(())
     }
@@ -67,17 +72,17 @@ pub fn init() -> anyhow::Result<()> {
 /// Tear down the playback backend (used by logout so the SDK releases its
 /// cookie jar before the session is cleared).
 pub fn shutdown() {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::shutdown();
     }
 }
 
 /// Tell the playback backend a session is now available (after a fresh login).
-/// Desktop: reconnect the hidden SDK — it fetches its own token from the shared
+/// Native: reconnect the hidden SDK — it fetches its own token from the shared
 /// session cookies.
 pub fn on_authenticated() {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::reconnect();
     }
@@ -274,12 +279,12 @@ pub async fn play() -> Result<(), AppError> {
         PLAYER_STATE.write().is_playing = true;
         return Ok(());
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::play();
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         connect_start(true).await
     }
@@ -292,12 +297,12 @@ pub async fn pause() -> Result<(), AppError> {
         PLAYER_STATE.write().is_playing = false;
         return Ok(());
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::pause();
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         connect_start(false).await
     }
@@ -317,12 +322,12 @@ pub async fn next() -> Result<(), AppError> {
         }
         return Err(AppError::Playback("no current track".into()));
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::next();
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         connect_skip(true).await
     }
@@ -336,12 +341,12 @@ pub async fn prev() -> Result<(), AppError> {
         }
         return Err(AppError::Playback("no current track".into()));
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::prev();
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         connect_skip(false).await
     }
@@ -354,12 +359,12 @@ pub async fn seek(ms: u64) -> Result<(), AppError> {
         PLAYER_STATE.write().position_ms = ms;
         return Ok(());
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::seek(ms);
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         let device_id = current_device()?;
         crate::spotify::player_api::seek(&device_id, ms).await
@@ -373,12 +378,12 @@ pub async fn volume(v: f32) -> Result<(), AppError> {
         PLAYER_STATE.write().volume = v;
         return Ok(());
     }
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native")]
     {
         webview_bridge::volume(v);
         Ok(())
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "native"))]
     {
         let device_id = current_device()?;
         crate::spotify::player_api::set_volume(&device_id, (v.clamp(0.0, 1.0) * 100.0) as u8)
@@ -386,7 +391,7 @@ pub async fn volume(v: f32) -> Result<(), AppError> {
     }
 }
 
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "native"))]
 fn current_device() -> Result<String, AppError> {
     PLAYER_STATE
         .peek()
@@ -395,7 +400,7 @@ fn current_device() -> Result<String, AppError> {
         .ok_or_else(|| AppError::Playback("no playback device available yet".into()))
 }
 
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "native"))]
 async fn connect_start(play: bool) -> Result<(), AppError> {
     let device_id = current_device()?;
     if play {
@@ -405,7 +410,7 @@ async fn connect_start(play: bool) -> Result<(), AppError> {
     }
 }
 
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "native"))]
 async fn connect_skip(next: bool) -> Result<(), AppError> {
     let device_id = current_device()?;
     crate::spotify::player_api::skip(&device_id, next).await
