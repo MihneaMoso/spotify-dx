@@ -46,7 +46,11 @@ complements. Never `cargo run` and never launch the produced binary.
   OAuth app, so `SPOTIFY_CLIENT_ID` is **not** read anywhere (the old PKCE flow
   was deleted).
 - Linux desktop builds need `pkg-config`, `libwebkit2gtk-4.1-dev`
-  (±`libappindicator3-dev`, `librsvg2-dev`).
+  (±`libappindicator3-dev`, `librsvg2-dev`), and **`libxdo-dev`** (provides
+  `libxdo.so`, which `libxdo-sys` links unconditionally via the dioxus X11
+  clipboard/input stack — missing it fails the *link* stage with
+  `unable to find library -lxdo`, as it did in CI; the release workflow's Linux
+  dependency install includes it).
 - **Audio stack (Phase-0 decision):** decoding = `symphonia 0.6` (features:
   flac,aac,mp3,isomp4,ogg,pcm); sound-card sink = `rodio 0.22`.
   **rodio MUST stay `default-features = false, features = ["playback"]`** — its
@@ -86,8 +90,9 @@ lists) drops third-party ad/tracker requests.
    `AUTH_STATE`.
 3. `ui/router.rs::Route`: routes wrapped in `AppLayout` (persistent shell:
    side/bottom nav + player bar + toasts).
-4. Playback: `player::` — desktop uses the hidden WebView running the SDK;
-   web/mobile fall back to the Spotify Connect API.
+4. Playback: `player::` — native renderers (desktop + mobile) use the hidden
+   wry WebView running the SDK via the shared `native` feature; only web (WASM)
+   falls back to the Spotify Connect API (still live-validation-pending).
 5. Every outbound request goes through `spotify::client::filtered_get` /
    `filtered_get_auth`, which consult the ad-block trie before sending.
 
@@ -102,7 +107,7 @@ lists) drops third-party ad/tracker requests.
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
 | `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — thin wrappers delegating to GQL), GraphQL persisted-query client (`gql.rs` — `api-partner.spotify.com/pathfinder`, used for user playlists + liked songs + saved albums + home + search + album/artist detail), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
 | `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
-| `player/` | `mod.rs` dispatch (desktop → webview_bridge, else Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
+| `player/` | `mod.rs` dispatch (native renderers → webview_bridge; wasm → Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
 | `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/avatar menu), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
 | `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
@@ -828,6 +833,51 @@ patterns in mind so new code doesn't reintroduce them):
 - **build wasm via `web-sys` fetch, not reqwest**, for the login capture so the
   `credentials: include` request mode is explicitly controllable (reqwest's wasm
   fetch backend doesn't expose that the same way).
+
+### 6.9d Android APK packaging — NO Android Studio, NO committed `android/` scaffold
+
+- **`dx build --platform android --release` auto-generates the entire Gradle
+  project** from a built-in template in the CLI (`assets/android/gen/` in
+  `dioxus-cli-<v>`: `settings.gradle`, root + app `build.gradle.kts`,
+  `AndroidManifest.xml`, `MainActivity`, mipmap icons). **There is no `android/`
+  directory to commit to this repo, and Android Studio is not required.**
+  Earlier assumption that we must recreate a dioxus-mobile scaffold in-repo was
+  WRONG — the CLI ships it. Verified in `dioxus-cli-0.6.2` source + the 0.7
+  mobile/bundle docs.
+- **`dx` only needs env vars** (no GUI): `ANDROID_NDK_HOME`/`NDK_HOME` + SDK as
+  `ANDROID_SDK_ROOT`/`ANDROID_SDK`/`ANDROID_HOME`, `JAVA_HOME` (a plain JDK 17;
+  Studio's JBR unneeded), and the rustup android target. Resolution order
+  confirmed in `dioxus_crate.rs:android_ndk/android_sdk` and
+  `cli/target.rs:152` (JAVA_HOME wins).
+- **APK output:** `target/android/release/` (build) / Play AAB via `dx bundle
+  --platform android --release` (runs `gradle bundleRelease`). `dx` signs
+  nothing — sign with `apksigner` using a generated keystore for a store-ready
+  APK.
+- **CI arch gotcha:** the default android triple follows the **host** arch
+  (`x86_64-linux-android` on x86_64 CI runners). Pass `--target
+  aarch64-linux-android` explicitly (or probe adb) or you silently get an
+  x86_64 APK. (Dioxus issue #4642 / comment `dx build --android --release
+  --target aarch64-linux-android`.)
+- **min_sdk_version must be ≥ 30** (Android 11): dioxus/tao call
+  `WindowManagerImpl.getCurrentWindowMetrics()` which only exists on API 30+;
+  older devices crash with `NoSuchMethodError`. Set it in `Dioxus.toml`
+  (`[mobile] min_sdk_version`); repo now has 30.
+- **CI (`.github/workflows/release.yml` `android-apk` + `web` jobs, Phase D):**
+  - cargo config files do **NOT** expand env vars, so CI overrides the
+    machine-specific `.cargo/config.toml` NDK paths with the higher-precedence
+    `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR` env vars — no file edit.
+  - CI must re-create the un-versioned `aarch64-linux-android-clang`/`-ar`
+    symlinks in the NDK bin dir (`cc-rs` needs the exact names).
+  - The headless toolchain needs only env vars: `ANDROID_HOME`/`ANDROID_SDK_ROOT`
+    (`$GITHUB_WORKSPACE/android-sdk`), `ANDROID_NDK_HOME` (=SDK/NDK/25.2.9519653),
+    `JAVA_HOME` (JDK 17 via `actions/setup-java`), rustup
+    `aarch64-linux-android`. Install via `sdkmanager`:
+    `platforms;android-33`, `build-tools;33.0.2`, `ndk;25.2.9519653`.
+  - Signing: `keytool -genkeypair` (throwaway keystore) + `apksigner sign` from
+    `build-tools/33.0.2`; upload `*-signed.apk`.
+  - `dx build --platform web --release` writes the site to the default `dist/`
+    dir (dioxus's internal out-dir default — no `out_dir` set in Dioxus.toml);
+    the `web` job tarballs + sha256s it.
 
 ## 7. Testing
 

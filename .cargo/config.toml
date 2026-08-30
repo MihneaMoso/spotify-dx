@@ -3,6 +3,11 @@
 # toolchain's clang so `cc`-based deps (ring, reqwest rustls, etc.) and the
 # final link find the cross compiler. Requires `ANDROID_HOME` set and the NDK
 # path below to exist — see RULES.md §6.9b for the installed NDK version.
+#
+# NOTE: this path is machine-specific. cargo config files do NOT expand
+# environment variables, so CI overrides these with the higher-precedence
+# env vars CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER / _AR (set in the
+# `android-apk` job of .github/workflows/release.yml). See RULES.md §6.9d.
 [target.aarch64-linux-android]
 linker = "/home/moso/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
 ar = "/home/moso/Android/Sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"

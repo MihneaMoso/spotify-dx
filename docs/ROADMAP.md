@@ -74,6 +74,60 @@ previous one is verified. Update `RULES.md` alongside any convention change.
 - [x] Updated README.md (ad-block engine, store, images, settings entries), SPOTIFY_API_AND_PLAYBACK.md (request pipeline now documents `Store` + `pipeline_load` + coalescing/SWR), RULES.md module map (added `store.rs`, `media/images.rs`).
 - [x] Final gates: clippy clean (3 pre-existing warnings only), both test suites green (53/53), cold-boot log review (no repeated fetches, engine deserialized from cache).
 
+## Phase 7 — Platform parity (web wasm / Android / iOS) — in progress
+Tracked in depth in `docs/PLATFORM_PARITY.md`; this is the status cheat-sheet.
+
+### Phase A — native/non-wasm seam ✅
+- [x] `native = ["dep:wry"]` feature shared by `desktop` + `mobile`; moved the
+  platform-agnostic `playback_sdk` bootstrap off `desktop` onto `native`.
+  `desktop`/`mobile` checks + clippy + 79/79 tests green.
+
+### Phase B — Web (WASM) build of the same code ✅ (foundation)
+- [x] Per-target Cargo restructure; `src/platform/` seam (storage fs-vs-localStorage,
+  `spawn_background`, web_login); wasm `sink_wasm.rs`; wasm adblock +
+  HTTP seams; web login = whole-tab redirect + credentialed `get_access_token`.
+- [x] `cargo check`/clippy clean for wasm32-unknown-unknown; desktop/mobile/
+  headless stay clean; 79/79 tests.
+- [ ] **Validation-pending (the one runtime item):** does Spotify permit the
+  credentialed cross-origin `open.spotify.com/get_access_token` fetch from the
+  web app's own origin (CORS + HttpOnly `sp_dc` cookie)? Needs a real logged-in
+  browser — impossible from a headless sandbox. Do not claim web login "works"
+  until live-validated.
+
+### Phase C — Android + iOS builds of the same code ✅ (build parity landed)
+- [x] SDK playback un-gated `desktop` → `native` (mobile plays via the Web
+  Playback SDK, not the Connect-API shell); mobile `main` runs bootstrap + launch.
+- [x] In-app login on mobile (`auth/webview_login.rs` `native`-gated, GTK host on
+  Linux desktop vs wry `build(&window)` on mobile). Same session WebContext,
+  `POLL_JS`, token refresh.
+- [x] Pure-mobile build (`cargo check --no-default-features --features mobile`)
+  and Android cross-build (`--target aarch64-linux-android`) green (0 warnings,
+  RULES §6.9b NDK symlink trick, no cargo-ndk). iOS targets not rustup-installed
+  on Linux host.
+- [ ] Runtime caveat: stacking login WebView over dioxus webview on Android/iOS
+  can't be exercised on this Linux sandbox.
+
+### Phase D — Mobile/web release CI (Android APK, NO Android Studio) ✅
+- [x] Bump `Dioxus.toml [mobile] min_sdk_version` 24 → 30 (tao needs API 30).
+- [x] Add `android-apk` job to `.github/workflows/release.yml`: Linux runner,
+  JDK 17, Android cmdline-tools + SDK/NDK via `sdkmanager`, rustup android
+  target; CI overrides the machine-specific `.cargo/config.toml` paths with the
+  higher-precedence `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR` env vars
+  (cargo config files don't expand env vars); then
+  `dx build --android --release --target aarch64-linux-android`.
+  (Verified: `dx` auto-generates the whole Gradle project — nothing to commit,
+  no Studio. See PLATFORM_PARITY.md Phase D + RULES §6.9d.)
+- [x] Sign APK in CI with a generated keystore (`apksigner`); attach `*.apk` to the
+  GitHub release.
+- [x] Add a wasm/web artifact job (`dx build --platform web --release` → `dist/`
+  tarball).
+- [x] Drop all "Connect API only" language from README/RULES — mobile is no
+  longer Connect-only (Phase C in-app login + SDK playback); web remains
+  Connect-fallback pending live validation, now stated precisely in README.
+- [ ] Remaining runtime caveats (not CI-blocking): web credentialed
+  `get_access_token` login still needs a real-browser validation; APK/Runner YAML
+  itself only runs when a release tag is pushed.
+
 ## Definition of done (whole rework)
 Home/Library/Search paint from cache with zero spinners on warm start; theme switch is
 instant and persists; every outbound request passes the engine; playback controls respond

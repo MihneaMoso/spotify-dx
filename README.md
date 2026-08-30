@@ -18,7 +18,8 @@ in-process AdGuard blocklist drops third-party ad/tracker requests.
 3. Injected JS polls Spotify's internal `get_access_token` endpoint to detect
    the login and capture the short-lived **web-player access token**. It's
    mirrored to the OS keychain so startup can restore a session without a window.
-4. On **desktop**, playback is driven by the [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk)
+4. On **desktop and mobile** (all native wry renderers), playback is driven by
+   the [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk)
    running in a hidden wry WebView that reuses the same session cookies, so no
    token hand-over is needed. **Free accounts** get full-track playback through
    an open multi-source engine (TIDAL/Qobuz/YouTube community backends) instead.
@@ -43,17 +44,17 @@ in-process AdGuard blocklist drops third-party ad/tracker requests.
 
 ## Build
 
-Prerequisites: Rust 1.75+, and on Linux `pkg-config`, `libwebkit2gtk-4.1-dev` (±`libappindicator3-dev`, `librsvg2-dev`).
+Prerequisites: Rust 1.75+, and on Linux `pkg-config`, `libwebkit2gtk-4.1-dev` (±`libappindicator3-dev`, `librsvg2-dev`, `libxdo-dev` — `libxdo-dev` is required for the X11 clipboard/input link, don't omit it on CI).
 
 ```bash
 # Linux/macOS desktop (default) — no credentials needed
 cargo build --release
 cargo run --release
 
-# Web (Connect API only)
+# Web (WASM) — bundles to `dist/`; login/playback still live-validation-pending
 cargo build --no-default-features --features web
 
-# Mobile (Connect API only)
+# Mobile (Android/iOS native — wry webview login + Web Playback SDK playback)
 cargo build --no-default-features --features mobile
 ```
 
@@ -90,13 +91,17 @@ Assets per release target:
 | `spotify-dx-<version>-x86_64-unknown-linux-gnu.tar.gz` (+ alias `spotify-dx-<target>.tar.gz`) | Linux |
 | `spotify-dx-<version>-aarch64-apple-darwin.tar.gz` / `...-x86_64-apple-darwin.tar.gz` (+ aliases) | macOS |
 | `spotify-dx-<version>-x86_64-pc-windows-msvc.zip` (+ alias `spotify-dx-<target>.zip`) | Windows |
+| `spotify-dx-<version>-signed.apk` | Android (aarch64, generated keystore) |
+| `spotify-dx-<version>-web.tar.gz` (+ alias `spotify-dx-web.tar.gz`) | Web (WASM bundle) |
 
 Each asset ships with a `.sha256` checksum, and each target has an unversioned
 alias so `…/releases/latest/download/…` always fetches the newest build.
 
-> **Note on web / Android / iOS:** those renderers currently fall back to the
-> Connect API (no full-track playback engine, different login path). Unifying
-> them on the desktop API is tracked separately — see
+> **Note on web / Android / iOS:** mobile now builds the same native app as
+> desktop (in-app `open.spotify.com` login via the wry webview + Web Playback
+> SDK playback). The **web (WASM)** renderer still bundles, but its
+> credentialed cross-origin `get_access_token` login is live-validation-pending
+> and falls back to the Connect API until confirmed in a real browser — see
 > `docs/PLATFORM_PARITY.md`.
 
 ## Configuration
@@ -122,7 +127,7 @@ src/
   adblock/     Brave ad-block engine (adblock crate) + blocklist fetch + cosmetic CSS scaffold
   auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
   media/       audio.rs (symphonia decode), images.rs (disk-cached artwork), sink.rs (rodio audio output)
-  player/      PlaybackEngine trait, SDK bootstrap (desktop) / Connect API fallback
+  player/      PlaybackEngine trait, SDK bootstrap (native wry renderers) / Connect API fallback
   streaming/   Open engine: provider trait, TIDAL/Qobuz/YouTube, resolver, Odesli ID mapping, URL cache
   spotify/     API client, models, request store (coalescing + SWR), playback API
   ui/          pages, components, router, theme, inline icons

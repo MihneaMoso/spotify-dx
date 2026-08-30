@@ -61,7 +61,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
             libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev
+            libasound2-dev libxdo-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -131,8 +131,164 @@ jobs:
             *.zip
             *.sha256
 
+  # Android APK — headless build, no Android Studio. `dx build --platform android`
+  # auto-generates the entire Gradle project from the CLI's built-in template, so
+  # there is nothing android/ to commit. The APK is signed with a generated
+  # keystore via apksigner so it installs cleanly, then uploaded as a release asset.
+  # See docs/PLATFORM_PARITY.md Phase D + RULES.md §6.9d.
+  android-apk:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_NDK_HOME: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
+      ANDROID_NDK_VERSION: 25.2.9519653
+      # cargo does NOT expand env vars in .cargo/config.toml paths, and the
+      # checked-in config points at a machine-specific NDK. These env overrides
+      # take precedence over that config file for the aarch64-linux-android target.
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-clang
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_AR: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (aarch64-linux-android)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Android SDK/NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}
+          key: android-sdk-${{ env.ANDROID_NDK_VERSION }}
+          restore-keys: android-sdk-
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-aarch64-linux-android-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-aarch64-linux-android-
+
+      - name: Install Android command-line tools + SDK/NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o cmdtools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          mkdir -p "${ANDROID_HOME}/cmdline-tools"
+          unzip -q cmdtools.zip -d "${ANDROID_HOME}/cmdline-tools"
+          mv "${ANDROID_HOME}/cmdline-tools/cmdline-tools" "${ANDROID_HOME}/cmdline-tools/latest"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Create un-versioned NDK tool symlinks (cc-rs requires exact names)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ln -sfn aarch64-linux-android21-clang  "${bin}/aarch64-linux-android-clang"
+          ln -sfn llvm-ar                        "${bin}/aarch64-linux-android-ar"
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install dioxus-cli --version 0.7.10 --locked 2>/dev/null || true
+          # dx is not on PATH from the install; use the cargo bin dir
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          # Explicit `--target` — the default android triple follows the HOST
+          # arch (x86_64 on CI runners), which would silently produce an x86_64 APK.
+          dx build --platform android --release --target aarch64-linux-android
+          shopt -s nullglob
+          apks=( target/android/release/*.apk )
+          [ "${#apks[@]}" -ge 1 ] || { echo "no APK produced by dx build" >&2; exit 1; }
+
+      - name: Sign APK with generated keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$(ls target/android/release/*.apk | head -1)"
+          bt="${ANDROID_HOME}/build-tools/33.0.2"
+          ks="${HOME}/debug.keystore"
+          keytool -genkeypair -v -keystore "$ks" -storepass android -alias androiddebugkey \
+            -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Spotify DX, OU=DX, O=Spotify DX, L=Nowhere, ST=Nowhere, C=US" 2>/dev/null
+          "${bt}/apksigner" sign --ks "$ks" --ks-pass pass:android \
+            --key-pass pass:android --out "${apk%.apk}-signed.apk" "$apk"
+          "${bt}/apksigner" verify --verbose "${apk%.apk}-signed.apk"
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-android
+          if-no-files-found: error
+          path: target/android/release/*-signed.apk
+
+  # Web (WASM) — build the browser bundle with `dx build --platform web` and ship
+  # the generated site as an artifact. Note: web login (credentialed
+  # cross-origin get_access_token) is still live-validation-pending; the bundle
+  # builds regardless — see RULES.md §6.9c.
+  web:
+    runs-on: ubuntu-latest
+    env:
+      PROFILE: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm32-
+
+      - name: Build web (wasm) bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          cargo install dioxus-cli --version 0.7.10 --locked 2>/dev/null || true
+          dx build --platform web --release
+          test -d dist
+          version="${GITHUB_REF_NAME}"
+          tar czf "${BIN}-${version}-web.tar.gz" -C dist .
+          cp "${BIN}-${version}-web.tar.gz" "${BIN}-web.tar.gz"
+          sha256sum "${BIN}-${version}-web.tar.gz" "${BIN}-web.tar.gz" > "${BIN}-web-sha256.txt"
+
+      - name: Upload web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-web
+          if-no-files-found: error
+          path: |
+            spotify-dx-*-web.tar.gz
+            spotify-dx-web-sha256.txt
+
   publish:
-    needs: build
+    needs: [build, android-apk, web]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

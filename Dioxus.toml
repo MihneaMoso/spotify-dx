@@ -42,8 +42,10 @@ filename = "spotify-dx"
 [mobile]
 
 # The minimum SDK version supported by your app.
-# e.g. 16
-min_sdk_version = 24
+# MUST be >= 30 (Android 11): dioxus/tao call
+# WindowManagerImpl.getCurrentWindowMetrics() which only exists on API 30+.
+# Lower versions crash with NoSuchMethodError. See RULES.md §6.9d.
+min_sdk_version = 30
 
 # The bundle identifier for your app
 bundle_id = "com.spotifydx.app"

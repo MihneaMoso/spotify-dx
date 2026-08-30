@@ -1,8 +1,11 @@
 # Platform Parity — web / android / ios on the same API as desktop
 
 Status: **in progress** — web (WASM) parity foundation landed and fully green;
-remaining item is live browser validation of the Spotify session token capture
-(see Phase B). Android/iOS still planned.
+Android + iOS build parity landed (Phase C); release CI for Android APK + web
+wasm artifact landed (Phase D). Remaining: **live browser** validation of the
+Spotify session token capture (Phase B) — the one runtime item that cannot be
+proven from a headless sandbox. Headline: **the Android APK path needs no Android
+Studio** — dioxus auto-generates the whole Gradle project (see Phase D plan below).
 
 ## Goal
 
@@ -148,15 +151,89 @@ Every phase must leave the repo green:
 - Keyring store selection per OS (`android-keyring` initializes ndk-context
   itself; iOS Keychain store).
 
-### Phase D — Mobile/web release CI
-- Extend `.github/workflows/release.yml` with `wasm32` (web) and Android/iOS
-  artifact jobs, reusing the same tag + `./scripts/release.sh` trigger.
-- Update README + RULES.md to drop all "Connect API only" language once parity
-  lands.
+### Phase D — Mobile/web release CI (Android APK, no Android Studio)
+
+**Key verified finding:** `dx build --platform android --release` (dioxus-cli
+0.7.10, current in this repo) **auto-generates the entire Android Gradle project**
+(settings.gradle, root + app `build.gradle.kts`, `AndroidManifest.xml`,
+`MainActivity`, mipmap icons, Kotlin plugin) from a built-in template under
+`assets/android/gen/` in the CLI. So there is **nothing to commit** to this repo
+and **no Android Studio required** — only the headless SDK/NDK toolchain in CI.
+Verified directly from `dioxus-cli-0.6.2` source at
+`~/.cargo/registry/src/.../dioxus-cli-0.6.2/assets/android/gen/` and the `0.7`
+mobile docs (mintlify + dioxuslabs.com/learn/0.7).
+
+- **Toolchain resolution is pure env-var** (no Studio, no GUI):
+  - NDK: `ANDROID_NDK_HOME` or `NDK_HOME` (else auto-detected as the newest
+    dir under `$ANDROID_HOME/ndk/`) — `dioxus_crate.rs:android_ndk`.
+  - SDK: `ANDROID_SDK_ROOT` / `ANDROID_SDK` / `ANDROID_HOME` —
+    `dioxus_crate.rs:android_sdk`.
+  - Java: `JAVA_HOME` is respected above all other options —
+    `cli/target.rs:152-158`. A plain JDK 17 works; Android Studio's JBR is NOT
+    needed.
+  - Rust targets: `rustup target add aarch64-linux-android` (and optionally
+    `armv7-linux-androideabi i686-linux-android x86_64-linux-android`).
+  - NDK build needs the `.cargo/config.toml` linker/ar + un-versioned-symlink
+    trick already recorded in RULES.md §6.9b — `dx` also passes its own linker
+    and `ANDROID_NATIVE_API_LEVEL` (from `min_sdk_version`).
+- **The minimal headless CI job** (Linux runner) is therefore:
+  1. `rustup target add aarch64-linux-android`
+  2. Install JDK 17 (`java-17-openjdk`) into `JAVA_HOME`.
+  3. Install Android **command-line tools** (the `cmdline-tools` zip) + accept
+     licenses + `sdkmanager "platforms;android-33" "ndk;25.2.9519653"
+     "build-tools;33.0.2"`; set `ANDROID_HOME`/`ANDROID_SDK_ROOT` +
+     `ANDROID_NDK_HOME` (the NDK version must match RULES.md §6.9b;
+     `min_sdk_version` in Dioxus.toml must be ≥ 30 for the tao `getCurrentWindowMetrics`
+     API — dioxus/tao require Android 11+, DM for issue #4642).
+  4. `dx build --platform android --release` (or `dx build --android --release
+     --target aarch64-linux-android` — note the default android triple follows the
+     **host** arch, so on x86_64 CI you must pass `--target aarch64-linux-android`
+     explicitly or you get an x86_64 APK).
+  5. **Signing:** `dx` builds an **unsigned** APK (dioxus has no built-in
+     signing). For the store you'd `dx bundle --platform android --release`
+     (runs `gradle bundleRelease` → AAB) and sign with `apksigner`, or sign the
+     APK with `apksigner` + a generated `keystore`. The reference AndroidManifest
+     declares the launcher activity `dev.dioxus.main.MainActivity` + INTERNET
+     permission, so an APK built from the auto-generated template is installable
+     as-is.
+- **Output paths** (from official docs + CLI discussion #3234):
+  - `dx build --platform android --release` → APK under
+    `target/android/release/` (debug: `target/dx/<name>/<profile>/android/...`).
+  - `dx bundle --platform android --release` → signed/unsigned AAB for Play.
+- **CI config-override gotcha:** the checked-in `.cargo/config.toml` NDK
+  `linker`/`ar` paths are machine-specific (`/home/moso/...`). cargo config files
+  do **not** expand env vars, so the `android-apk` job sets the
+  higher-precedence `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR` env vars
+  instead of editing that file. It also creates the un-versioned
+  `aarch64-linux-android-clang`/`-ar` symlinks (`cc-rs` needs the exact names).
+- **CI signing pipeline:** `dx` emits an unsigned APK; the job runs `keytool`
+  (from JDK 17) to generate a throwaway keystore and `apksigner` (from
+  `build-tools;33.0.2`) to produce a signed APK that installs cleanly.
+- **Web artifact:** `dx build --platform web --release` writes the site to the
+  default `dist/` dir (dioxus's internal out-dir default; no `out_dir` set in
+  `Dioxus.toml`), which the `web` job tarballs + sha256s.
+
+### Phase D todos
+- [x] Add an `android-apk` job to `.github/workflows/release.yml`: Linux runner,
+      JDK 17, Android cmdline-tools + SDK/NDK via `sdkmanager`, rustup android
+      target, then `dx build --android --release --target aarch64-linux-android`.
+      The machine-specific `.cargo/config.toml` NDK paths are overridden in CI by
+      the higher-precedence `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR`
+      env vars (cargo config files do NOT expand env vars).
+- [x] Sign the APK in CI with a generated keystore (`apksigner`) so it installs
+      cleanly; upload `*.apk` as a release asset.
+- [x] Add a `web`(wasm) job producing the wasm bundle asset
+      (`dx build --platform web --release` → tarball of the `dist/` output).
+- [x] Update README + RULES.md to drop all "Connect API only" language — mobile
+      is no longer Connect-only (Phase C). Web keeps an explicit "pending live
+      validation / Connect fallback" note instead of an overclaim.
+
 
 ## Acceptance criteria
 - `cargo build --release --features web --target wasm32-unknown-unknown` succeeds.
 - Android APK + iOS archive build in CI.
 - On every platform: real open.spotify.com login, ad-block drop counters,
   persistent session across restart, and full-track playback via the open engine.
-- Zero "Connect API only" mentions remain in docs/README/MASTER_PROMPT.
+- No misleading "Connect API only" claims remain in docs/README/MASTER_PROMPT —
+  the reality (mobile = full native parity, web = Connect fallback pending live
+  token-capture validation) is stated precisely instead.
