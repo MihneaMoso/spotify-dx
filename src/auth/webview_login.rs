@@ -151,7 +151,7 @@ const POLL_JS: &str = r#"
   var TOTP_KEY = '376136387538459893883312310911992847112448894410210511297108';
   function rotl(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
   function sha1(bytes) {
-    var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFC, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+    var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
     var len = bytes.length, ml = len * 8;
     var paddedLen = (((len + 8) >> 6) + 1) << 6;
     var p = new Array(paddedLen);

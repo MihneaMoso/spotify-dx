@@ -371,6 +371,22 @@ sheet — a later same-specificity rule overrides an earlier `display: none`.
   extra header (a `client-token` from `clienttoken.spotify.com/v1/clienttoken`,
   client id `d8a5ed958d274c2e8ee717e6a4b0971d`, is optional). `isAnonymous` is
   true for guest sessions and false once the cookies identify a logged-in user.
+- **The embedded SHA-1 constants in `POLL_JS` are correctness-critical.** The
+  second constant MUST be `0x98BADCFE`; a stray `0x98BADCFC` (typo'd in commit
+  `70a4ed3`) silently produces wrong SHA-1/HMAC → wrong TOTPs → the endpoint
+  returns the same `400 "Unauthorized request" / Developer Terms` error. It is
+  NOT exposed by the anonymous tests: the endpoint is lenient about the TOTP for
+  guest (no-cookie) requests and only enforces it once session cookies are
+  attached, so a curl smoke test without cookies passes while a logged-in app
+  fails on every capture. Verify a change with the golden test: run
+  `POLL_JS`'s `totpFor()` in Node/src + Python (RFC 6238, key =
+  ASCII bytes of the decimal string) and diff the output.
+- **`/api/token` debug error mapping.** `400 Unauthorized request` with the
+  Developer-Terms note = the server rejected the authenticated TOTP (wrong key
+  digest OR wrong SHA-1). `401 Unauthorized` (plain, no note) = invalid/stale
+  session cookies on `/api/token`. A `TypeError: Load failed` on the token fetch
+  after a nav = the fetch raced a `PageLoadEvent::Started` (page gone to
+  about:blank by the idle `park`); on-demand refresh revives the page first.
 - **The keychain token is a hint, not the session.** Since the app now always
   shows the `open.spotify.com` WebView at startup (that page is the source of
   truth, and it needs the webview to keep refreshing tokens), `auth::init()` no

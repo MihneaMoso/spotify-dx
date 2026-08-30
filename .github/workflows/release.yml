@@ -189,7 +189,17 @@ jobs:
           mkdir -p "${ANDROID_HOME}/cmdline-tools"
           unzip -q cmdtools.zip -d "${ANDROID_HOME}/cmdline-tools"
           mv "${ANDROID_HOME}/cmdline-tools/cmdline-tools" "${ANDROID_HOME}/cmdline-tools/latest"
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          # `yes |` auto-accepts the SDK licenses. Under `set -o pipefail`, `yes`
+          # dies with a benign SIGPIPE (141) once sdkmanager stops reading, which
+          # would abort the step — so allow 141 while still failing on a real
+          # sdkmanager error (any other nonzero exit).
+          set +e
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 141 ]; then
+            exit "$rc"
+          fi
           "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-33" \
             "build-tools;33.0.2" \
