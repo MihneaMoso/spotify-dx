@@ -889,6 +889,20 @@ patterns in mind so new code doesn't reintroduce them):
     `JAVA_HOME` (JDK 17 via `actions/setup-java`), rustup
     `aarch64-linux-android`. Install via `sdkmanager`:
     `platforms;android-33`, `build-tools;33.0.2`, `ndk;25.2.9519653`.
+  - **License acceptance on the runner:** `yes | sdkmanager --licenses` reads
+    'y' forever; once sdkmanager stops reading, `yes` dies with a benign
+    SIGPIPE (141), and under `set -o pipefail` that alone would abort the step
+    — but `sdkmanager --licenses` can ALSO genuinely exit 1 on a headless
+    runner (its interactive prompt needs a tty). The step therefore never lets
+    that line abort: it surfaces sdkmanager's own tail on a real error and, if
+    no `${ANDROID_HOME}/licenses/android-sdk-license` was produced, writes the
+    well-known accepted hashes directly:
+    `android-sdk-license` =
+    `8933bad161af4178b1185d1a37fbf41ea5269c55` + `d56f5187479451eabf01fb78af6dfcb131a6481e`
+    (SDK) + `24333f8a63b6825ea9c5514f83c2829b004d1fee` (NDK);
+    `android-sdk-preview-license` = `84831b9409646a918e30573bab4c9c91346d8abd`.
+    The subsequent `sdkmanager "ndk;…"` install still enforces acceptance, so a
+    broken fallback fails there loudly instead of silently.
   - Signing: `keytool -genkeypair` (throwaway keystore) + `apksigner sign` from
     `build-tools/33.0.2`; upload `*-signed.apk`.
   - `dx build --platform web --release` writes the site to the default `dist/`
