@@ -229,8 +229,20 @@ jobs:
         run: |
           set -euo pipefail
           bin="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          ln -sfn aarch64-linux-android21-clang  "${bin}/aarch64-linux-android-clang"
-          ln -sfn llvm-ar                        "${bin}/aarch64-linux-android-ar"
+          # The un-versioned `aarch64-linux-android-clang` wrapper defaults the
+          # API level to 21, whose sysroot lib dir has no libaaudio.so — `cpal`
+          # links `-laaudio` → `Unable to find library -laaudio`. Point it at a
+          # versioned wrapper >= 26 (where libaaudio lives), preferring the
+          # app's min_sdk (30) so the selected sysroot matches the manifest.
+          for api in 30 33 31 29 28 26 24 21; do
+            if [ -x "${bin}/aarch64-linux-android${api}-clang" ]; then
+              ln -sfn "aarch64-linux-android${api}-clang" "${bin}/aarch64-linux-android-clang"
+              break
+            fi
+          done
+          [ -e "${bin}/aarch64-linux-android-clang" ] \
+            || { echo "no versioned aarch64 clang wrapper in NDK" >&2; exit 1; }
+          ln -sfn llvm-ar "${bin}/aarch64-linux-android-ar"
 
       - name: Build release APK
         shell: bash
