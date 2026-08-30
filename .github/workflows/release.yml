@@ -301,9 +301,13 @@ jobs:
           export PATH="${HOME}/.cargo/bin:${PATH}"
           cargo install dioxus-cli --version 0.7.10 --locked 2>/dev/null || true
           dx build --platform web --release
-          test -d dist
+          # `dx build` does NOT honor `out_dir`: web output always goes to
+          # target/dx/<crate>/<profile>/web/public (DioxusLabs/dioxus#3328), so
+          # package from there rather than a repo-root `dist/`.
+          web_out="target/dx/spotify-dx/release/web/public"
+          test -d "$web_out"
           version="${GITHUB_REF_NAME}"
-          tar czf "${BIN}-${version}-web.tar.gz" -C dist .
+          tar czf "${BIN}-${version}-web.tar.gz" -C "$web_out" .
           cp "${BIN}-${version}-web.tar.gz" "${BIN}-web.tar.gz"
           sha256sum "${BIN}-${version}-web.tar.gz" "${BIN}-web.tar.gz" > "${BIN}-web-sha256.txt"
 

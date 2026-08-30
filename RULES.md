@@ -905,9 +905,10 @@ patterns in mind so new code doesn't reintroduce them):
     broken fallback fails there loudly instead of silently.
   - Signing: `keytool -genkeypair` (throwaway keystore) + `apksigner sign` from
     `build-tools/33.0.2`; upload `*-signed.apk`.
-  - `dx build --platform web --release` writes the site to the default `dist/`
-    dir (dioxus's internal out-dir default — no `out_dir` set in Dioxus.toml);
-    the `web` job tarballs + sha256s it.
+  - `dx build --platform web --release` writes the site to
+    `target/dx/<crate>/release/web/public` — **`out_dir` is NOT honored for `dx
+    build`** (DioxusLabs/dioxus#3328), so the `web` job packages from that path,
+    not a repo-root `dist/`.
 
 ## 7. Testing
 
