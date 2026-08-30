@@ -865,10 +865,21 @@ patterns in mind so new code doesn't reintroduce them):
   Studio's JBR unneeded), and the rustup android target. Resolution order
   confirmed in `dioxus_crate.rs:android_ndk/android_sdk` and
   `cli/target.rs:152` (JAVA_HOME wins).
-- **APK output:** `target/android/release/` (build) / Play AAB via `dx bundle
-  --platform android --release` (runs `gradle bundleRelease`). `dx` signs
-  nothing — sign with `apksigner` using a generated keystore for a store-ready
-  APK.
+- **APK output:** `dx build --platform android --release` writes the Gradle
+  project to `target/dx/<crate>/release/android/app/`, and the APK (a debug
+  build by default) to
+  `…/app/app/build/outputs/apk/{debug,release}/`. **The old `target/android/release/`
+  path the docs claim is wrong** for the 0.7.10 CLI — verified in
+  `packages/cli/src/build/android.rs` (`debug_apk_path`/`release_apk_path`).
+- **`dx build` runs `assembleDebug` unless `[bundle.android]` (jks) is set:**
+  in `assemble_android()`, the Gradle task is `assembleRelease` ONLY when
+  `release && config.bundle.android.is_some()`, else `assembleDebug`. With no
+  jks config, `dx build --platform android --release` still emits a *debug*
+  APK; producing a release APK requires running `./gradlew assembleRelease`
+  yourself (`-x lintVitalAnalyzeRelease -x lintVitalRelease
+  -x lintVitalReportRelease` to dodge the AGP 8.7 lint crash, Dioxus#5251),
+  which yields an *unsigned* `app-release-unsigned.apk` (no signingConfig) —
+  sign it with `apksigner` + a generated keystore.
 - **CI arch gotcha:** the default android triple follows the **host** arch
   (`x86_64-linux-android` on x86_64 CI runners). Pass `--target
   aarch64-linux-android` explicitly (or probe adb) or you silently get an
@@ -883,12 +894,18 @@ patterns in mind so new code doesn't reintroduce them):
     machine-specific `.cargo/config.toml` NDK paths with the higher-precedence
     `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR` env vars — no file edit.
   - CI must re-create the un-versioned `aarch64-linux-android-clang`/`-ar`
-    symlinks in the NDK bin dir (`cc-rs` needs the exact names).
+    symlinks in the NDK bin dir (`cc-rs` needs the exact names). Point the
+    `-clang` one at a **versioned** wrapper ≥ 26 — the un-versioned wrapper
+    defaults the API level to 21, whose sysroot has no `libaaudio.so`, and
+    `cpal` links `-laaudio` → `ld: unable to find library -laudio`. Prefer
+    `aarch64-linux-android30-clang` to match `min_sdk_version = 30`.
   - The headless toolchain needs only env vars: `ANDROID_HOME`/`ANDROID_SDK_ROOT`
     (`$GITHUB_WORKSPACE/android-sdk`), `ANDROID_NDK_HOME` (=SDK/NDK/25.2.9519653),
     `JAVA_HOME` (JDK 17 via `actions/setup-java`), rustup
     `aarch64-linux-android`. Install via `sdkmanager`:
-    `platforms;android-33`, `build-tools;33.0.2`, `ndk;25.2.9519653`.
+    `platforms;android-34`, `build-tools;34.0.0`, `platform-tools`,
+    `ndk;25.2.9519653`. (The 0.7.10 android template defaults compileSdk/targetSdk
+    to 34 with no `[android]` override, hence android-34 not android-33.)
   - **License acceptance on the runner:** `yes | sdkmanager --licenses` reads
     'y' forever; once sdkmanager stops reading, `yes` dies with a benign
     SIGPIPE (141), and under `set -o pipefail` that alone would abort the step
@@ -904,7 +921,10 @@ patterns in mind so new code doesn't reintroduce them):
     The subsequent `sdkmanager "ndk;…"` install still enforces acceptance, so a
     broken fallback fails there loudly instead of silently.
   - Signing: `keytool -genkeypair` (throwaway keystore) + `apksigner sign` from
-    `build-tools/33.0.2`; upload `*-signed.apk`.
+    `build-tools/34.0.0` on the unsigned release APK
+    (`…/app/build/outputs/apk/release/app-release-unsigned.apk`); verify with
+    `apksigner verify`; upload `*-signed.apk` from
+    `target/dx/spotify-dx/release/android/app/app/build/outputs/apk/release/`.
   - `dx build --platform web --release` writes the site to
     `target/dx/<crate>/release/web/public` — **`out_dir` is NOT honored for `dx
     build`** (DioxusLabs/dioxus#3328), so the `web` job packages from that path,
