@@ -1021,6 +1021,35 @@ patterns in mind so new code doesn't reintroduce them):
   (pure file IO, no signals); `profile::init()` runs behind a one-shot gate in
   the `App` component's effects, next to the player/theme/update one-time boots.
   Keep any future pre-runtime init signal-free.
+=== 6.9f wasm: tracing's default timer panics (white screen) ===
+
+- **`wasm32-unknown-unknown` has NO `std::time::SystemTime`.** Any call to it
+  panics with `time not implemented on this platform` and, because wasm builds
+  use `panic = "abort"`, the panic becomes a bare `RuntimeError: unreachable` /
+  `wasm-bindgen: imported JS function that was not marked as catch threw an
+  error` — a completely blank `#main` with no Rust message in the console. The
+  whole app aborts before first render.
+- **Root cause here: `tracing_subscriber::fmt()`'s default timer uses
+  `SystemTime::now()`**, so the very FIRST `tracing::info!`/`warn!` after `.init()`
+  (e.g. `adblock: engine thread spawned` in bootstrap) panics and aborts the app.
+  Fix: on wasm build the logger with `.without_time()` (see `main.rs::init_logging`).
+  Do NOT re-add a timestamp to wasm tracing.
+- This also breaks `chrono::Utc::now()`/`Local::now()`, `std::time::Instant`
+  (in `std::time` on wasm-none these are similarly unavailable/abort) and every
+  `SystemTime::now()` call site (`spotify/store.rs`, `media/images.rs`,
+  `streaming/cache.rs`, the page-art `SystemTime` seeds). Audit wasm-reachable
+  paths before adding time APIs; use `js_sys::Date::now()` (`Date.now()`) for
+  monotonic/epoch time on web.
+- **Reproducing/scoping a wasm panic locally:** serve the bundled `public/`
+  tree so the baked `base_path` resolves (e.g. `_deploy` under a
+  `spotify-dx/app/` dir via `python3 -m http.server`), drive it with
+  headless Chromium (`--remote-debugging-port`) + a CDP websocket
+  (`Runtime.enable`, watch `Runtime.exceptionThrown` +
+  `Runtime.consoleAPICalled`). `panic=abort` strips the message; temporarily
+  `std::panic::set_hook` (web-sys `console::error_1` + inject a `<pre>` into
+  `document.body`) to surface the message, then remove it. The
+  `RuntimeError` stack's wasm-function indices are per-build and useless for
+  cross-referencing, so prefer the panic message over the stack.
 - Verify the whole matrix after touching updater/profile: `cargo check
   --features desktop` + clippy, the Android `cargo clippy --no-default-features
   --features mobile --target aarch64-linux-android` (NDK bin on PATH), the host

@@ -35,16 +35,26 @@ async fn bootstrap() -> bool {
     crate::auth::init().await
 }
 
+#[cfg(target_arch = "wasm32")]
 fn init_logging() {
     // `std::env::var` does not exist on wasm (no process environment), so the
-    // log filter is fixed there.
-    #[cfg(not(target_arch = "wasm32"))]
+    // log filter is fixed there. IMPORTANT: wasm32-unknown-unknown has no
+    // `std::time::SystemTime`, so tracing's default fmt timer would panic on
+    // the first event ("time not implemented on this platform") and abort the
+    // whole app. We must drop the timestamp on wasm.
+    let filter = tracing_subscriber::EnvFilter::new("tokio=info,spotify_dx=info");
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .without_time()
+        .init();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::new(
         std::env::var("SPOTIFY_DX_LOG")
             .unwrap_or_else(|_| "wry=warn,tao=warn,tokio=info,spotify_dx=info".into()),
     );
-    #[cfg(target_arch = "wasm32")]
-    let filter = tracing_subscriber::EnvFilter::new("tokio=info,spotify_dx=info");
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
