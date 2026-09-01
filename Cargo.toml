@@ -70,6 +70,12 @@ dirs          = "5"
 symphonia     = { version = "0.6.1", features = ["flac", "aac", "mp3", "isomp4", "ogg", "pcm"] }
 rodio         = { version = "0.22.2", default-features = false, features = ["playback", "mp4"] }
 
+# Desktop-only deps for the in-app updater's staged-swap path: the release
+# tarball is unpacked and the single binary extracted (see src/updater.rs).
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+tar = "0.4"
+flate2 = "1"
+
 # wasm: single-threaded current-thread tokio (no net/process/signal/mio), reqwest
 # with just `json` (its wasm/fetch backend is selected automatically), plus the
 # JS glue and web APIs for the storage/audio seams.

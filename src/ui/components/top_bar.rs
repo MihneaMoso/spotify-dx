@@ -5,6 +5,7 @@
 
 use dioxus::prelude::*;
 
+use crate::profile::PROFILE;
 use crate::state::{AUTH_STATE, SEARCH_SEED};
 use crate::ui::icons::{back_arrow, forward_arrow, search as search_icon, settings_gear};
 use crate::ui::router::Route;
@@ -18,13 +19,14 @@ pub fn TopBar() -> Element {
         .read()
         .user_display_name
         .clone()
-        .unwrap_or_else(|| "You".to_string());
-    // First letter of the display name for the avatar dot.
+        .unwrap_or_else(|| PROFILE.read().display_name());
+    // First letter of the display name for the avatar-dot fallback.
     let initial = display_name
         .chars()
         .next()
         .map(|c| c.to_ascii_uppercase())
         .unwrap_or('·');
+    let avatar_uri = PROFILE.read().avatar_data_uri();
 
     rsx! {
         header { class: "top-bar",
@@ -62,11 +64,17 @@ pub fn TopBar() -> Element {
 
             details { class: "avatar-chip",
                 summary {
-                    span { class: "avatar-dot", "{initial}" }
+                    if let Some(uri) = avatar_uri {
+                        img { class: "avatar-img", src: uri, alt: "" }
+                    } else {
+                        span { class: "avatar-dot", "{initial}" }
+                    }
                     span { title: "{display_name}", "{display_name}" }
                 }
                 div { class: "avatar-menu",
-                    button { class: "menu-item", disabled: true, title: "Settings arrive with the Phase-3 settings page",
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| { nav.push(Route::Settings); },
                         {settings_gear(16)}
                         "Settings"
                     }

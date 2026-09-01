@@ -100,8 +100,11 @@ lists) drops third-party ad/tracker requests.
 
 | Path | Responsibility |
 | --- | --- |
-| `main.rs` | Per-renderer entry points (`desktop`/`web`/`mobile`/headless) + shared `bootstrap()`, logging init. Desktop sets up the window via `dioxus::desktop::Config` + `WindowBuilder` and launches with `LaunchBuilder::desktop()`. |
-| `app.rs` | Root `App` component: injects the stylesheet, login gate vs. routed shell, seeds auth from boot snapshot, calls `player::init()` + `player::on_authenticated()` once. |
+| `main.rs` | Per-renderer entry points (`desktop`/`web`/`mobile`/headless) + shared `bootstrap()`, logging init. Desktop sets up the window via `dioxus::desktop::Config` + `WindowBuilder` and launches with `LaunchBuilder::desktop()`. Applies a staged update before the runtime starts (no signal writes pre-runtime). |
+| `app.rs` | Root `App` component: injects the stylesheet, login gate vs. routed shell, seeds auth from boot snapshot, calls `player::init()` + `player::on_authenticated()` once. One-time startup auto-update check when `SETTINGS.auto_check_updates` is on. |
+| `updater.rs` | Self-update (kal-style): polls the latest `MihneaMoso/spotify-dx` GitHub release, matches a platform asset by substring token, downloads it streaming with SHA-256 verification, stages a tar.gz on desktop (flate2+tar) or the APK on Android (filesDir via safe JNI `dispatch`), then swaps the binary on next launch or fires the Android package installer. `GlobalSignal`s: `UPDATE_STATUS` (diagnostic text) + `UPDATE_READY`. Pure helpers `parse_version`/`is_newer`/`pick_asset` are unit-tested. Wasm builds out. |
+| `profile.rs` | Local user profile: `UserProfile { username, avatar_mime, avatar_b64 }` persisted to `{data_dir}/profile.json`. `PROFILE`/`PROFILE_ERROR` globals; avatar accepts common image magic bytes, capped at 4 MiB, base64 data-URI. |
+| `build.rs` | Injects `SPOTIFY_DX_VERSION` (`SPOTIFY_DX_RELEASE_VERSION` env → `git describe --tags` → Cargo version). `updater::CURRENT_VERSION` reads it; leading `v` stripped. |
 | `state.rs` | Global signals (single source of truth): `APP_STATE`, `PLAYER_STATE`, `AUTH_STATE`, `ADBLOCK_STATS`, `APP_ERROR`. Plus `Page`, `RepeatMode`, and the state structs. |
 | `app_error.rs` | `AppError` enum (thiserror). |
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
@@ -109,11 +112,11 @@ lists) drops third-party ad/tracker requests.
 | `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
 | `player/` | `mod.rs` dispatch (native renderers → webview_bridge; wasm → Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
-| `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/avatar menu), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
-| `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs`, `playlist.rs`, `album.rs`, `artist.rs`. |
+| `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/user menu — avatar image or initial + name from `PROFILE`), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
+| `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs` (incl. Profile section — name + avatar upload — and Software & updates section), `playlist.rs`, `album.rs`, `artist.rs`. |
 | `media/` | `audio.rs`: symphonia decode (FLAC/M4A/MP3/OGG, seek, gapless planner) with tests. `images.rs`: disk-cached artwork loader (SHA-256 keyed, 128-file LRU, 30-day TTL). `sink.rs`: rodio audio sink thread (`MixerDeviceSink` + `Player` via `rodio::play()`), `SinkCommand` channel, `SinkState` atomics. |
 | `streaming/` | Open streaming engine (Phase 4b). `provider.rs`: `Provider` trait, `Resolution` enum, `TrackQuery`. `odesli.rs`: song.link ID mapping (DEAD — public API sunset/401). `cache.rs`: stream-URL cache (memory + disk, 50-min TTL, FIFO 256). `resolver.rs`: cache → provider failover. `providers/{tidal,qobuz,youtube}.rs`: TIDAL & Qobuz DISABLED (`is_available()==false`, Odesli sunset); YouTube (InnerTube ANDROID API) is the sole active, self-contained provider. |
-| `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference (`EnginePreference` enum: Auto/SpotifySdk/Open), `hide_upsell` toggle. Load failures always fall back to defaults. Exposed app-wide as `state::SETTINGS`. |
+| `settings.rs` | Persistent user settings (`{data_dir}/settings.json`): theme, volume, engine preference (`EnginePreference` enum: Auto/SpotifySdk/Open), `hide_upsell` toggle, `auto_check_updates` (default `true`). Load failures always fall back to defaults. Exposed app-wide as `state::SETTINGS`. |
 | `util.rs` | Shared helpers. |
 
 ### 4.4 Key files & ideas to know
@@ -954,6 +957,74 @@ patterns in mind so new code doesn't reintroduce them):
     `target/dx/<crate>/release/web/public` — **`out_dir` is NOT honored for `dx
     build`** (DioxusLabs/dioxus#3328), so the `web` job packages from that path,
     not a repo-root `dist/`.
+
+### 6.9e In-app updater + user profile (kal port, Phase C/D)
+
+- **GlobalSignal statics have NO `&mut self` `set()` in dioxus 0.7** — calling
+  `STATIC.set(x)` fails E0596 with "cannot borrow immutable static item as
+  mutable". Assign through the write guard instead:
+  `*UPDATE_STATUS.write() = Some(msg);`, `*PROFILE_ERROR.write() = msg;`,
+  `*UPDATE_READY.write() = true;`. (`Signal::set` exists only on a `&mut`
+  binding, which a `static` never gives you.)
+- **Platform asset matching is substring-based, token = platform-tail only.**
+  Published assets are version-embedded (`spotify-dx-v0.1.8-x86_64-unknown-linux-gnu.tar.gz`)
+  AND have an unversioned alias (`spotify-dx-x86_64-unknown-linux-gnu.tar.gz`),
+  so the token must match both — e.g. `LINUX_TOKEN = "x86_64-unknown-linux-gnu.tar.gz"`
+  (no `spotify-dx-` prefix). Android's asset is not version-prefixed:
+  `app-release-unsigned-signed.apk`. Verified against the live release via the
+  GitHub API before locking these in.
+- **`assert!(name.contains(LINUX_TOKEN))` needs the versioned form** in tests;
+  the naive `spotify-dx-x86_64-…` name never occurs as the full asset name in
+  the wild.
+- **Safe JNI without `unsafe` (`#![forbid(unsafe_code)]`):** kal uses
+  `ndk_context` + `JavaVM::from_raw` (unsafe) — NOT usable here. On Android we
+  get `getFilesDir()`/file paths and fire the install intent through
+  `wry::prelude::dispatch`. Verified signature in wry 0.53.5
+  (`src/android/mod.rs`): `dispatch<F: FnOnce(&mut JNIEnv, &JObject, &JObject) +
+  Send + 'static>`. The JNI strict-grace bit: wrap a `JString` in a `let` before
+  `env.get_string(&jstring)` or you hit E0716 (temporary `JString` dropped while
+  borrowed).
+- **`build.rs` version injection:** Cargo.toml stays at `0.1.0` while releases
+  are tagged `v0.1.x`; `SPOTIFY_DX_VERSION` is wired
+  `SPOTIFY_DX_RELEASE_VERSION` env (set in CI from `github.ref_name`) →
+  `git describe --tags --abbrev=0` → Cargo version, leading `v` stripped.
+  `updater::CURRENT_VERSION` is `env!("SPOTIFY_DX_VERSION")`; CI adds a build
+  step. Never bump Cargo.toml's version to match a tag.
+- **Android self-update plumbing** (the `android-apk` CI job): after
+  `dx build --platform android`, run `scripts/stage-updater.sh`, which copies
+  `android/updater/src/main/kotlin/…/SpotifyDxUpdater.kt` +
+  `SpotifyDxFileProvider.kt` into the `app/src/main/kotlin` tree (idempotent
+  `cp -n`) and patches the debug AGP manifest (python3, marker
+  `<!-- spotify-dx-updater:provider -->`) with the FileProvider
+  (`authorities="com.spotifydx.app.updates"`, `file_paths`=filesDir/updates).
+  The Rust side calls `com/spotifydx/app/SpotifyDxUpdater.installApk` via JNI →
+  `Intent.setDataAndType(FileProvider.getUriForFile(…, "updates/spotify-dx-update.apk"), "application/vnd.android.package-archive")`.
+  Keep the Kotlin class name + method name in sync with `fire_install_intent`.
+- **The updater is desktop + Android only — wasm stubs it out.** Desktop deps
+  `tar` + `flate2` live under
+  `[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]`
+  and the binary staging path is cfg'd the same way (Android downloads the APK
+  instead of a tarball). Windows' asset is a zip the tar-based stager can't
+  open — `stage_desktop_binary` returns an error message rather than panicking.
+- **Profile is pure-local client state** (no server): JSON in
+  `{data_dir}/profile.json` next to `settings.json`. Avatar is base64 in JSON;
+  validated by PNG/JPEG/GIF/WebP magic bytes, 4 MiB cap. Web keeps parity via
+  `platform::storage` (localStorage). It's also shown in the top bar (avatar or
+  first-initial dot + display name).
+- **Settings now persists `auto_check_updates` (default on).** The App does a
+  one-time startup check gated on a `update_checked` signal so a rerender
+  doesn't re-fire; "Apply update now" is rendered only when `UPDATE_READY`.
+- **`profile::init()` must run INSIDE the dioxus runtime.** `bootstrap()` in
+  `main.rs` executes before the runtime exists — writing any `GlobalSignal`
+  there panics: "Must be called from inside a Dioxus runtime"
+  (dioxus-core `runtime.rs:100`). `apply_staged_update()` stays in `main()`
+  (pure file IO, no signals); `profile::init()` runs behind a one-shot gate in
+  the `App` component's effects, next to the player/theme/update one-time boots.
+  Keep any future pre-runtime init signal-free.
+- Verify the whole matrix after touching updater/profile: `cargo check
+  --features desktop` + clippy, the Android `cargo clippy --no-default-features
+  --features mobile --target aarch64-linux-android` (NDK bin on PATH), the host
+  `mobile` host build, the wasm web build, and `cargo test`.
 
 ## 7. Testing
 

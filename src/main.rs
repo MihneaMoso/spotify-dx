@@ -13,15 +13,21 @@ pub mod auth;
 pub mod media;
 pub mod player;
 pub mod platform;
+pub mod profile;
 pub mod settings;
 pub mod spotify;
 pub mod state;
 pub mod streaming;
 pub mod ui;
+pub mod updater;
 pub mod util;
 
 /// Shared startup: tracing, ad-blocker, auth boot. Returns `true` when a valid
 /// session was restored from the keychain (main UI launches straight away).
+///
+/// NOTE: this runs BEFORE the dioxus runtime exists, so it must not touch any
+/// `GlobalSignal` — the profile load (`profile::init`) therefore happens in the
+/// `App` component, which runs inside the runtime.
 async fn bootstrap() -> bool {
     if let Err(err) = adblock::init().await {
         tracing::warn!("adblock: bootstrap failed ({err:#}); continuing without a blocker");
@@ -48,6 +54,16 @@ fn main() {
     use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 
     init_logging();
+
+    // Swap in a staged update (downloaded in a previous session) before the
+    // window boots, so the new binary is what ends up running. On success the
+    // relaunched process re-runs this code as the new version; on failure we
+    // simply continue. No signals are touched here — the dioxus runtime does
+    // not exist yet.
+    #[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+    {
+        let _ = updater::apply_staged_update();
+    }
 
     // Everything that reads network/token/blocklist data happens before the
     // window is mounted so the first frame is instant. Global signals cannot be

@@ -1,5 +1,46 @@
+//! Embeds the release version into the binary at compile time so the in-app
+//! updater (`env!("SPOTIFY_DX_VERSION")`) always matches the release it was
+//! built from — no hand-maintained constant to drift.
+//!
+//! Resolution order:
+//!   1. `SPOTIFY_DX_RELEASE_VERSION` env override (set in the release CI from
+//!      the git tag, e.g. `v0.1.8`).
+//!   2. The nearest git tag (`git describe --tags --abbrev=0`) — the release
+//!      commits *are* tags, and dev builds compare against the last tag.
+//!   3. `CARGO_PKG_VERSION` (the manifest) as a last resort when neither a tag
+//!      nor the override is available.
+//!
+//! The leading `v` is stripped so the value is plain "0.1.8".
+
 fn main() {
-    // No client_id needed. The app authenticates via the Spotify web session
-    // (open.spotify.com login in a WebView + the web-player token endpoint).
-    // This file is kept for future platform-specific build steps.
+    if let Ok(v) = std::env::var("SPOTIFY_DX_RELEASE_VERSION") {
+        if !v.trim().is_empty() {
+            println!(
+                "cargo:rustc-env=SPOTIFY_DX_VERSION={}",
+                v.trim().trim_start_matches('v')
+            );
+            return;
+        }
+    }
+
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+    {
+        if out.status.success() {
+            let tag = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !tag.is_empty() {
+                println!(
+                    "cargo:rustc-env=SPOTIFY_DX_VERSION={}",
+                    tag.trim_start_matches('v')
+                );
+                return;
+            }
+        }
+    }
+
+    println!(
+        "cargo:rustc-env=SPOTIFY_DX_VERSION={}",
+        env!("CARGO_PKG_VERSION")
+    );
 }

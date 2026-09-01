@@ -1,7 +1,7 @@
 use dioxus::document::Link;
 use dioxus::prelude::*;
 
-use crate::state::AUTH_STATE;
+use crate::state::{AUTH_STATE, SETTINGS};
 use crate::ui::pages::Login;
 use crate::ui::router::Route;
 
@@ -35,6 +35,30 @@ pub fn App() -> Element {
             // this, PLAYER_STATE.volume stays at its derive-default 0.0 and the
             // open engine would set the audio sink to volume 0 → silence.
             crate::player::seed_volume_from_settings();
+        }
+    });
+
+    // Load the persisted user profile (name/avatar) once, inside the runtime —
+    // `bootstrap()` runs before dioxus exists and can't touch global signals.
+    let mut profile_loaded = use_signal(|| false);
+    use_effect(move || {
+        if !*profile_loaded.peek() {
+            profile_loaded.set(true);
+            crate::profile::init();
+        }
+    });
+
+    // Check for updates once per process when the user has the startup check
+    // enabled. Runs after mount so the dioxus runtime (and its spawn) exist.
+    // The settings page offers a manual check + an apply button for whatever
+    // this finds.
+    let mut update_checked = use_signal(|| false);
+    use_effect(move || {
+        if !*update_checked.peek() {
+            update_checked.set(true);
+            if SETTINGS.read().auto_check_updates {
+                crate::updater::run_check();
+            }
         }
     });
 

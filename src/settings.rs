@@ -58,6 +58,9 @@ pub struct Settings {
     /// premium upgrade buttons, HPTO banners, and sponsored items.
     /// Disabled by default (ToS-sensitive; see RESEARCH §3.3).
     pub hide_upsell: bool,
+    /// Check for app updates at startup (native builds only). Consumed by the
+    /// updater's startup hook in `app.rs`.
+    pub auto_check_updates: bool,
 }
 
 impl Default for Settings {
@@ -67,6 +70,7 @@ impl Default for Settings {
             volume: 0.8,
             engine: EnginePreference::Auto,
             hide_upsell: false,
+            auto_check_updates: true,
         }
     }
 }
