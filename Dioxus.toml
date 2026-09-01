@@ -20,7 +20,9 @@ out_dir = "web/app"
 [web.app]
 
 title = "Spotify DX"
-# base_path = "spotify-dx/app"
+# The app is served under /spotify-dx/app/ on GitHub Pages, so all generated
+# asset URLs must be prefixed with that base path (build-web.sh relies on this).
+base_path = "spotify-dx/app"
 
 [desktop]
 
