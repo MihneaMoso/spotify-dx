@@ -25,11 +25,27 @@
 //!   once the session is captured. `dioxus::mobile` re-exports `dioxus::desktop`,
 //!   so both share this path (iOS = WKWebView, Android = AndroidView).
 
+//! **Android** differs from the two strategies above: wry's Android backend
+//! hosts exactly one WebView per window and `set_visible`/`set_bounds` are
+//! no-ops, so show/hide goes through the view-layering manager in
+//! [`crate::platform::android_views`] instead (the login WebView is re-attached
+//! as a full-screen overlay above the dioxus UI and hidden by setting its
+//! Android visibility to `GONE`).
+
 use crate::auth::{with_session_context, WebSessionResult};
 use std::cell::RefCell;
 use wry::{WebView, WebViewBuilder};
 
+/// The page the session WebView always (re)loads: the auto-logged-in Spotify
+/// home, where the token-capture scripts run.
 const SPOTIFY_LOGIN_URL: &str = "https://open.spotify.com";
+
+/// The page shown for an actual sign-in: Spotify's accounts page go straight to
+/// the login form, `continue`ing back to `open.spotify.com` on success (where
+/// session capture then picks the session up). An already-signed-in user lands
+/// back on `open.spotify.com` automatically.
+const SPOTIFY_SIGNIN_URL: &str =
+    "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F";
 
 /// Runs on every page load inside the login/session WebView (it is injected on
 /// each navigation). Login detection and token capture, in order of
@@ -367,6 +383,11 @@ struct LoginWebView {
     /// Whether the page is currently parked at `about:blank` (see `park`).
     /// When `true`, `refresh_token` must revive it before refreshing.
     suspended: bool,
+    /// Android: JNI global ref to this WebView's Android view, held so the
+    /// view-layering manager can hide (`GONE`) / detach it. wry's own
+    /// `set_visible`/`set_bounds` are no-ops on Android.
+    #[cfg(target_os = "android")]
+    overlay: Option<jni::objects::GlobalRef>,
 }
 
 thread_local! {
@@ -384,7 +405,8 @@ thread_local! {
 /// exactly what produced the blank screen, so we only ever show/hide widgets.
 ///
 /// Other native platforms (mobile / non-Linux desktop): the WebView is built to
-/// fill the whole window.
+/// fill the whole window (on Android it is layered over — and afterwards
+/// detached from — the dioxus UI via [`crate::platform::android_views`]).
 pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Result<()> {
     if LOGIN.with(|cell| cell.borrow().is_some()) {
         return Ok(());
@@ -392,13 +414,17 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
 
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Remember the dioxus UI view before the sign-in WebView replaces the
+    // activity content (Android; no-op elsewhere).
+    #[cfg(target_os = "android")]
+    crate::platform::android_views::capture_base();
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     {
         use gtk::prelude::*;
         use wry::WebViewExtUnix as _;
         let vbox = main_vbox()?;
-        let webview = build_webview_gtk(&vbox, true, tx, ready.clone())?;
+        let webview = build_webview_gtk(&vbox, true, SPOTIFY_SIGNIN_URL, tx, ready.clone())?;
         let widget: gtk::Widget = webview.webview().upcast();
 
         // The sign-in WebView was packed at the end of the vbox. Hide every
@@ -431,12 +457,25 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
 
     #[cfg(not(all(feature = "desktop", target_os = "linux")))]
     {
-        let webview = build_webview_cross(true, tx, ready.clone())?;
+        #[cfg(target_os = "android")]
+        let overlay_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<jni::objects::GlobalRef>));
+        #[cfg(target_os = "android")]
+        let webview = build_webview_cross(
+            true,
+            SPOTIFY_SIGNIN_URL,
+            tx,
+            ready.clone(),
+            overlay_slot.clone(),
+        )?;
+        #[cfg(not(target_os = "android"))]
+        let webview = build_webview_cross(true, SPOTIFY_SIGNIN_URL, tx, ready.clone())?;
         LOGIN.with(|cell| {
             *cell.borrow_mut() = Some(LoginWebView {
                 webview,
                 ready,
                 suspended: false,
+                #[cfg(target_os = "android")]
+                overlay: overlay_slot.lock().unwrap().take(),
             })
         });
     }
@@ -454,13 +493,17 @@ pub fn ensure_session() -> anyhow::Result<()> {
     }
     let tx = std::sync::Arc::new(std::sync::Mutex::new(None));
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Remember the dioxus UI view before the session WebView replaces the
+    // activity content (Android; no-op elsewhere).
+    #[cfg(target_os = "android")]
+    crate::platform::android_views::capture_base();
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     {
         use gtk::prelude::*;
         use wry::WebViewExtUnix as _;
         let vbox = main_vbox()?;
-        let webview = build_webview_gtk(&vbox, false, tx, ready.clone())?;
+        let webview = build_webview_gtk(&vbox, false, SPOTIFY_LOGIN_URL, tx, ready.clone())?;
         let widget: gtk::Widget = webview.webview().upcast();
         LOGIN.with(|cell| {
             *cell.borrow_mut() = Some(LoginWebView {
@@ -475,12 +518,25 @@ pub fn ensure_session() -> anyhow::Result<()> {
 
     #[cfg(not(all(feature = "desktop", target_os = "linux")))]
     {
-        let webview = build_webview_cross(false, tx, ready.clone())?;
+        #[cfg(target_os = "android")]
+        let overlay_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<jni::objects::GlobalRef>));
+        #[cfg(target_os = "android")]
+        let webview = build_webview_cross(
+            false,
+            SPOTIFY_LOGIN_URL,
+            tx,
+            ready.clone(),
+            overlay_slot.clone(),
+        )?;
+        #[cfg(not(target_os = "android"))]
+        let webview = build_webview_cross(false, SPOTIFY_LOGIN_URL, tx, ready.clone())?;
         LOGIN.with(|cell| {
             *cell.borrow_mut() = Some(LoginWebView {
                 webview,
                 ready,
                 suspended: false,
+                #[cfg(target_os = "android")]
+                overlay: overlay_slot.lock().unwrap().take(),
             })
         });
     }
@@ -514,23 +570,25 @@ fn main_vbox() -> anyhow::Result<gtk::Box> {
 /// elsewhere). It runs inside `with_session_context` because the builder borrows
 /// `&mut WebContext`, so the borrow cannot escape that closure.
 fn build_in_context(
+    url: &str,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     build: impl FnOnce(WebViewBuilder<'_>) -> wry::Result<WebView>,
 ) -> anyhow::Result<WebView> {
     with_session_context(|context| {
-        render(&mut *context, &tx, &ready, build)
+        render(context, url, &tx, &ready, build)
     })
 }
 
 fn render(
     context: &mut wry::WebContext,
+    url: &str,
     tx: &std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     build: impl FnOnce(WebViewBuilder<'_>) -> wry::Result<WebView>,
 ) -> anyhow::Result<WebView> {
     let builder = WebViewBuilder::new_with_web_context(context)
-        .with_url(SPOTIFY_LOGIN_URL)
+        .with_url(url)
         .with_initialization_script(POLL_JS)
         .with_navigation_handler(|url| {
             tracing::info!("webview login: navigating to {url}");
@@ -564,11 +622,12 @@ fn render(
 fn build_webview_gtk(
     vbox: &gtk::Box,
     visible: bool,
+    url: &str,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<WebView> {
     use wry::WebViewBuilderExtUnix as _;
-    build_in_context(tx, ready, |builder| {
+    build_in_context(url, tx, ready, |builder| {
         builder.with_visible(visible).build_gtk(vbox)
     })
 }
@@ -596,19 +655,45 @@ fn hidden_bounds() -> wry::Rect {
 /// Build the sign-in WebView as a child of the wry window (mobile / non-Linux
 /// desktop). When `visible` it fills the window, overlaying the dioxus UI while
 /// the user signs in; otherwise it is parked off-screen, hidden.
+///
+/// On Android wry's window-child WebViews replace the content view instead of
+/// overlaying it and cannot be hidden, so the freshly-created WebView is handed
+/// to the Android view-layering manager (`on_webview_created`) which re-attaches
+/// the dioxus UI underneath and layers this WebView on top of it. `overlay_slot`
+/// receives the JNI global ref for the WebView's Android view so the caller can
+/// hide / detach it later.
 #[cfg(not(all(feature = "desktop", target_os = "linux")))]
 fn build_webview_cross(
     visible: bool,
+    url: &str,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "android")]
+    overlay_slot: std::sync::Arc<std::sync::Mutex<Option<jni::objects::GlobalRef>>>,
 ) -> anyhow::Result<WebView> {
     let desktop = crate::platform::webview::window();
     let bounds = if visible { full_window_bounds() } else { hidden_bounds() };
-    build_in_context(tx, ready, |builder| {
-        builder
-            .with_bounds(bounds)
-            .with_visible(visible)
-            .build(&desktop.window)
+    build_in_context(url, tx, ready, |builder| {
+        let builder = builder.with_bounds(bounds).with_visible(visible);
+        #[cfg(target_os = "android")]
+        let builder = {
+            use wry::WebViewBuilderExtAndroid as _;
+            builder.on_webview_created({
+                let overlay_slot = overlay_slot.clone();
+                move |ctx| {
+                    let overlay =
+                        crate::platform::android_views::install_overlay(
+                            ctx.env,
+                            ctx.activity,
+                            ctx.webview,
+                        )?;
+                    crate::platform::android_views::set_visible_now(ctx.env, ctx.webview, visible)?;
+                    *overlay_slot.lock().unwrap() = Some(overlay);
+                    Ok(())
+                }
+            })
+        };
+        builder.build(&desktop.window)
     })
 }
 
@@ -632,9 +717,19 @@ pub fn hide() {
             }
             #[cfg(not(all(feature = "desktop", target_os = "linux")))]
             {
-                let _ = login.webview.set_visible(false);
-                if let Err(err) = login.webview.set_bounds(hidden_bounds()) {
-                    tracing::warn!("webview login: hide (cross) failed: {err}");
+                // Android: wry's `set_visible`/`set_bounds` are no-ops (every
+                // WebView replaces the activity content view), so hide the
+                // layered login WebView the Android way instead.
+                #[cfg(target_os = "android")]
+                if let Some(overlay) = &login.overlay {
+                    crate::platform::android_views::set_visible(overlay.clone(), false);
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    let _ = login.webview.set_visible(false);
+                    if let Err(err) = login.webview.set_bounds(hidden_bounds()) {
+                        tracing::warn!("webview login: hide (cross) failed: {err}");
+                    }
                 }
             }
         }
@@ -670,6 +765,10 @@ pub fn shutdown() {
             {
                 use gtk::prelude::*;
                 login.widget.unparent();
+            }
+            #[cfg(target_os = "android")]
+            if let Some(overlay) = &login.overlay {
+                crate::platform::android_views::remove(overlay.clone());
             }
             drop(login);
         }

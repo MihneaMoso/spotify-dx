@@ -5535,6 +5535,7 @@ dependencies = [
  "gtk",
  "hickory-resolver",
  "image",
+ "jni 0.21.1",
  "keyring",
  "once_cell",
  "parking_lot",

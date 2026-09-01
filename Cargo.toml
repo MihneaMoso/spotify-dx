@@ -83,6 +83,11 @@ web-sys       = { version = "0.3", features = ["Window", "Storage", "HtmlAudioEl
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
+# Matches the jni version wry 0.53.5 pins (its `on_webview_created` /
+# `dispatch` callbacks use these exact `jni` types) so the android_views
+# view-layering manager can drive wry's Android view tree without a second
+# jni copy resolving into the binary.
+jni              = { version = "0.21" }
 
 # The login flow hosts the real open.spotify.com page in a GTK window (Linux).
 # Version is pinned to what tao/wry already pull in (gtk 0.18).

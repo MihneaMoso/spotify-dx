@@ -15,6 +15,11 @@ pub mod storage;
 #[cfg(feature = "native")]
 pub mod webview;
 
+/// Android-only view-layering for the in-window WebViews (wry 0.53.5 has no
+/// multi-WebView support on Android — see `android_views` docstring).
+#[cfg(target_os = "android")]
+pub mod android_views;
+
 /// Browser login flow (whole-tab redirect + credentialed token capture).
 #[cfg(target_arch = "wasm32")]
 pub mod web_login;

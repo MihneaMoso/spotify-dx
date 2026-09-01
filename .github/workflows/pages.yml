@@ -1,0 +1,69 @@
+# Deploys the Spotify DX landing page and the in-app web build to GitHub Pages.
+#
+# The app's web build is produced FROM SOURCE here (not from a committed
+# bundle): every push to master rebuilds the Dioxus wasm app via
+# scripts/build-web.sh (shared with the release workflow) and deploys it.
+#
+# The repo is the `spotify-dx` project itself, so GitHub Pages for a project site
+# publishes at https://mihneamoso.github.io/spotify-dx/. scripts/build-web.sh
+# assembles a single staging directory with the correct mapping:
+#   site/index.html...  -> https://mihneamoso.github.io/spotify-dx/     (landing page)
+#   app/index.html...   -> https://mihneamoso.github.io/spotify-dx/app/ (Dioxus app)
+#
+# The landing page uses only relative URLs, and the app is built with
+# `base_path = "spotify-dx/app"` in Dioxus.toml, so both work unchanged under
+# the `/spotify-dx/` path prefix.
+#
+# The release workflow (release.yml) also deploys the web build on version tags
+# using the same script.
+#
+# Setup (one time): Settings -> Pages -> Source: "GitHub Actions".
+name: pages
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: pages-cargo-wasm32-${{ hashFiles('Cargo.lock') }}
+          restore-keys: pages-cargo-wasm32-
+      - name: Install dx CLI
+        run: |
+          curl -fsSL https://dioxus.dev/install.sh | bash
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Build web bundle
+        run: bash scripts/build-web.sh
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _deploy
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

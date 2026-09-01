@@ -61,6 +61,51 @@ cargo build --no-default-features --features mobile
 No `SPOTIFY_CLIENT_ID` or Spotify Developer app is required — the app uses the
 same web session that open.spotify.com uses.
 
+## Install
+
+Prebuilt binaries are published to the [GitHub Releases](https://github.com/MihneaMoso/spotify-dx/releases)
+for every version tag. The easiest way to install the latest release is the
+curl-able installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MihneaMoso/spotify-dx/master/install.sh | bash
+```
+
+What it does, by platform:
+
+- **Linux / macOS** — downloads the release binary and installs it to
+  `~/.local/bin/spotify-dx` (add that to your `PATH` if needed).
+- **Windows** — downloads `spotify-dx.exe` into `%LOCALAPPDATA%\Programs\SpotifyDX\`.
+- **Android / Termux** — downloads the APK into your `~/Download` folder; open
+  it on the device to install (allow *Install from unknown sources* if prompted).
+
+Every download is verified against the SHA-256 digest published on the release
+(`shasum -a 256` / `sha256sum`). Env overrides:
+
+| Env var | Meaning |
+|---|---|
+| `SPOTIFY_DX_VERSION` | Pin a version instead of the latest (`v0.1.9`) |
+| `SPOTIFY_DX_PREFIX` | Install to a custom prefix instead of the default |
+| `SPOTIFY_DX_DRYRUN=1` | Print what would be downloaded/installed without touching disk |
+
+## Web app & landing page
+
+There's also a web build of the app, deployed from CI to GitHub Pages when you
+push to `master`:
+
+- Landing page: https://mihneamoso.github.io/spotify-dx/
+- Web app: https://mihneamoso.github.io/spotify-dx/app/
+
+Both are built from source in CI (`scripts/build-web.sh`, shared with the
+release workflow — every version tag also redeploys the web build). The app is
+built with `base_path = "spotify-dx/app"` in `Dioxus.toml` so it works under the
+`/spotify-dx/` path prefix; the landing page in `web/site/` uses only relative
+URLs. To build and inspect the deploy tree locally:
+
+```sh
+bash scripts/build-web.sh   # assembles ./_deploy (requires `dx` CLI + wasm32 target)
+```
+
 ## Releases
 
 Desktop binaries for Linux (glibc, x86_64), macOS (arm64 + x86_64) and Windows

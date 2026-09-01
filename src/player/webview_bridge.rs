@@ -14,6 +14,12 @@ use wry::{Rect, WebView, WebViewBuilder};
 // compatible with `#![forbid(unsafe_code)]`.
 struct SdkWebView {
     webview: WebView,
+    /// Android: JNI global ref to this WebView's Android view (see
+    /// `crate::platform::android_views`). wry's Android backend cannot hide or
+    /// reposition WebViews, so the SDK page stays layered-but-invisible (`GONE`)
+    /// that way.
+    #[cfg(target_os = "android")]
+    overlay: Option<jni::objects::GlobalRef>,
 }
 
 thread_local! {
@@ -89,6 +95,14 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
     #[cfg(not(all(target_os = "linux", feature = "desktop")))]
     let desktop = crate::platform::webview::window();
 
+    // Android: remember the dioxus UI view before this WebView replaces the
+    // activity content, and hold the slot the `on_webview_created` hook fills
+    // with this WebView's Android view handle (no-op elsewhere).
+    #[cfg(target_os = "android")]
+    crate::platform::android_views::capture_base();
+    #[cfg(target_os = "android")]
+    let overlay_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<jni::objects::GlobalRef>));
+
     // Same shared cookie jar as the sign-in WebView: the SDK behaves as the
     // authenticated user with zero token wiring. ONE process-wide context is
     // used by every WebView — a second WebContext on the same data directory
@@ -104,6 +118,27 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
             })
             .with_visible(false)
             .with_ipc_handler(handle_ipc);
+
+        #[cfg(target_os = "android")]
+        let builder = {
+            // Android: layer the SDK WebView above the dioxus UI (which wry's
+            // `setContentView` would otherwise replace) and hide it immediately.
+            use wry::WebViewBuilderExtAndroid as _;
+            builder.on_webview_created({
+                let overlay_slot = overlay_slot.clone();
+                move |ctx| {
+                    let overlay =
+                        crate::platform::android_views::install_overlay(
+                            ctx.env,
+                            ctx.activity,
+                            ctx.webview,
+                        )?;
+                    crate::platform::android_views::set_visible_now(ctx.env, ctx.webview, false)?;
+                    *overlay_slot.lock().unwrap() = Some(overlay);
+                    Ok(())
+                }
+            })
+        };
 
         #[cfg(all(target_os = "linux", feature = "desktop"))]
         {
@@ -124,7 +159,11 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
     })?;
 
     WEBVIEW.with(move |cell| {
-        *cell.borrow_mut() = Some(SdkWebView { webview })
+        *cell.borrow_mut() = Some(SdkWebView {
+            webview,
+            #[cfg(target_os = "android")]
+            overlay: overlay_slot.lock().unwrap().take(),
+        })
     });
     Ok(())
 }
@@ -132,7 +171,15 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
 /// Destroy the hidden WebView and its cookie-holding process. Used by logout so
 /// a fresh WebView (and fresh login) starts from a clean state.
 pub fn shutdown() {
-    WEBVIEW.with(|cell| *cell.borrow_mut() = None);
+    WEBVIEW.with(|cell| {
+        #[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+        if let Some(sdk) = cell.borrow_mut().take() {
+            #[cfg(target_os = "android")]
+            if let Some(overlay) = &sdk.overlay {
+                crate::platform::android_views::remove(overlay.clone());
+            }
+        }
+    });
 }
 
 /// Lazily create the hidden SDK WebView on the open-engine path, where

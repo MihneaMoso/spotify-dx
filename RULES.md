@@ -820,6 +820,31 @@ patterns in mind so new code doesn't reintroduce them):
   --target aarch64-linux-android` (pass with NDK bin on `$PATH`); verified clean
   here on NDK `25.2.9519653`. iOS targets aren't rustup-installed so iOS cannot
   build on this Linux host.
+- **Android wry has NO multi-webview layering (the blank-white-screen bug).**
+  In wry 0.53.5 the Android backend is single-view: every
+  `WebViewBuilder::build(&window)` calls `Activity.setContentView(webview)`
+  (see `crates-android_main_pipe`, msg `CreateWebView`), silently detaching the
+  previous content, and `set_visible`/`set_bounds` on Android are documented
+  no-ops (`android/mod.rs`). So the "stack webviews in one window" model from
+  GNOME/iOS is impossible — after the sign-in page was parked at
+  `about:blank` the app was stuck on a full-screen white page. Fix lives in
+  `src/platform/android_views.rs` (Android-only): [`capture_base`] stashes a
+  JNI `GlobalRef` of the pre-existing dioxus UI through wry's `dispatch`, and
+  every extra webview installs itself via `on_webview_created` +
+  `install_overlay` (re-`setContentView(ui)`, then `addView(webview)` on
+  `android.R.id.content` = `0x01020002`). Hiding on Android =
+  `setVisibility(GONE)`; detaching = `removeView` — never wry's `set_visible`/
+  `set_bounds`. Because of this, the login/session + SDK webviews must call
+  `android_views::capture_base()` BEFORE any of their own `build` runs.
+  `jni = "0.21"` was added (Android-only dep) purely to type the
+  `on_webview_created` closure's `Result<_, jni::errors::Error>`.
+- **`&mut JNIEnv<'a>` is invariant over `'a`** — never write a JNI helper that
+  joins a `JNIEnv` arg to a `&JObject`/return whose `'local` must unify equal
+  (wry `on_webview_created`'s `Context` does share one frame lifetime, but
+  `dispatch`'s `|&mut JNIEnv, &JObject, &JObject|` gives each arg an
+  independent one). `content_frame!` is a macro for this reason: `call_method`
+  infers its own `'other_local`, so inlining JNI calls (rather than returning
+  frame `JObject`s from helper fns) sidesteps the whole problem.
 
 ### 6.9c Web (WASM) parity seams — storage, audio, adblock, login
 

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Spotify DX — a free, open-source Spotify client for desktop and mobile that signs you in through the real open.spotify.com login and plays full tracks, Premium or free."
+        />
+        <title>Spotify DX</title>
+        <style>
+            /* Spotify DX landing — minimal, contrast-first, Spotify-ish. */
+            :root {
+                color-scheme: dark;
+                --bg: #121212;
+                --panel: #181818;
+                --panel-2: #1f1f1f;
+                --border: #2a2a2a;
+                --text: #f4f4f4;
+                --muted: #a7a7a7;
+                --accent: #1db954;
+                --accent-hover: #1ed760;
+            }
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--text);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                    Roboto, Helvetica, Arial, sans-serif;
+                line-height: 1.55;
+                -webkit-font-smoothing: antialiased;
+            }
+            .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+            header.hero {
+                padding: 72px 24px 48px;
+                text-align: center;
+                border-bottom: 1px solid var(--border);
+            }
+            .logo {
+                width: 56px;
+                height: 56px;
+                border-radius: 14px;
+                display: inline-grid;
+                place-items: center;
+                background: var(--accent);
+                font-weight: 800;
+                font-size: 26px;
+                color: #000;
+                margin-bottom: 18px;
+            }
+            .logo svg { width: 30px; height: 30px; }
+            h1 { margin: 0 0 10px; font-size: clamp(30px, 5vw, 44px); }
+            .tagline { color: var(--muted); font-size: 18px; max-width: 620px; margin: 0 auto 28px; }
+            .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+            .btn {
+                display: inline-block;
+                text-decoration: none;
+                font-weight: 600;
+                border-radius: 500px;
+                padding: 12px 26px;
+                background: var(--accent);
+                color: #000;
+                transition: background 0.15s ease, transform 0.1s ease;
+            }
+            .btn:hover { background: var(--accent-hover); }
+            .btn.ghost {
+                background: transparent;
+                color: var(--text);
+                border: 1px solid var(--border);
+            }
+            .btn.ghost:hover { border-color: var(--muted); background: var(--panel); }
+            pre.install {
+                background: #000;
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 14px 18px;
+                overflow-x: auto;
+                color: #d7ffd9;
+                font-size: 14px;
+                text-align: left;
+            }
+            pre.install code { white-space: pre; }
+            main { padding: 48px 0 64px; }
+            .features {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 18px;
+            }
+            article {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 22px;
+            }
+            article h3 { margin: 0 0 8px; font-size: 18px; }
+            article p { margin: 0; color: var(--muted); font-size: 15px; }
+            .install-section { margin-top: 40px; text-align: center; }
+            .install-section .btn { margin-top: 16px; }
+            footer { border-top: 1px solid var(--border); padding: 24px 0 40px; text-align: center; color: var(--muted); font-size: 14px; }
+            footer a { color: var(--accent); text-decoration: none; }
+        </style>
+    </head>
+    <body>
+        <header class="hero">
+            <div class="logo">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 14.42a.78.78 0 01-1.08.26c-2.96-1.81-6.68-2.22-11.07-1.22a.78.78 0 01-.43-1.5c4.81-1.1 8.94-.63 12.28 1.42a.78.78 0 01.3 1.04zm1.22-2.67a.96.96 0 01-1.32.32c-3.4-2.08-8.56-2.68-12.72-1.47a.96.96 0 11-.6-1.83c4.69-1.37 10.4-.7 14.31 1.66.46.28.6.88.33 1.32zm.09-2.79c-4.06-2.4-10.76-2.63-14.65-1.47a1.15 1.15 0 11-.66-2.21c4.43-1.32 11.8-1.03 16.43 1.7a1.15 1.15 0 01-1.12 1.98z"
+                        fill="currentColor"
+                    />
+                </svg>
+            </div>
+            <h1>Spotify DX</h1>
+            <p class="tagline">
+                A Spotify client for desktop and mobile that feels like
+                open.spotify.com: the real Spotify login in-app, sessions that
+                persist, and full-track playback for free accounts too.
+            </p>
+            <div class="actions">
+                <a class="btn" href="app/">Open the web app</a>
+                <a
+                    class="btn ghost"
+                    href="#install"
+                    rel="noopener noreferrer"
+                >
+                    Install on your device
+                </a>
+                <a
+                    class="btn ghost"
+                    href="https://github.com/MihneaMoso/spotify-dx"
+                    rel="noopener noreferrer"
+                >
+                    View on GitHub
+                </a>
+            </div>
+        </header>
+
+        <main class="wrap">
+            <section class="features" aria-label="Features">
+                <article>
+                    <h3>Sign in the way the web does</h3>
+                    <p>
+                        The app opens the real Spotify login page in-app — password,
+                        2FA, passkeys all work. Your session cookies persist, so you
+                        stay logged in across restarts.
+                    </p>
+                </article>
+                <article>
+                    <h3>Playback for everyone</h3>
+                    <p>
+                        Premium accounts use the official Web Playback SDK. Free
+                        accounts get an open multi-source engine — full tracks,
+                        not just 30-second previews.
+                    </p>
+                </article>
+                <article>
+                    <h3>Ad-free listening</h3>
+                    <p>
+                        An in-process AdGuard blocklist engine drops third-party ad
+                        and tracker requests before they hit the network.
+                    </p>
+                </article>
+            </section>
+
+            <section id="install" class="install-section">
+                <h2>Install the latest release</h2>
+                <p>
+                    One command fetches the newest release and installs it safely:
+                </p>
+                <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/MihneaMoso/spotify-dx/master/install.sh | bash</code></pre>
+                <p>
+                    Desktop installs to <code>~/.local/bin/spotify-dx</code>.
+                    On Android it downloads the APK to your Downloads folder.
+                    Every download is verified against its SHA-256 digest.
+                </p>
+                <a
+                    class="btn"
+                    href="https://github.com/MihneaMoso/spotify-dx/releases"
+                    rel="noopener noreferrer"
+                >
+                    Browse all releases
+                </a>
+            </section>
+        </main>
+
+        <footer class="wrap">
+            <span>© <span id="year"></span> Mihnea Mosorescu.</span>
+            &nbsp;&middot;&nbsp;
+            <a href="https://github.com/MihneaMoso/spotify-dx" rel="noopener noreferrer"
+                >Source code</a
+            >
+        </footer>
+        <script>
+            document.getElementById("year").textContent =
+                new Date().getFullYear();
+        </script>
+    </body>
+</html>

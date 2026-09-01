@@ -12,9 +12,15 @@ default_stylesheet = false
 name = "Spotify DX"
 default_platform = "desktop"
 
+[web]
+# The web build is deployed at /spotify-dx/app/ on GitHub Pages (project site
+# under the `/spotify-dx/` path prefix, with the app in its own subdirectory).
+out_dir = "web/app"
+
 [web.app]
 
 title = "Spotify DX"
+# base_path = "spotify-dx/app"
 
 [desktop]
 
