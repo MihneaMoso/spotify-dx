@@ -821,8 +821,30 @@ patterns in mind so new code doesn't reintroduce them):
   in the NDK bin dir — `cc-rs` resolves those exact names and won't accept the
   versioned ones. Command: `cargo check --no-default-features --features mobile
   --target aarch64-linux-android` (pass with NDK bin on `$PATH`); verified clean
-  here on NDK `25.2.9519653`. iOS targets aren't rustup-installed so iOS cannot
-  build on this Linux host.
+   here on NDK `25.2.9519653`. iOS targets aren't rustup-installed so iOS cannot
+   build on this Linux host.
+- **Local Android link gotcha: `ld: unable to find library -laudio`.**
+   `dx build --platform android` wires its own linker (`-C linker=<dx bin>`),
+   which searches the **un-versioned** NDK lib dir
+   `sysroot/usr/lib/aarch64-linux-android/` (NOT the API-versioned `28/` subdir),
+   and that dir ships no `libaudio.so`/`libaaudio.so` stub. A crate links the
+   AAudio API via `-laudio` (resolves to `libaudio.so`), which is missing there →
+   the whole link fails. This does NOT affect CI's `dx build --platform android`
+   (runs before Gradle in `.github/workflows/release.yml`), so an APK builds fine
+   remotely. **Local workaround** (idempotent, edit the host NDK install):
+   ```
+   SYSROOT=$(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android
+   ln -sf  28/libaaudio.so  "$SYSROOT/libaaudio.so"   # real file lives in 28/
+   ln -sf  28/libaaudio.so  "$SYSROOT/libaudio.so"    # resolves `-laudio`
+   ```
+   (Do the same under `$SYSROOT/28/` if needed.) `-laudio` then resolves in both
+   the versioned and un-versioned search dirs. After the workaround, the full
+   local build is: `dx build --platform android --release --target
+   aarch64-linux-android` (compile+link `libmain.so`), `scripts/stage-updater.sh`,
+   then Gradle `assembleRelease -x lintVital*`, then `apksigner` with a generated
+   debug keystore. `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`NDK_HOME`
+   env vars are nice-to-have but `dx` overrides the linker to itself regardless —
+   the symlink is the load-bearing fix.
 - **Android wry has NO multi-webview layering (the blank-white-screen bug).**
   In wry 0.53.5 the Android backend is single-view: every
   `WebViewBuilder::build(&window)` calls `Activity.setContentView(webview)`
@@ -836,9 +858,26 @@ patterns in mind so new code doesn't reintroduce them):
   every extra webview installs itself via `on_webview_created` +
   `install_overlay` (re-`setContentView(ui)`, then `addView(webview)` on
   `android.R.id.content` = `0x01020002`). Hiding on Android =
-  `setVisibility(GONE)`; detaching = `removeView` — never wry's `set_visible`/
-  `set_bounds`. Because of this, the login/session + SDK webviews must call
-  `android_views::capture_base()` BEFORE any of their own `build` runs.
+   `setVisibility(GONE)`; detaching = `removeView` — never wry's `set_visible`/
+   `set_bounds`. Because of this, the login/session + SDK webviews must call
+   `android_views::capture_base()` BEFORE any of their own `build` runs.
+   **`setVisibility(GONE)` alone is NOT enough** — verified on a Motorola
+   (dubai_ge, Android 14): even GONE, the parked session WebView still composited
+   a full-screen white `about:blank` over the real dioxus UI, so the app reached
+   `Home` (logs show `home: fetching feed`) yet the screen stayed blank white.
+   `webview_login::hide()` now calls `android_views::remove()` (removeView +
+   GONE) to fully DETACH the session overlay on Android instead of
+   `set_visible(false)`. The `GlobalRef` is passed as a `clone()` and kept alive
+   in `login.overlay`, so `refresh_token()` (wry `load_url`/`evaluate_script`)
+   still works — neither needs the Android view attached. It also logs an
+   `info!` when it detaches and a `warn!` if `login.overlay` is `None` (hook
+   didn't populate it), so post-login device logcat tells you whether the
+   overlay ref existed. Root-cause evidence: `uiautomator dump` showed exactly
+   two full-screen `android.webkit.WebView` nodes `[0,60][2295,1020]` (base +
+   one overlay) in the content frame, and the screenshot was pure white content
+   `(255,255,255)` with a grey status bar — the parked overlay on top. Only the
+   open-engine path exercises this single-overlay case (free accounts); the SDK
+   path adds a second overlay via `webview_bridge` (`ensure_sdk_webview`).
   `jni = "0.21"` was added (Android-only dep) purely to type the
   `on_webview_created` closure's `Result<_, jni::errors::Error>`.
 - **`&mut JNIEnv<'a>` is invariant over `'a`** — never write a JNI helper that
@@ -869,11 +908,14 @@ patterns in mind so new code doesn't reintroduce them):
 - **Web login = whole-tab redirect.** The browser can't host the GTK login
   WebView, so `auth::login()` on wasm redirects to `open.spotify.com` and then
   fetches `get_access_token` with `credentials: include` (like the desktop
-  `fetchAccessToken`). **This credentialed cross-origin fetch is UNVERIFIED** —
-  no headless sandbox can confirm Spotify's CORS / third-party-cookie behavior
-  for it. It's the one runtime item left before full web parity; if it fails
-  live, the login gate surfaces a clear CORS error and needs a different capture
-  mechanism. Do not claim web login "works" until validated in a real browser.
+  `fetchAccessToken`). **This credentialed cross-origin fetch is CONFIRMED
+  BLOCKED in a real browser (2026-09):** the deployed site on `github.io` gets
+  `Failed to fetch` + CORS + 429. Root causes (§6.9g): Spotify sends no
+  `Access-Control-Allow-Origin` for `/get_access_token` or `/api/token`, the
+  `sp_dc` session cookie is HttpOnly (invisible even to Spotify-tab JS), and
+  two tabs on different origins have no shared channel. Web login therefore
+  CANNOT work client-side on static hosting; a future backend proxy is planned
+  (see §6.9g). Do not claim web login "works" in the browser.
 - **build wasm via `web-sys` fetch, not reqwest**, for the login capture so the
   `credentials: include` request mode is explicitly controllable (reqwest's wasm
   fetch backend doesn't expose that the same way).
@@ -1054,6 +1096,66 @@ patterns in mind so new code doesn't reintroduce them):
   --features desktop` + clippy, the Android `cargo clippy --no-default-features
   --features mobile --target aarch64-linux-android` (NDK bin on PATH), the host
   `mobile` host build, the wasm web build, and `cargo test`.
+
+### 6.9g Web login is CORS-blocked on static hosting — future backend proxy plan
+
+**Confirmed 2026-09** on the deployed site `https://mihneamoso.github.io/spotify-dx/app/`:
+the web build loads, the wasm `time` panic is fixed (§6.9f), and the login gate
+now shows `Couldn't start Spotify login: could not read the Spotify session
+(CORS or logged out?): fetch error: JsValue(TypeError: Failed to fetch ...)`, plus
+a console flood of
+`Access to fetch at 'https://open.spotify.com/get_access_token?reason=transport&productType=web_player'
+from origin 'https://mihneamoso.github.io' has been blocked by CORS policy` and
+`GET ... net::ERR_FAILED 429 (Too Many Requests)`.
+
+**Why the browser path cannot work (platform facts, not our bug):**
+1. `sp_dc` / `sp_key` are **HttpOnly**, so no page JS (not even the
+   `open.spotify.com` login tab's own scripts) can read them via
+   `document.cookie` — they cannot be exfiltrated and "sent back" to the app tab.
+2. Spotify's `/get_access_token` and `/api/token` endpoints send **no
+   `Access-Control-Allow-Origin`**, so a credentialed cross-origin `fetch` from
+   `github.io` is hard-rejected by the browser regardless of cookies. The
+   desktop/mobile WebView avoids this because its page IS `open.spotify.com`
+   (same-origin). The 429 is the rate-limit on the app's repeated `capture_session`
+   attempts contributed by the login gate's retry-loop.
+3. Two browser tabs on **different origins** (`github.io` vs `open.spotify.com`)
+   share neither `localStorage`, `BroadcastChannel`, nor cookies, and cannot run
+   a callback across the boundary.
+4. We cannot inject the desktop `POLL_JS` (§6.9b) into the `open.spotify.com` tab
+   from the app tab.
+
+**So the only way to give the browser a web-player session is a server-side
+proxy** that holds the user's session cookie and mints tokens on their behalf
+(server-to-server calls bypass browser CORS entirely).
+
+#### Target backend-proxy architecture (future implementation)
+- **Hosting:** a small serverless / edge function (Vercel, Cloudflare Workers,
+  or a tiny always-on host), NOT GitHub Pages (static only). Must support
+  POST + configurable CORS headers + a small secret.
+- **Session entry:** the browser cannot read HttpOnly `sp_dc`, so the first-login
+  UX still needs the user's consent flow. Two options to plan:
+  - (preferred) **Browser same-origin relay:** the proxy exposes an endpoint the
+    user visits once in the tab that pages to `https://open.spotify.com`. The
+    proxy server then reads the browser-sent `sp_dc` cookie on the
+    `open.spotify.com` request (cookies DO travel with the request; the server,
+    not JS, reads them). Server stores it server-side keyed by a session id it
+    returns to the browser. This avoids any client-side cookie reading.
+  - (fallback) user pastes their `sp_dc`/`sp_key` into the app once; stored
+    server-side + encrypted.
+- **Token minting:** the server calls Spotify's `/api/token` (TOTP) or
+  `/get_access_token` with the stored cookie, then returns the token + expiry
+  with `Access-Control-Allow-Origin: <app origin>` and a short TTL. The wasm
+  app fetches the app-origin proxy endpoint instead of `open.spotify.com`.
+- **Refresh:** reuse the same `refresh_token` path through the proxy on expiry.
+- **Security:** never expose the cookie to client JS; use a server-held keystore,
+  per-user rotating secret, HTTPS-only, and short-lived tokens. Caveat: doing
+  live playback server-side is its own project — this proxy only mints the
+  session/access tokens the existing player stack already consumes.
+- **Migration steps (when approved):** add a `web_backend.rs` platform module
+  (wasm-only) that talks to the proxy; land the serverless function + deploy
+  config in a `web-backend/` dir; gate on a `SPOTIFY_DX_WEB_BACKEND_URL` build
+  var; update `auth/mod.rs` non-native `login()` + `web_login.rs` to use it;
+  keep a graceful local fallback for dev.
 
 ## 7. Testing
 

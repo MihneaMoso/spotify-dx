@@ -719,10 +719,31 @@ pub fn hide() {
             {
                 // Android: wry's `set_visible`/`set_bounds` are no-ops (every
                 // WebView replaces the activity content view), so hide the
-                // layered login WebView the Android way instead.
+                // layered login WebView the Android way instead. We DETACH it
+                // (removeView + GONE) rather than just GONE: some WebView
+                // builds keep compositing a GONE WebView that shares the
+                // content frame with the base dioxus UI, which left the app on
+                // a full-screen white `about:blank` page over the real UI.
+                // Detaching removes it from the view tree while the `GlobalRef`
+                // stays alive in `LOGIN`, so token refreshes via
+                // `refresh_token()` (wry `load_url`/`evaluate_script`) still
+                // work — neither needs the view to be attached.
                 #[cfg(target_os = "android")]
-                if let Some(overlay) = &login.overlay {
-                    crate::platform::android_views::set_visible(overlay.clone(), false);
+                {
+                    match &login.overlay {
+                        Some(overlay) => {
+                            tracing::info!(
+                                "webview login: detaching the session overlay (hide on Android)"
+                            );
+                            crate::platform::android_views::remove(overlay.clone());
+                        }
+                        None => {
+                            tracing::warn!(
+                                "webview login: no Android overlay ref to hide — session \
+                                 webview may stay layered over the UI"
+                            );
+                        }
+                    }
                 }
                 #[cfg(not(target_os = "android"))]
                 {
