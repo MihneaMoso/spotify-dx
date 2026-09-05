@@ -20,6 +20,13 @@ pub mod webview;
 #[cfg(target_os = "android")]
 pub mod android_views;
 
+/// Android-only platform WebView for the Spotify sign-in/session page. A
+/// second wry WebView would permanently clobber the dioxus base view's
+/// custom-protocol handlers (see `android_webview` docstring), so the login
+/// page lives in a plain `android.webkit.WebView` driven over JNI instead.
+#[cfg(target_os = "android")]
+pub mod android_webview;
+
 /// Browser login flow (whole-tab redirect + credentialed token capture).
 #[cfg(target_arch = "wasm32")]
 pub mod web_login;

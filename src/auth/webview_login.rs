@@ -32,8 +32,11 @@
 //! as a full-screen overlay above the dioxus UI and hidden by setting its
 //! Android visibility to `GONE`).
 
-use crate::auth::{with_session_context, WebSessionResult};
+#[cfg(not(target_os = "android"))]
+use crate::auth::with_session_context;
+use crate::auth::WebSessionResult;
 use std::cell::RefCell;
+#[cfg(not(target_os = "android"))]
 use wry::{WebView, WebViewBuilder};
 
 /// The page the session WebView always (re)loads: the auto-logged-in Spotify
@@ -43,7 +46,10 @@ const SPOTIFY_LOGIN_URL: &str = "https://open.spotify.com";
 /// The page shown for an actual sign-in: Spotify's accounts page go straight to
 /// the login form, `continue`ing back to `open.spotify.com` on success (where
 /// session capture then picks the session up). An already-signed-in user lands
-/// back on `open.spotify.com` automatically.
+/// back on `open.spotify.com` automatically. This is the Android start page
+/// too: direct login form with no cookie wall, and the completion bounce is a
+/// same-window navigation (verified in Spotify's own bundles), so it stays
+/// in-view under the popup containment.
 const SPOTIFY_SIGNIN_URL: &str =
     "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F";
 
@@ -76,6 +82,12 @@ const POLL_JS: &str = r#"
 (function () {
   if (window.__spotifyDxLogin) { return; }
   window.__spotifyDxLogin = true;
+
+  // Parked/idle pages (about:blank) must not poll: same-origin token fetches
+  // are CORS-blocked there, so the timers would only spam failing requests
+  // forever. Token refresh revives the real open.spotify.com page, which
+  // injects this script fresh in its own context.
+  if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') { return; }
 
   var reported = false;
   function post(obj) {
@@ -359,14 +371,107 @@ const POLL_JS: &str = r#"
       attempt();
     }
   };
-})();
+})(); 
 "#;
 
+/// Android-only `window.ipc` shim for the platform session WebView (which has
+/// no wry IPC channel). Outbound messages accumulate in
+/// `window.__spotifyDxOutbox` keyed by type; Rust ferries them out via
+/// `NATIVE_FERRY_JS` + a synchronous `getTitle()` read and resets the box.
+/// The outbox variable (not the title) is the source of truth, so a title
+/// clobbered between ferry and read is simply retried on the next poll —
+/// nothing is ever lost.
+#[cfg(target_os = "android")]
+const NATIVE_IPC_SHIM: &str = r#"(function(){
+if(window.__spotifyDxIpc){return;} window.__spotifyDxIpc=true;
+window.__spotifyDxOutbox=(window.__spotifyDxOutbox||{});
+window.ipc={postMessage:function(m){
+try{
+var o; try{o=JSON.parse(m);}catch(e){o={type:'token_debug',msg:String(m)};}
+var b=(window.__spotifyDxOutbox||{}); b[o.type||'msg']=o; window.__spotifyDxOutbox=b;
+}catch(e){}
+}};
+})();"#;
+
+/// Copies the IPC outbox into `document.title` for the `getTitle()` ferry.
+#[cfg(target_os = "android")]
+const NATIVE_FERRY_JS: &str =
+    "try{document.title='SPOTIFYDX::'+JSON.stringify(window.__spotifyDxOutbox||{})}catch(e){}";
+
+/// Clears the outbox + ferry title after Rust consumed the messages.
+#[cfg(target_os = "android")]
+const NATIVE_RESET_JS: &str = "try{window.__spotifyDxOutbox={};document.title=''}catch(e){}";
+
+/// Prefix marking a ferried outbox payload in the view title.
+#[cfg(target_os = "android")]
+const NATIVE_TITLE_PREFIX: &str = "SPOTIFYDX::";
+
+/// Android-only popup neutralizer, injected ahead of the IPC shim on every
+/// pass. Spotify's login page opens some steps (password form, code flow)
+/// via `target="_blank"` / `window.open`, which — with no `WebChromeClient`
+/// subclass to capture them (impossible without Java code) — escape to the
+/// system browser, from where App Links fire the real Spotify app instead of
+/// completing the in-app login. Rewriting them to same-window navigations
+/// keeps the whole flow inside our view. Idempotent per document; a fresh
+/// document after a redirect reinstalls it.
+///
+/// Besides the attribute rewrite + `window.open` shim, a capture-phase click
+/// guard converts `_blank`/non-web-scheme anchor activations to same-window
+/// navigations. That covers programmatically created + synchronously clicked
+/// anchors, which run inside one JS task and therefore beat the
+/// `MutationObserver`. Interceptions are reported back as `token_debug` so a
+/// device log shows exactly which vector fired.
+#[cfg(target_os = "android")]
+const NATIVE_POPUP_FIX: &str = r#"(function(){
+if(window.__spotifyDxPop){return;} window.__spotifyDxPop=true;
+function report(m){try{if(window.ipc){window.ipc.postMessage(JSON.stringify({type:'token_debug',msg:m}));}}catch(e){}}
+try{window.open=function(u){if(u){try{report('popup-shim-open:'+u);}catch(e){}window.location.href=u;}return window;};}catch(e){}
+function fix(root){try{var els=(root||document).querySelectorAll('a[target],area[target],form[target]');for(var i=0;i<els.length;i++){els[i].target='_self';}}catch(e){}}
+try{fix(document);}catch(e){}
+function armObserver(tries){
+try{
+if(!document.documentElement){if(tries<100){setTimeout(function(){armObserver(tries+1);},100);}return;}
+new MutationObserver(function(m){for(var i=0;i<m.length;i++){var t=m[i].target;if(t&&t.querySelectorAll){fix(t);}}}).observe(document.documentElement,{childList:true,subtree:true});
+}catch(e){}
+}
+try{armObserver(0);}catch(e){}
+try{document.addEventListener('click',function(e){
+try{
+var t=e.target;var a=(t&&t.closest)?t.closest('a[href]'):null;if(!a)return;
+var raw=a.getAttribute('href')||'';
+if(raw.charAt(0)==='#')return;
+var tg=(a.getAttribute('target')||'').toLowerCase();
+var isWeb=(raw.indexOf('http://')===0||raw.indexOf('https://')===0||raw.charAt(0)==='/');
+if(!isWeb){
+e.preventDefault();e.stopPropagation();
+try{report('popup-guard-scheme:'+raw.slice(0,120));}catch(x){}
+window.location.href='https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F';
+return;
+}
+if(tg==='_blank'){
+e.preventDefault();e.stopPropagation();
+try{report('popup-guard-blank:'+a.href.slice(0,160));}catch(x){}
+window.location.href=a.href;
+}
+}catch(err){}
+},true);}catch(e){}
+})();"#;
+
 struct LoginWebView {
-    /// Kept alive so the IPC handler and page stay alive until logout (wry
-    /// WebViews are dropped along with their owner).
+    /// The live page. On desktop / iOS this is the wry WebView (kept alive so
+    /// its IPC handler and page stay alive until logout — wry WebViews are
+    /// dropped along with their owner). On Android it is a platform
+    /// `android.webkit.WebView` behind a JNI global ref: building a second
+    /// wry WebView would permanently clobber the dioxus base view's
+    /// custom-protocol handlers (see `crate::platform::android_webview`).
+    #[cfg(not(target_os = "android"))]
     #[allow(dead_code)]
     webview: WebView,
+    /// Android: the platform session view. `load_url`/`evaluateJavascript`
+    /// need no view to be attached; token refreshes keep working while it is
+    /// detached and parked.
+    #[cfg(target_os = "android")]
+    view: jni::objects::GlobalRef,
     /// Linux desktop: the sign-in widget packed into the window's vbox. Hidden
     /// on session capture, removed on shutdown. Absent on other native
     /// platforms, where show/hide is driven by `set_visible`/`set_bounds`.
@@ -383,11 +488,6 @@ struct LoginWebView {
     /// Whether the page is currently parked at `about:blank` (see `park`).
     /// When `true`, `refresh_token` must revive it before refreshing.
     suspended: bool,
-    /// Android: JNI global ref to this WebView's Android view, held so the
-    /// view-layering manager can hide (`GONE`) / detach it. wry's own
-    /// `set_visible`/`set_bounds` are no-ops on Android.
-    #[cfg(target_os = "android")]
-    overlay: Option<jni::objects::GlobalRef>,
 }
 
 thread_local! {
@@ -405,8 +505,11 @@ thread_local! {
 /// exactly what produced the blank screen, so we only ever show/hide widgets.
 ///
 /// Other native platforms (mobile / non-Linux desktop): the WebView is built to
-/// fill the whole window (on Android it is layered over — and afterwards
+/// fill the whole window (on iOS it is layered over — and afterwards
 /// detached from — the dioxus UI via [`crate::platform::android_views`]).
+/// On Android the session page is a platform `android.webkit.WebView`
+/// ([`crate::platform::android_webview`]) layered the same way, because a
+/// second wry WebView would clobber the dioxus base view's protocol handlers.
 pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Result<()> {
     if LOGIN.with(|cell| cell.borrow().is_some()) {
         return Ok(());
@@ -414,10 +517,15 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
 
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Remember the dioxus UI view before the sign-in WebView replaces the
-    // activity content (Android; no-op elsewhere).
+
+    // Android: platform session view + async capture driver. The driver
+    // delivers the session over `tx`; the dioxus base view is never touched
+    // (no wry build, no reparent). Falls through to the shared `Ok(())`.
     #[cfg(target_os = "android")]
-    crate::platform::android_views::capture_base();
+    {
+        let (driver_tx, driver_ready) = (tx.clone(), ready.clone());
+        dioxus::prelude::spawn(drive_login(driver_tx, driver_ready));
+    }
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     {
@@ -455,27 +563,17 @@ pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Resu
         });
     }
 
-    #[cfg(not(all(feature = "desktop", target_os = "linux")))]
+    #[cfg(all(
+        not(all(feature = "desktop", target_os = "linux")),
+        not(target_os = "android")
+    ))]
     {
-        #[cfg(target_os = "android")]
-        let overlay_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<jni::objects::GlobalRef>));
-        #[cfg(target_os = "android")]
-        let webview = build_webview_cross(
-            true,
-            SPOTIFY_SIGNIN_URL,
-            tx,
-            ready.clone(),
-            overlay_slot.clone(),
-        )?;
-        #[cfg(not(target_os = "android"))]
         let webview = build_webview_cross(true, SPOTIFY_SIGNIN_URL, tx, ready.clone())?;
         LOGIN.with(|cell| {
             *cell.borrow_mut() = Some(LoginWebView {
                 webview,
                 ready,
                 suspended: false,
-                #[cfg(target_os = "android")]
-                overlay: overlay_slot.lock().unwrap().take(),
             })
         });
     }
@@ -491,12 +589,20 @@ pub fn ensure_session() -> anyhow::Result<()> {
     if LOGIN.with(|cell| cell.borrow().is_some()) {
         return Ok(());
     }
-    let tx = std::sync::Arc::new(std::sync::Mutex::new(None));
+    #[cfg(not(target_os = "android"))]
+    let tx: std::sync::Arc<
+        std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+    #[cfg(not(target_os = "android"))]
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Remember the dioxus UI view before the session WebView replaces the
-    // activity content (Android; no-op elsewhere).
+
+    // Android: hidden platform session view + park. Best-effort (a later
+    // `start()` or token refresh rebuilds what's missing); no dioxus UI view
+    // is touched either way. Falls through to the shared `Ok(())`.
     #[cfg(target_os = "android")]
-    crate::platform::android_views::capture_base();
+    {
+        dioxus::prelude::spawn(drive_hidden());
+    }
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     {
@@ -516,27 +622,17 @@ pub fn ensure_session() -> anyhow::Result<()> {
         });
     }
 
-    #[cfg(not(all(feature = "desktop", target_os = "linux")))]
+    #[cfg(all(
+        not(all(feature = "desktop", target_os = "linux")),
+        not(target_os = "android")
+    ))]
     {
-        #[cfg(target_os = "android")]
-        let overlay_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<jni::objects::GlobalRef>));
-        #[cfg(target_os = "android")]
-        let webview = build_webview_cross(
-            false,
-            SPOTIFY_LOGIN_URL,
-            tx,
-            ready.clone(),
-            overlay_slot.clone(),
-        )?;
-        #[cfg(not(target_os = "android"))]
         let webview = build_webview_cross(false, SPOTIFY_LOGIN_URL, tx, ready.clone())?;
         LOGIN.with(|cell| {
             *cell.borrow_mut() = Some(LoginWebView {
                 webview,
                 ready,
                 suspended: false,
-                #[cfg(target_os = "android")]
-                overlay: overlay_slot.lock().unwrap().take(),
             })
         });
     }
@@ -548,6 +644,282 @@ pub fn ensure_session() -> anyhow::Result<()> {
     park_if_loaded();
     tracing::info!("webview login: hidden session webview ready for token refreshes");
     Ok(())
+}
+
+/// Android-only capture drivers for the platform session view.
+///
+/// The view is created with plain `loadUrl`, so unlike wry's
+/// `with_initialization_script` nothing runs automatically on (re)navigation:
+/// every driver (re)injects the shim + `POLL_JS` bundle itself, on every pass.
+/// Re-injection is idempotent — both scripts latch on first run per document
+/// (`__spotifyDxIpc` / `__spotifyDxLogin`) — and a fresh document after a
+/// Spotify redirect (accounts → open) simply starts polling again.
+#[cfg(target_os = "android")]
+async fn drive_login(
+    tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crate::platform::android_webview;
+
+    let view = match android_webview::create(SPOTIFY_SIGNIN_URL, true, vec![start_bundle()]).await {
+        Ok(view) => view,
+        Err(err) => {
+            // Sender drops with the slot: `await_session` fails and the
+            // login gate offers a retry instead of hanging forever.
+            tracing::warn!("webview login: session view creation failed: {err:#}");
+            return;
+        }
+    };
+    LOGIN.with(|cell| {
+        *cell.borrow_mut() = Some(LoginWebView {
+            view: view.clone(),
+            ready: ready.clone(),
+            suspended: false,
+        })
+    });
+    tracing::info!("webview login: navigating to {SPOTIFY_SIGNIN_URL}");
+    // Early inject: the page's own scripts (popup openers included) start at
+    // parse time, well before progress hits 100 — seed the neutralizer as
+    // soon as the view exists. Re-injection later is idempotent.
+    inject_bundle(&view).await;
+    if !wait_loaded(&view, &ready, 30).await {
+        tracing::warn!("webview login: sign-in page did not finish loading");
+        return;
+    }
+    let mut last_url = String::new();
+    let mut injected_url = String::new();
+    loop {
+        if LOGIN.with(|cell| cell.borrow().is_none()) {
+            return;
+        }
+        // Trace in-view navigations (accounts bounce, login steps): the only
+        // record of where the session page actually goes. A fresh document
+        // needs the bundle (re)injected immediately — popups and handoffs
+        // fire during parse, long before the next scheduled pass.
+        if let Ok(url) = android_webview::get_url(&view).await {
+            if !url.is_empty() && url != last_url {
+                tracing::info!("webview login: session page at {url}");
+                last_url = url.clone();
+            }
+            if !url.is_empty() && url != injected_url {
+                inject_bundle(&view).await;
+                injected_url = url;
+            }
+        }
+        guard_external_url(&view).await;
+        if let Some(messages) = drain_outbox(&view).await {
+            for msg in messages {
+                handle_json(tx.clone(), msg, None);
+            }
+            if tx.lock().unwrap().is_none() {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+}
+
+/// Android-only: hidden session view for token refreshes. Best-effort — a
+/// later `start()` or `refresh_token()` rebuilds what's missing.
+#[cfg(target_os = "android")]
+async fn drive_hidden() {
+    use crate::platform::android_webview;
+
+    let view = match android_webview::create(SPOTIFY_LOGIN_URL, false, vec![start_bundle()]).await {
+        Ok(view) => view,
+        Err(err) => {
+            tracing::warn!("webview login: hidden session view creation failed: {err:#}");
+            return;
+        }
+    };
+    LOGIN.with(|cell| {
+        *cell.borrow_mut() = Some(LoginWebView {
+            view: view.clone(),
+            ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            suspended: true,
+        })
+    });
+    android_webview::post_load_url(view, "about:blank".to_string());
+    tracing::info!("webview login: hidden session webview ready for token refreshes");
+}
+
+/// Android-only: wait for the view's page load, injecting the capture bundle
+/// into each fresh document as soon as it exists (progress > 0 — page scripts
+/// and handoffs start at parse time, well before progress hits 100). Returns
+/// whether the page settled in time.
+#[cfg(target_os = "android")]
+async fn wait_loaded(
+    view: &jni::objects::GlobalRef,
+    ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    timeout_secs: u64,
+) -> bool {
+    use crate::platform::android_webview;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    ready.store(false, SeqCst);
+    let mut injected_url = String::new();
+    let mut last_url = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if LOGIN.with(|cell| cell.borrow().is_none()) {
+            return false;
+        }
+        if let Ok(url) = android_webview::get_url(view).await {
+            if !url.is_empty() && url != last_url {
+                tracing::info!("webview login: session page at {url}");
+                last_url = url.clone();
+            }
+            if !url.is_empty() && url != injected_url {
+                inject_bundle(view).await;
+                injected_url = url;
+            }
+        }
+        match android_webview::get_progress(view).await {
+            Ok(progress) if progress >= 100 => {
+                ready.store(true, SeqCst);
+                tracing::info!("webview login: page loaded, capture scripts injected");
+                return true;
+            }
+            Err(err) => {
+                tracing::warn!("webview login: progress poll failed: {err:#}");
+                return false;
+            }
+            _ => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Android-only: the full document-start bundle (IPC shim + popup fix +
+/// `POLL_JS`), also used for post-load (re)injection as backstop.
+#[cfg(target_os = "android")]
+fn start_bundle() -> String {
+    format!("{NATIVE_IPC_SHIM}\n{NATIVE_POPUP_FIX}\n{POLL_JS}")
+}
+
+/// Android-only: (re)inject the IPC shim + popup fix + `POLL_JS` bundle.
+/// Idempotent per document; required again after every Spotify redirect.
+/// Order matters: the shim first (the popup fix reports through it).
+#[cfg(target_os = "android")]
+async fn inject_bundle(view: &jni::objects::GlobalRef) {
+    use crate::platform::android_webview;
+
+    android_webview::post_eval_js(view.clone(), start_bundle());
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+}
+
+/// Android-only: non-http(s) page guard. `intent:`/`spotify:` URLs (App
+/// Links, external-app handoffs) cannot load in the view and must never
+/// replace the login page — send the view back to the sign-in flow instead.
+#[cfg(target_os = "android")]
+async fn guard_external_url(view: &jni::objects::GlobalRef) {
+    use crate::platform::android_webview;
+
+    let Ok(url) = android_webview::get_url(view).await else {
+        return;
+    };
+    if url.is_empty() {
+        return;
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("about:")) {
+        tracing::warn!("webview login: external url escaped the session view: {url}");
+        android_webview::post_load_url(view.clone(), SPOTIFY_SIGNIN_URL.to_string());
+    }
+}
+
+/// Android-only: ferry the IPC outbox through the view title and return the
+/// pending messages (`None` = transport hiccup, retry next poll). Consumed
+/// messages are cleared so they are never delivered twice.
+#[cfg(target_os = "android")]
+async fn drain_outbox(view: &jni::objects::GlobalRef) -> Option<Vec<serde_json::Value>> {
+    use crate::platform::android_webview;
+
+    android_webview::post_eval_js(view.clone(), NATIVE_FERRY_JS.to_string());
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let title = android_webview::get_title(view).await.ok()?;
+    let payload = title.strip_prefix(NATIVE_TITLE_PREFIX)?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(payload).ok()?;
+    android_webview::post_eval_js(view.clone(), NATIVE_RESET_JS.to_string());
+    Some(map.into_values().collect())
+}
+
+/// Android-only token refresh through the platform session view (same cookie
+/// jar via the process `CookieManager`). Revives the parked page when needed,
+/// triggers `_relay.refreshToken()`, and forwards the answer to the shared
+/// bridge machinery.
+#[cfg(target_os = "android")]
+async fn native_refresh_token() -> bool {
+    use crate::platform::android_webview;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let view = match LOGIN.with(|cell| cell.borrow().as_ref().map(|login| login.view.clone())) {
+        Some(view) => view,
+        None => return false,
+    };
+    let needs_revive = LOGIN.with(|cell| {
+        cell.borrow_mut()
+            .as_mut()
+            .map(|login| {
+                if login.suspended {
+                    login.suspended = false;
+                    login.ready.store(false, SeqCst);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
+    });
+    if needs_revive {
+        let ready = LOGIN.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|login| login.ready.clone())
+                .unwrap_or_default()
+        });
+        android_webview::post_load_url(view.clone(), SPOTIFY_LOGIN_URL.to_string());
+        tracing::info!("webview login: navigating to {SPOTIFY_LOGIN_URL}");
+        if !wait_loaded(&view, &ready, 10).await {
+            LOGIN.with(|cell| {
+                if let Some(login) = cell.borrow_mut().as_mut() {
+                    login.suspended = true;
+                }
+            });
+            tracing::warn!("webview login: page did not finish loading for token refresh");
+            return false;
+        }
+    }
+    android_webview::post_eval_js(
+        view.clone(),
+        "window._relay && window._relay.refreshToken && window._relay.refreshToken()".to_string(),
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        if LOGIN.with(|cell| cell.borrow().is_none()) {
+            return false;
+        }
+        if let Some(messages) = drain_outbox(&view).await {
+            let mut answered = false;
+            for msg in messages {
+                if msg.get("type").and_then(|t| t.as_str()) == Some("token_refresh_result") {
+                    answered = true;
+                }
+                let dummy = std::sync::Arc::new(std::sync::Mutex::new(None));
+                handle_json(dummy, msg, None);
+            }
+            if answered {
+                return true;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("webview login: token refresh produced no answer");
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
 }
 
 /// The window's `default_vbox()` — contains the dioxus UI; every WebView is
@@ -568,18 +940,19 @@ fn main_vbox() -> anyhow::Result<gtk::Box> {
 /// `build` receives the `WebViewBuilder` and must finish it with a backend
 /// build (`.build_gtk(&vbox)` on Linux desktop, `.with_bounds(..).build(..)`
 /// elsewhere). It runs inside `with_session_context` because the builder borrows
-/// `&mut WebContext`, so the borrow cannot escape that closure.
+/// `&mut WebContext`, so the borrow cannot escape that closure. Unused on
+/// Android, where the session page is a platform WebView.
+#[cfg(not(target_os = "android"))]
 fn build_in_context(
     url: &str,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     build: impl FnOnce(WebViewBuilder<'_>) -> wry::Result<WebView>,
 ) -> anyhow::Result<WebView> {
-    with_session_context(|context| {
-        render(context, url, &tx, &ready, build)
-    })
+    with_session_context(|context| render(context, url, &tx, &ready, build))
 }
 
+#[cfg(not(target_os = "android"))]
 fn render(
     context: &mut wry::WebContext,
     url: &str,
@@ -633,7 +1006,10 @@ fn build_webview_gtk(
 }
 
 /// Bounds filling the current window (mobile / non-Linux desktop sign-in).
-#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+#[cfg(all(
+    not(all(feature = "desktop", target_os = "linux")),
+    not(target_os = "android")
+))]
 fn full_window_bounds() -> wry::Rect {
     let (w, h) = crate::platform::webview::window_logical_size();
     wry::Rect {
@@ -644,7 +1020,10 @@ fn full_window_bounds() -> wry::Rect {
 
 /// Bounds hiding the WebView once the session is captured / before sign-in on
 /// the cross-platform path (off-screen, 1×1).
-#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+#[cfg(all(
+    not(all(feature = "desktop", target_os = "linux")),
+    not(target_os = "android")
+))]
 fn hidden_bounds() -> wry::Rect {
     wry::Rect {
         position: wry::dpi::Position::Physical(wry::dpi::PhysicalPosition::new(0, -9999)),
@@ -652,48 +1031,32 @@ fn hidden_bounds() -> wry::Rect {
     }
 }
 
-/// Build the sign-in WebView as a child of the wry window (mobile / non-Linux
-/// desktop). When `visible` it fills the window, overlaying the dioxus UI while
-/// the user signs in; otherwise it is parked off-screen, hidden.
-///
-/// On Android wry's window-child WebViews replace the content view instead of
-/// overlaying it and cannot be hidden, so the freshly-created WebView is handed
-/// to the Android view-layering manager (`on_webview_created`) which re-attaches
-/// the dioxus UI underneath and layers this WebView on top of it. `overlay_slot`
-/// receives the JNI global ref for the WebView's Android view so the caller can
-/// hide / detach it later.
-#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+/// Build the sign-in WebView as a child of the wry window (iOS / non-Linux
+/// desktop — Android uses the platform view in
+/// [`crate::platform::android_webview`] instead). When `visible` it fills the
+/// window, overlaying the dioxus UI while the user signs in; otherwise it is
+/// parked off-screen, hidden.
+#[cfg(all(
+    not(all(feature = "desktop", target_os = "linux")),
+    not(target_os = "android")
+))]
 fn build_webview_cross(
     visible: bool,
     url: &str,
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(target_os = "android")]
-    overlay_slot: std::sync::Arc<std::sync::Mutex<Option<jni::objects::GlobalRef>>>,
 ) -> anyhow::Result<WebView> {
     let desktop = crate::platform::webview::window();
-    let bounds = if visible { full_window_bounds() } else { hidden_bounds() };
+    let bounds = if visible {
+        full_window_bounds()
+    } else {
+        hidden_bounds()
+    };
     build_in_context(url, tx, ready, |builder| {
-        let builder = builder.with_bounds(bounds).with_visible(visible);
-        #[cfg(target_os = "android")]
-        let builder = {
-            use wry::WebViewBuilderExtAndroid as _;
-            builder.on_webview_created({
-                let overlay_slot = overlay_slot.clone();
-                move |ctx| {
-                    let overlay =
-                        crate::platform::android_views::install_overlay(
-                            ctx.env,
-                            ctx.activity,
-                            ctx.webview,
-                        )?;
-                    crate::platform::android_views::set_visible_now(ctx.env, ctx.webview, visible)?;
-                    *overlay_slot.lock().unwrap() = Some(overlay);
-                    Ok(())
-                }
-            })
-        };
-        builder.build(&desktop.window)
+        builder
+            .with_bounds(bounds)
+            .with_visible(visible)
+            .build(&desktop.window)
     })
 }
 
@@ -717,35 +1080,20 @@ pub fn hide() {
             }
             #[cfg(not(all(feature = "desktop", target_os = "linux")))]
             {
-                // Android: wry's `set_visible`/`set_bounds` are no-ops (every
-                // WebView replaces the activity content view), so hide the
-                // layered login WebView the Android way instead. We DETACH it
-                // (removeView + GONE) rather than just GONE: some WebView
-                // builds keep compositing a GONE WebView that shares the
-                // content frame with the base dioxus UI, which left the app on
-                // a full-screen white `about:blank` page over the real UI.
-                // Detaching removes it from the view tree while the `GlobalRef`
-                // stays alive in `LOGIN`, so token refreshes via
-                // `refresh_token()` (wry `load_url`/`evaluate_script`) still
-                // work — neither needs the view to be attached.
+                // Android: the platform session view was layered above the dioxus
+                // UI without ever touching it — detaching restores the UI
+                // underneath, and the `GlobalRef` stays alive in `LOGIN`, so
+                // token refreshes (plain `loadUrl`/`evaluateJavascript`, which
+                // need no attached view) keep working.
                 #[cfg(target_os = "android")]
                 {
-                    match &login.overlay {
-                        Some(overlay) => {
-                            tracing::info!(
-                                "webview login: detaching the session overlay (hide on Android)"
-                            );
-                            crate::platform::android_views::remove(overlay.clone());
-                        }
-                        None => {
-                            tracing::warn!(
-                                "webview login: no Android overlay ref to hide — session \
-                                 webview may stay layered over the UI"
-                            );
-                        }
-                    }
+                    tracing::info!("webview login: detaching the session view (hide on Android)");
+                    crate::platform::android_views::remove(login.view.clone());
                 }
-                #[cfg(not(target_os = "android"))]
+                #[cfg(all(
+                    not(all(feature = "desktop", target_os = "linux")),
+                    not(target_os = "android")
+                ))]
                 {
                     let _ = login.webview.set_visible(false);
                     if let Err(err) = login.webview.set_bounds(hidden_bounds()) {
@@ -769,7 +1117,15 @@ fn park_if_loaded() {
                 return;
             }
             login.suspended = true;
-            login.ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            login
+                .ready
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(target_os = "android")]
+            crate::platform::android_webview::post_load_url(
+                login.view.clone(),
+                "about:blank".to_string(),
+            );
+            #[cfg(not(target_os = "android"))]
             if let Err(err) = login.webview.load_url("about:blank") {
                 tracing::warn!("webview login: park failed: {err}");
             }
@@ -788,8 +1144,11 @@ pub fn shutdown() {
                 login.widget.unparent();
             }
             #[cfg(target_os = "android")]
-            if let Some(overlay) = &login.overlay {
-                crate::platform::android_views::remove(overlay.clone());
+            {
+                crate::platform::android_views::remove(login.view.clone());
+                // Best-effort cookie wipe (the keychain/file token is cleared
+                // separately by the caller).
+                crate::platform::android_webview::post_clear_cookies();
             }
             drop(login);
         }
@@ -807,11 +1166,31 @@ pub fn shutdown() {
 /// triggering the refresh. Revival happens on the UI thread; async so the wait
 /// doesn't block it.
 pub async fn refresh_token() -> bool {
+    // Android goes through the platform session view (its own cookie jar via
+    // the process `CookieManager`); the wry path below cannot run there.
+    #[cfg(target_os = "android")]
+    {
+        return native_refresh_token().await;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        wry_refresh_token().await
+    }
+}
+
+/// wry refresh path (desktop / iOS): revive the parked page when needed, wait
+/// for `window._relay`, then trigger the refresh. The answer arrives
+/// asynchronously over IPC (see [`handle_json`]).
+#[cfg(not(target_os = "android"))]
+async fn wry_refresh_token() -> bool {
     use std::sync::atomic::Ordering::*;
 
     let revived = LOGIN.with(|cell| {
         let mut guard = cell.borrow_mut();
-        let Some(login) = guard.as_mut() else { return false };
+        let Some(login) = guard.as_mut() else {
+            return false;
+        };
         if login.suspended {
             login.suspended = false;
             login.ready.store(false, SeqCst);
@@ -875,14 +1254,29 @@ pub async fn refresh_token() -> bool {
 /// Any other message type (token refresh results, etc.) is forwarded verbatim
 /// to the shared playback-bridge handler, because this WebView also serves as
 /// the token-refresh channel for the whole app.
+/// wry IPC entry point (desktop / iOS). Android uses the title ferry instead
+/// (see `drive_login`); both converge on [`handle_json`].
+#[cfg(not(target_os = "android"))]
 fn handle_ipc(
     tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
     request: wry::http::Request<String>,
 ) {
     let body = request.body().clone();
-    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return;
-    };
+    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body) {
+        handle_json(tx, msg, Some(request));
+    }
+}
+
+/// Shared message handling for both transports (wry IPC everywhere, plus the
+/// Android title-ferry outbox map). `request` is the original wry request when
+/// coming from [`handle_ipc`], so non-login messages can be forwarded verbatim
+/// to the playback bridge; the Android path rebuilds an equivalent request
+/// for the same purpose.
+fn handle_json(
+    tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<WebSessionResult>>>>,
+    msg: serde_json::Value,
+    request: Option<wry::http::Request<String>>,
+) {
     // Diagnostics are logged straight from the webkit thread — the bridge IPC
     // queue isn't drained until `webview_bridge::init()` runs (after the page
     // has loaded), so anything posted at document-start would otherwise be
@@ -893,7 +1287,16 @@ fn handle_ipc(
         return;
     }
     if msg.get("type").and_then(|t| t.as_str()) != Some("logged_in") {
-        crate::player::webview_bridge::handle_ipc(request);
+        match request {
+            Some(request) => crate::player::webview_bridge::handle_ipc(request),
+            // Android title-ferry: rebuild the equivalent request so refresh
+            // answers land on the shared bridge machinery (`REFRESH_TX`).
+            None => {
+                if let Ok(request) = wry::http::Request::builder().body(msg.to_string()) {
+                    crate::player::webview_bridge::handle_ipc(request);
+                }
+            }
+        }
         return;
     }
     let via = msg.get("via").and_then(|t| t.as_str()).unwrap_or("token");
@@ -903,7 +1306,10 @@ fn handle_ipc(
         .and_then(|t| t.as_str())
         .unwrap_or_default()
         .to_owned();
-    let expires_ms = msg.get("expiresMs").and_then(|t| t.as_u64()).unwrap_or_default();
+    let expires_ms = msg
+        .get("expiresMs")
+        .and_then(|t| t.as_u64())
+        .unwrap_or_default();
 
     if via == "dom" {
         // No token captured, but the profile widget rendered — the user is

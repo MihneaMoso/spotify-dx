@@ -878,8 +878,117 @@ patterns in mind so new code doesn't reintroduce them):
    `(255,255,255)` with a grey status bar — the parked overlay on top. Only the
    open-engine path exercises this single-overlay case (free accounts); the SDK
    path adds a second overlay via `webview_bridge` (`ensure_sdk_webview`).
-  `jni = "0.21"` was added (Android-only dep) purely to type the
-  `on_webview_created` closure's `Result<_, jni::errors::Error>`.
+   `jni = "0.21"` was added (Android-only dep) purely to type the
+   `on_webview_created` closure's `Result<_, jni::errors::Error>`.
+ - **Detaching the overlay is necessary but not sufficient — building the
+   overlay already broke the base view, permanently.** Root cause, verified by
+   code inspection after on-device logs ruled out auth (fresh `force-stop` +
+   launch, Motorola dubai_ge Android 14: `session captured (token)`,
+   `anon=false`, overlay detached, yet `Home` mounts — `home: fetching feed
+   (attempt 0)` — while pixels stay frozen on the unstyled `Login` gate with a
+   single `android.webkit.WebView` node in the dump and `Uncaught (in promise)
+   NetworkError: ... Failed to load 'https://dioxus.index.html//__events'`
+   ~10–20ms after every Router mount): wry 0.53.5's Android backend keeps the
+   custom-protocol/IPC/navigation handlers in process-global locks, and EVERY
+   `WebViewBuilder::build()` unconditionally `replace()`s them with that
+   builder's own (empty, for our login overlay) registrations
+   (`wry-0.53.5/src/android/mod.rs`, `REQUEST_HANDLER`/`IPC`/`URL_LOADING_OVERRIDE`
+   populated from per-build `custom_protocols`; dispatched per request in
+   `src/android/binding.rs::handle_request`). The dioxus base view registers
+   the async `dioxus` protocol serving `https://dioxus.index.html/` assets +
+   `//__events` (`dioxus-desktop-0.7.10/src/webview.rs:394`,
+   `src/protocol.rs:62`); our overlay build wipes it process-wide, so from
+   that moment the base view's CSS and event XHRs go to the real network and
+   die (unstyled Login, dead taps). View surgery cannot heal this: `removeView`
+   leaves it broken, and `WebView.reload()` is fatal — the custom-scheme
+   document is served at initial-load time only, so reload issues a real fetch
+   dying with `ERR_NAME_NOT_RESOLVED` (verified on-device: white "Webpage not
+   available" page; do not retry). `POLL_JS` early-returns on non-`http(s)`
+   pages so a parked `about:blank` session page stops re-arming pollers
+   (refresh still revives the real page). Resolution (landed): the Android login/session
+   page is a platform `android.webkit.WebView`, not wry —
+   `src/platform/android_webview.rs` (Android only) drives it entirely over JNI
+   through wry's `dispatch` (creation, `loadUrl`, `evaluateJavascript`,
+   `getProgress`, `getTitle`, `CookieManager` setup), so wry's globals are
+   never touched and the dioxus base view is never reparented, keeping its
+   protocol handler intact underneath the overlay. Session cookies interoperate
+   via the process `CookieManager` singleton; Rust<->page IPC goes over
+   `document.title` (`NATIVE_IPC_SHIM` collects into `window.__spotifyDxOutbox`,
+   Rust ferries it out with an eval + `getTitle()` and resets — the outbox var
+   is the source of truth, so a clobbered ferry is retried, never lost).
+   Drivers in `auth::webview_login` (`drive_login` / `drive_hidden` /
+   `native_refresh_token`) re-inject shim + `POLL_JS` on every pass (idempotent
+   latches; survives Spotify's accounts→open redirects) and feed results into
+   the unchanged    `handle_json`/bridge machinery by rebuilding the equivalent
+   `wry::http::Request`. wry overlay code (`android_views::install_overlay`
+   etc.) stays for the hidden premium SDK view only. Popup containment: the
+   bundle starts with `NATIVE_POPUP_FIX` (rewrites `target=_blank` to `_self`,
+   shims `window.open` to same-window, MutationObserver for late DOM) plus a
+   default `WebChromeClient` so uncaptured new-window requests fail closed
+   in-view instead of escaping to the browser (from where App Links fire the
+   real Spotify app); a `getUrl()` guard sends the view back to sign-in on
+   `intent:`/`spotify:` URLs. Caveat: premium accounts
+   still build that wry SDK view post-login (same clobber) — it needs the same
+   native treatment as follow-up; free/auto accounts never build it (verified
+   single-`WebView` dump). App-handoff containment (verified via
+   `ActivityTaskManager` START lines: our uid firing BROWSABLE
+   `https://open.spotify.com/...` explicitly targeted at SpotifyMainActivity
+   ~2s after cold start): Spotify's mobile pages auto-fire an app handoff that
+   resolves through verified App Links to the real Spotify app — foregrounding
+   it on every cold start and on hidden token-refresh revives. The platform
+   view therefore uses a desktop Chrome UA (+ wide viewport / overview mode)
+   whose site variant has no such handoff, starts directly at
+   `open.spotify.com` instead of the accounts bounce page, and keeps the popup
+   neutralizer + `getUrl()` guard as backstops. Device forensics (cookie DB
+   holds live `sp_dc`/`sp_key`; authed `curl` of the accounts page returns a
+   clean 200 with plain same-window SSO links; the fired intent's datum is an
+   `open.spotify.com/?flow_ctx=` continuation) show the handoff is the
+   session bounce: with cookies, the accounts page auto-continues and the
+   landing triggers the app handoff faster than any post-load injection can
+   cover. Android therefore starts at `open.spotify.com` itself (no bounce
+   exists there: logged-in boots straight to capture, logged-out gets the
+   wall), and the driver logs every in-view URL (`session page at …`). The neutralizer also carries a
+   capture-phase click guard (converts `_blank`/non-web-scheme anchor
+   activations in-view — this covers programmatically created + synchronously
+   clicked anchors, which run inside one JS task and beat the
+   `MutationObserver`), reports every interception as `token_debug`
+   (`popup-shim-open:` / `popup-guard-blank:` / `popup-guard-scheme:`) so the
+   exact escape vector is visible in logcat, and the bundle is (re)injected
+   from view creation on (not just at progress 100) to shrink the
+   document-start race — plus true document-start registration where
+   available: AndroidX `WebViewCompat.addDocumentStartJavaScript` runs before
+   the first page script on every navigation (the only mechanism that can
+   neuter parse-time auto-handoffs); on this device's packaged AndroidX the
+   method is ABSENT (verified tombstone: `NoSuchMethodError`, plus dex
+   inspection), so the code treats it as best-effort with post-load inject as
+   the working mechanism. Two hard JNI rules learned shipping this (both
+   SIGABRT-class if violated): app classes (`androidx.*`) must load through
+   `activity.getAppClass` (wry's own pattern) — plain `find_class` uses the
+   boot loader, leaves a pending `NoClassDefFoundError`, and aborts the
+   process at the next `FindClass` (verified tombstones) — and every JNI
+   error path must `exception_clear()` IMMEDIATELY, before any further JNI
+   call in the same closure (not just at the end: the abort fires at the next
+   internal `FindClass`, so a warn-and-continue without clearing still
+   crashes). Applies in `dispatch_call` and all fire-and-forget closures. The view is created with
+   explicit `FrameLayout.LayoutParams(MATCH_PARENT)`, focusable /
+   focusable-in-touch-mode / clickable / enabled + `requestFocus()`, and touch
+   is verified working on-device (tapping the accounts email field focuses it
+   and summons the keyboard, `mInputShown=true`). Earlier dead-touch readings
+   came from the desktop-UA cookie wall (scroll-locked modal + overview-mode
+   coordinate doubt), not the view — the explicit setup stays as cheap
+   insurance.
+   The view starts at the accounts sign-in page (direct login form, no cookie
+   wall) with the default mobile UA (a desktop UA was tried and reverted:
+   awkward phone dimensions, and it did not stop the handoff anyway), and the
+   driver logs every in-view URL change (`session page at …`) so the page flow
+   is traceable without Java-side navigation callbacks. Device forensics
+   (cookie DB holds live `sp_dc`/`sp_key`; authed `curl` of the accounts page
+   returns a clean 200 with plain same-window SSO links; the fired intent's
+   datum is always an `open.spotify.com/?flow_ctx=` continuation URL) show the
+   handoff is the session bounce: with cookies present, the accounts page
+   auto-continues and the landing page fires the app handoff within ~1s —
+   faster than any post-load injection can cover, which is why this stays
+   under investigation even with all containment above in place.
 - **`&mut JNIEnv<'a>` is invariant over `'a`** — never write a JNI helper that
   joins a `JNIEnv` arg to a `&JObject`/return whose `'local` must unify equal
   (wry `on_webview_created`'s `Context` does share one frame lifetime, but

@@ -92,6 +92,7 @@ pub fn capture_base() {
             Ok(())
         })();
         if let Err(err) = result {
+            let _ = env.exception_clear();
             tracing::warn!("android views: could not capture the app UI view: {err}");
         }
     });
@@ -153,6 +154,7 @@ pub fn set_visible_now(
 pub fn set_visible(overlay: GlobalRef, visible: bool) {
     wry::prelude::dispatch(move |env, _activity, _webview| {
         if let Err(err) = set_visible_now(env, overlay.as_obj(), visible) {
+            let _ = env.exception_clear();
             tracing::warn!("android views: set overlay visibility failed: {err}");
         }
     });
@@ -162,6 +164,7 @@ pub fn set_visible(overlay: GlobalRef, visible: bool) {
 pub fn remove(overlay: GlobalRef) {
     wry::prelude::dispatch(move |env, activity, _webview| {
         if let Err(err) = detach(env, activity, overlay.as_obj()) {
+            let _ = env.exception_clear();
             tracing::warn!("android views: remove overlay failed: {err}");
         }
     });
