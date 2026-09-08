@@ -96,8 +96,17 @@ async fn load_image_bytes(url: &str) -> Result<Vec<u8>, crate::app_error::AppErr
 }
 
 /// Build the blur-up (32px, heavy quality loss) and full (< 512px) JPEG data URIs.
+/// Oversized payloads skip decoding and are served raw: decoding a hostile
+/// multi-hundred-megapixel image could otherwise balloon memory (decompression
+/// bomb) on a component that renders once per visible artwork.
 fn encode_blur_and_full(bytes: &[u8]) -> (String, String) {
     use base64::Engine as _;
+    const MAX_DECODE_BYTES: usize = 12 * 1024 * 1024;
+    if bytes.len() > MAX_DECODE_BYTES {
+        let mime = infer_mime(bytes);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return (String::new(), format!("data:{mime};base64,{encoded}"));
+    }
     let Ok(img) = image::load_from_memory(bytes) else {
         // Non-image payload: serve the raw bytes as-is.
         let mime = infer_mime(bytes);

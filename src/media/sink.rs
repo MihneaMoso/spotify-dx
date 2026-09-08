@@ -32,6 +32,11 @@ pub enum SinkCommand {
     Shutdown,
 }
 
+/// How often the sink thread publishes the playback position while actually
+/// playing. 500ms keeps the progress clock smooth while halving the wakeups,
+/// IPC notifies and UI re-renders of the old 250ms cadence.
+const POSITION_PUBLISH_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Global sink handle: command sender + shared state. Lazily spawned on first
 /// open-engine use; lives for the whole process.
 type SinkHandle = (std::sync::mpsc::Sender<SinkCommand>, Arc<SinkState>);
@@ -121,13 +126,14 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
             }
         }
 
-        // While a player is active we poll position at 250ms for a smooth clock;
-        // when idle (no player) we block on recv() so the thread sleeps with
+        // While actually playing we poll position at 500ms for a smooth clock;
+        // when paused or idle we block on recv() so the thread sleeps with
         // zero wakeups. A command (Play/Pause/etc.) wakes it either way.
-        let recv = if current_player.is_some() {
-            rx.recv_timeout(Duration::from_millis(250))
+        let recv = if current_player.is_some() && state.is_playing.load(Ordering::Relaxed) {
+            rx.recv_timeout(POSITION_PUBLISH_INTERVAL)
         } else {
-            rx.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+            rx.recv()
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
         };
         match recv {
             Ok(cmd) => match cmd {

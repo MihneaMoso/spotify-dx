@@ -11,25 +11,43 @@ use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 pub fn PlayerBar() -> Element {
     // On the open engine the sink + shared position task publish the real
     // position, so this fake-advance clock is only needed on the SDK path.
-    // Skipping the coroutine entirely here means zero timer wakeups while
-    // idle (the common open-engine case); it only busy-ticks at 250ms when
-    // actually advancing the SDK clock.
-    if !crate::player::is_open_engine() {
-        use_coroutine(|_rx: UnboundedReceiver<()>| async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
-            loop {
-                interval.tick().await;
-                // Single non-re-entrant write: take the current position first,
-                // then write, so the write guard is never alive during the read
-                // (writing and peeking in one expression re-borrows the same
-                // `GlobalSignal` and panics with AlreadyBorrowed).
-                let pos = PLAYER_STATE.peek().position_ms;
-                if PLAYER_STATE.peek().is_playing {
-                    PLAYER_STATE.write().position_ms = pos.saturating_add(250);
-                }
+    // The hook itself is unconditional (hooks must run on every render); the
+    // open-engine case parks it forever so there are zero timer wakeups while
+    // idle. On the SDK path it ticks at 250ms only while actually advancing
+    // the clock and sleeps at 1s when paused, with a compare-before-write so
+    // a steady state never re-renders subscribers.
+    use_coroutine(|_rx: UnboundedReceiver<()>| async move {
+        if crate::player::is_open_engine() {
+            futures::future::pending::<()>().await;
+            return;
+        }
+        loop {
+            let playing = PLAYER_STATE.peek().is_playing;
+            tokio::time::sleep(std::time::Duration::from_millis(if playing {
+                250
+            } else {
+                1000
+            }))
+            .await;
+            if !playing {
+                continue;
             }
-        });
-    }
+            // Single non-re-entrant write: take the current position first,
+            // then write, so the write guard is never alive during the read
+            // (writing and peeking in one expression re-borrows the same
+            // `GlobalSignal` and panics with AlreadyBorrowed).
+            let pos = PLAYER_STATE.peek().position_ms;
+            let dur = PLAYER_STATE.peek().duration_ms;
+            let next = if dur == 0 {
+                pos.saturating_add(250)
+            } else {
+                pos.saturating_add(250).min(dur)
+            };
+            if next != pos {
+                PLAYER_STATE.write().position_ms = next;
+            }
+        }
+    });
 
     let playing = PLAYER_STATE.read().is_playing;
     let volume = PLAYER_STATE.read().volume;

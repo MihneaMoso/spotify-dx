@@ -60,7 +60,9 @@ pub async fn get_album(id: &str) -> Result<Album, AppError> {
 }
 
 /// Artist page: hero + discography + popular tracks + related artists.
-#[derive(Debug, Clone, Default)]
+/// Serializable for the JNI bridge (`getArtistPage`); the dioxus UI reads the
+/// same struct directly.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ArtistPage {
     pub artist: Artist,
     pub albums: Vec<Album>,

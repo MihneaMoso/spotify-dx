@@ -130,8 +130,10 @@ fn persist(profile: &UserProfile) -> std::io::Result<()> {
     }
 }
 
+/// Persist `profile` to `path`, creating parent directories. The Kotlin bridge
+/// uses this directly (signal-free); the dioxus UI goes through [`save`].
 #[cfg(not(target_arch = "wasm32"))]
-fn persist_to(profile: &UserProfile, path: &std::path::Path) -> std::io::Result<()> {
+pub fn persist_to(profile: &UserProfile, path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

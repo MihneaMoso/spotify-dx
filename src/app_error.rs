@@ -15,6 +15,8 @@ pub enum AppError {
     PremiumRequired(String),
     #[error("Session expired — please log in again")]
     SessionExpired,
+    #[error("no session token available to the headless core — revive the login page")]
+    NoBridgeSession,
     #[error("Access forbidden: {0}")]
     Forbidden(String),
     #[error("Spotify's API is rate-limiting requests right now — retrying automatically")]

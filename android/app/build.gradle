@@ -1,0 +1,64 @@
+// Kotlin app module (docs/KOTLIN_MIGRATION.md §7, §13). 64-bit mobile first
+// (arm64-v8a, matching the shipped architecture); further ABIs only with
+// measured demand. The native core (`libspotify_dx.so`) is built by
+// `scripts/build-kotlin.sh` via cargo+NDK and copied into
+// `src/main/jniLibs/<abi>/` before assembly — Gradle never builds Rust.
+//
+// Groovy DSL on purpose: the offline Gradle cache holds the AGP/KGP jars but
+// not the `plugins {}` marker artifacts, so the classic `apply plugin` style
+// (same as the proven dx template root) is what resolves with `--offline`.
+
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace 'com.spotifydx.app'
+    compileSdk 34
+
+    defaultConfig {
+        // Real application ID (the dx template default leaked a placeholder).
+        applicationId 'com.spotifydx.app'
+        // MUST stay >= 30 (Android 11): the windowing APIs the login/page
+        // hosts rely on need API 30+. See Dioxus.toml [mobile] + RULES.md.
+        minSdk 30
+        targetSdk 34
+        versionCode 1
+        // Mirrors the Cargo package version by hand until the build script
+        // stamps it (single source stays Cargo.toml).
+        versionName '0.1.0'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Bridge + installer classes must survive any future minification.
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'com.google.android.material:material:1.13.0'
+    implementation 'androidx.activity:activity:1.8.0'
+    implementation 'androidx.fragment:fragment:1.5.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-livedata:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-runtime:2.6.2'
+    implementation 'androidx.recyclerview:recyclerview:1.2.1'
+    implementation 'androidx.webkit:webkit:1.13.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
+}

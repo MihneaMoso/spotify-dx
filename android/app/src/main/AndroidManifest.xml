@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Owned manifest (docs/KOTLIN_MIGRATION.md §13): launcher activity, the
+     foreground playback service, and the updater file provider are
+     first-class entries. No intent filters beyond the launcher — deep-link
+     handling for the app's own addresses is explicitly out of scope (§7.2). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Notification runtime permission (API 33+): requested at runtime by
+         MainActivity before the playback service posts its notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".SpotifyDxApp"
+        android:label="Spotify DX"
+        android:theme="@style/Theme.SpotifyDx"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Background playback (§9.7): persistent notification, audio focus,
+             lock-screen transport via the MediaSession owned here. -->
+        <service
+            android:name=".PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Self-update APK staging (transferred verbatim from the dx staging
+             script; native side writes filesDir/updates/spotify-dx-update.apk
+             and fires SpotifyDxUpdater through the bridge). -->
+        <!-- spotify-dx-updater:provider -->
+        <provider
+            android:name=".SpotifyDxFileProvider"
+            android:authorities="com.spotifydx.app.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+    </application>
+
+</manifest>

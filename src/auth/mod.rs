@@ -159,9 +159,16 @@ pub async fn on_session_captured(token: String, expires_at_ms: u64) -> anyhow::R
 }
 
 /// Forget the session: clear the keychain + fallback file and reset state.
+///
+/// Headless-safe: outside a dioxus runtime (JNI bridge, background tasks)
+/// the signal writes are skipped — the credential clearing above is
+/// authoritative, and the bridge maps the resulting error to its own
+/// session transition. Same pattern as `session::ensure_token`'s guard.
 pub fn logout() {
     token_store::clear();
-    *AUTH_STATE.write() = AuthState::default();
+    if dioxus::core::Runtime::try_current().is_some() {
+        *AUTH_STATE.write() = AuthState::default();
+    }
     #[cfg(feature = "native")]
     {
         // Drop the cookie-holding WebViews so a fresh login starts clean.

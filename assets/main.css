@@ -272,11 +272,20 @@ img { display: block; max-width: 100%; }
 }
 
 .top-bar { grid-area: top; }
-.side-nav { grid-area: sidenav; }
+.side-nav {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter; grid-area: sidenav; }
 .main-content { grid-area: main; overflow-y: auto; min-width: 0; }
 .now-playing-col { grid-area: np; min-width: 0; overflow: hidden; }
-.player-bar { grid-area: player; }
-.bottom-nav { grid-area: nav; }
+.player-bar {
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  will-change: backdrop-filter; grid-area: player; }
+.bottom-nav {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter; grid-area: nav; }
 
 /* Sidebar drag-to-resize handle. Pinned to the live boundary (the app-shell
    updates `--sidebar-width` inline while dragging) and spans the rail height
@@ -331,6 +340,9 @@ img { display: block; max-width: 100%; }
   background: var(--glass-side);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
+  /* Backdrop blur kept for design identity: it keeps the compositor repainting continuously,
+     which is the single biggest idle-CPU cost in a WebKit-based desktop app. */
   border-bottom: 1px solid var(--border);
   z-index: 30;
 }
@@ -424,8 +436,6 @@ img { display: block; max-width: 100%; }
   top: calc(100% + 8px);
   min-width: 190px;
   background: var(--glass-toast);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);
@@ -455,8 +465,6 @@ img { display: block; max-width: 100%; }
   gap: 18px;
   padding: 20px 18px 28px;
   background: var(--glass-side);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   border-left: 1px solid var(--border);
   overflow-y: auto;
 }
@@ -522,9 +530,10 @@ img { display: block; max-width: 100%; }
 
 /* ── 4. Side nav ───────────────────────────────────────────────────────────── */
 .side-nav {
-  background: var(--glass-side);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
+  background: var(--glass-side);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -663,10 +672,11 @@ img { display: block; max-width: 100%; }
 
 /* ── 5. Bottom nav (mobile) ────────────────────────────────────────────────── */
 .bottom-nav {
-  display: flex;
-  background: var(--glass-bottom-nav);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
+  display: flex;
+  background: var(--glass-bottom-nav);
   border-top: 1px solid var(--border);
   height: var(--bottom-nav-height);
   z-index: 40;
@@ -690,6 +700,9 @@ img { display: block; max-width: 100%; }
 
 /* ── 6. Player bar ─────────────────────────────────────────────────────────── */
 .player-bar {
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  will-change: backdrop-filter;
   position: relative;
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(320px, 2fr) minmax(140px, 1fr);
@@ -697,8 +710,6 @@ img { display: block; max-width: 100%; }
   gap: 16px;
   padding: 0 18px;
   background: var(--glass-player);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
   border-top: 1px solid var(--border);
   box-shadow: 0 -8px 30px -12px rgb(var(--ink-rgb) /0.55);
   z-index: 50;
@@ -888,14 +899,15 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.2); }
 
 /* ── 9. Media cards ────────────────────────────────────────────────────────── */
 .media-card {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  will-change: backdrop-filter;
   position: relative;
   cursor: pointer;
   padding: 14px;
   border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid transparent;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1137,8 +1149,6 @@ button.ghost:active { transform: scale(0.97); }
   border-radius: var(--radius-lg);
   background: var(--glass-login-card);
   border: 1px solid var(--border);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
   box-shadow: var(--shadow-2);
   display: flex;
   flex-direction: column;
@@ -1186,8 +1196,6 @@ button.login-button {
   bottom: calc(var(--player-height) + var(--bottom-nav-height) + 22px);
   transform: translateX(-50%);
   background: var(--glass-toast);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   color: var(--text);
   border: 1px solid rgb(var(--danger-rgb) /0.4);
   border-left: 3px solid var(--danger-strong);
@@ -1270,6 +1278,9 @@ button.login-button {
     grid-template-columns: 72px minmax(0, 1fr);
   }
   .side-nav {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
     padding: 20px 10px;
     align-items: center;
   }
@@ -1294,12 +1305,18 @@ button.login-button {
       "player"
       "nav";
   }
-  .side-nav { display: none; }
+  .side-nav {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter; display: none; }
   /* Sidebar is hidden on narrow widths, so its resize handle must go too. */
   .sidebar-resizer { display: none; }
   /* Grid item (not fixed) so the "nav" row is real and no ghost space is left
      for a fixed bar that doesn't participate in the grid. */
   .bottom-nav {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
     display: flex;
     grid-area: nav;
     position: static;
@@ -1311,6 +1328,9 @@ button.login-button {
   .tb-arrows { display: none; }
   .avatar-chip summary span { display: none; }
   .player-bar {
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  will-change: backdrop-filter;
     grid-template-columns: 1fr;
     grid-template-rows: auto auto;
     grid-area: player;
@@ -1402,7 +1422,10 @@ button.login-button {
 
 /* Shelves snap while scrolling */
 .shelf-row { scroll-snap-type: x proximity; }
-.shelf-row > .media-card { scroll-snap-align: start; }
+.shelf-row > .media-card {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  will-change: backdrop-filter; scroll-snap-align: start; }
 
 /* Jump-back-in tiles */
 .tile-grid {

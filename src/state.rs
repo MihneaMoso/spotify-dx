@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
 use crate::spotify::models::*;
@@ -198,8 +199,9 @@ impl AuthState {
     }
 }
 
-/// Numbers exposed in the "ad-block" status panel.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Numbers exposed in the "ad-block" status panel. Serialized across the JNI
+/// bridge (`filterStats`), so it carries serde impls like the models.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct AdblockStats {
     /// Hostnames currently held in the block tree.
     pub tracked: usize,

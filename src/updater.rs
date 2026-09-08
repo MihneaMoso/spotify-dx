@@ -147,6 +147,25 @@ fn pick_asset(body: &str, token: &str) -> Result<ReleaseInfo, String> {
     if asset_url.is_empty() {
         return Err("asset has no download url".into());
     }
+    // The URL comes from release metadata: only ever fetch it when it points
+    // at GitHub over TLS, so a tampered payload can't redirect the updater
+    // at an arbitrary host.
+    let is_github_https = asset_url.starts_with("https://")
+        && asset_url
+            .split_at("https://".len())
+            .1
+            .split('/')
+            .next()
+            .is_some_and(|host| {
+                host == "github.com"
+                    || host.ends_with(".github.com")
+                    || host == "objects.githubusercontent.com"
+                    || host.ends_with(".objects.githubusercontent.com")
+                    || host == "release-assets.githubusercontent.com"
+            });
+    if !is_github_https {
+        return Err("asset download url is not a GitHub HTTPS URL".into());
+    }
     let sha256 = asset["digest"]
         .as_str()
         .and_then(|d| d.strip_prefix("sha256:"))
@@ -175,6 +194,9 @@ fn platform_token() -> Result<&'static str, String> {
 /// Download `url` into `dest`, hashing as it streams, and verify the (optional)
 /// SHA-256 digest. The archive is written through `{dest}.part` and renamed so
 /// a failed/cancelled download never leaves a half-written file look staged.
+/// Aborts past `MAX_DOWNLOAD_BYTES` so a tampered asset can't fill the disk.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_DOWNLOAD_BYTES: u64 = 150 * 1024 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 async fn download_to(url: &str, dest: &std::path::Path, sha256: Option<&str>) -> Result<(), String> {
     use sha2::Digest;
@@ -201,12 +223,21 @@ async fn download_to(url: &str, dest: &std::path::Path, sha256: Option<&str>) ->
     let mut hasher = sha2::Sha256::new();
     let mut stream = resp.bytes_stream();
     use futures::StreamExt;
+    let mut total: u64 = 0;
     while let Some(chunk) = stream
         .next()
         .await
         .transpose()
         .map_err(|e| format!("read download failed: {e}"))?
     {
+        total = total.saturating_add(chunk.len() as u64);
+        if total > MAX_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(format!(
+                "download exceeds size limit ({MAX_DOWNLOAD_BYTES} bytes)"
+            ));
+        }
         hasher.update(&chunk);
         file.write_all(&chunk)
             .await
@@ -299,7 +330,16 @@ fn cached_files_dir() -> Option<std::path::PathBuf> {
     FILES_DIR.get().and_then(|p| p.clone())
 }
 
+/// Pin the app-private files directory from the host. The Kotlin bridge calls
+/// this from `initCore` with the Activity's `filesDir`; the dioxus renderers
+/// resolve it through wry's `dispatch` instead (see `android_files_dir`).
+/// First call wins.
 #[cfg(target_os = "android")]
+pub fn set_bridge_files_dir(path: std::path::PathBuf) {
+    let _ = FILES_DIR.set(Some(path));
+}
+
+#[cfg(all(target_os = "android", feature = "native"))]
 async fn android_files_dir() -> Option<std::path::PathBuf> {
     if let Some(p) = cached_files_dir() {
         return Some(p);
@@ -317,9 +357,17 @@ async fn android_files_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Headless-core (Kotlin app) variant: no wry `dispatch` exists there, so the
+/// files dir must have been pinned via [`set_bridge_files_dir`] first.
+#[cfg(all(target_os = "android", not(feature = "native")))]
+async fn android_files_dir() -> Option<std::path::PathBuf> {
+    cached_files_dir()
+}
+
 /// Resolve the `Context.getFilesDir()` path synchronously given the safe JNI
-/// context wry `dispatch` provides.
-#[cfg(target_os = "android")]
+/// context wry `dispatch` provides. Dioxus renderers only; the Kotlin bridge
+/// receives `filesDir` as a JNI string and pins it via `set_bridge_files_dir`.
+#[cfg(all(target_os = "android", feature = "native"))]
 fn resolve_files_dir(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<std::path::PathBuf> {
     let file = env
         .call_method(activity, "getFilesDir", "()Ljava/io/File;", &[])?
@@ -338,6 +386,11 @@ fn resolve_files_dir(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Resul
 
 /// Extract the single root binary from the gzip'd tarball to `dir/spotify-dx.new`
 /// and write a marker naming the executable to swap on the next launch.
+/// Only a single top-level regular file is accepted (never a path — the bytes
+/// always land at the fixed staged location, so `../` entries can't escape),
+/// and entries past `MAX_BINARY_BYTES` are rejected before buffering.
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024;
 #[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
 fn stage_desktop_binary(dir: &std::path::Path, archive: &std::path::Path) -> Result<(), String> {
     use std::io::Read;
@@ -356,10 +409,19 @@ fn stage_desktop_binary(dir: &std::path::Path, archive: &std::path::Path) -> Res
         {
             continue;
         }
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        if entry.size() > MAX_BINARY_BYTES {
+            return Err("archive entry exceeds size limit".into());
+        }
         let mut buf = Vec::new();
         entry
             .read_to_end(&mut buf)
             .map_err(|e| format!("read entry: {e}"))?;
+        if buf.len() as u64 > MAX_BINARY_BYTES {
+            return Err("archive entry exceeds size limit".into());
+        }
         std::fs::write(&staged, &buf).map_err(|e| format!("write staged: {e}"))?;
         found = true;
         break;
@@ -434,8 +496,9 @@ pub fn apply_staged_update() -> bool {
 /// FileProvider-backed content URI (wired up in `SpotifyDxUpdater.kt`/manifest
 /// by `scripts/stage-updater.sh`). Runs through wry's safe `dispatch`, so no
 /// `unsafe` is needed to reach the Android context. Returns Ok once the intent
-/// is handed to the system.
-#[cfg(target_os = "android")]
+/// is handed to the system. Dioxus renderers only; the Kotlin app calls
+/// [`request_android_install_with`] with its own JNI context instead.
+#[cfg(all(target_os = "android", feature = "native"))]
 pub fn request_android_install() -> Result<(), String> {
     let Some(dir) = updates_dir() else {
         return Err("no app files dir".into());
@@ -451,6 +514,24 @@ pub fn request_android_install() -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Kotlin-app variant of [`request_android_install`]: fires the same
+/// `SpotifyDxUpdater.installApk` intent, but over the JNI context the bridge
+/// already holds instead of wry's `dispatch` (which does not exist in the
+/// headless core build). `activity` is any `Context` (the bridge passes the
+/// Activity it was given).
+#[cfg(target_os = "android")]
+pub fn request_android_install_with(env: &mut JNIEnv, activity: &JObject) -> Result<(), String> {
+    let Some(dir) = updates_dir() else {
+        return Err("no app files dir".into());
+    };
+    let apk = dir.join(APK_NAME);
+    if !apk.exists() {
+        return Err("no staged apk".into());
+    }
+    let path = apk.to_string_lossy().into_owned();
+    fire_install_intent(env, activity, &path).map_err(|e| format!("install intent: {e}"))
 }
 
 /// `SpotifyDxUpdater.installApk(Context, String): V` — fires the system
@@ -535,7 +616,7 @@ pub fn run_check() {
 pub fn apply_now() -> bool {
     // Android completes through the system installer (this returns after the
     // intent is handed off); desktop does an in-process swap + relaunch.
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native"))]
     {
         match request_android_install() {
             Ok(()) => {
@@ -548,6 +629,13 @@ pub fn apply_now() -> bool {
                 false
             }
         }
+    }
+    // Headless core (Kotlin app): installs are driven over the JNI bridge
+    // (`applyUpdate`), so there is no UI-triggered path here.
+    #[cfg(all(target_os = "android", not(feature = "native")))]
+    {
+        *UPDATE_STATUS.write() = Some("Updates install from the system prompt".into());
+        false
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -604,29 +692,42 @@ mod tests {
             "tag_name": "v0.1.8",
             "assets": [
                 {"name": "spotify-dx-v0.1.8-x86_64-unknown-linux-gnu.tar.gz",
-                 "browser_download_url": "https://example/linux.tar.gz",
+                 "browser_download_url": "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/linux.tar.gz",
                  "digest": "sha256:deadbeef"},
                 {"name": "app-release-unsigned-signed.apk",
-                 "browser_download_url": "https://example/android.apk",
+                 "browser_download_url": "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/android.apk",
                  "digest": "sha256:f00d"},
                 {"name": "spotify-dx-v0.1.8-x86_64-pc-windows-msvc.zip",
-                 "browser_download_url": "https://example/win.zip",
+                 "browser_download_url": "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/win.zip",
                  "digest": "sha256:beef"}
             ]
         }"#;
 
         let linux = pick_asset(body, LINUX_TOKEN).unwrap();
         assert_eq!(linux.version, "0.1.8");
-        assert_eq!(linux.asset_url, "https://example/linux.tar.gz");
+        assert_eq!(
+            linux.asset_url,
+            "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/linux.tar.gz"
+        );
         assert_eq!(linux.sha256.as_deref(), Some("deadbeef"));
 
         let android = pick_asset(body, ANDROID_TOKEN).unwrap();
-        assert_eq!(android.asset_url, "https://example/android.apk");
+        assert_eq!(
+            android.asset_url,
+            "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/android.apk"
+        );
 
         let win = pick_asset(body, WINDOWS_TOKEN).unwrap();
-        assert_eq!(win.asset_url, "https://example/win.zip");
+        assert_eq!(
+            win.asset_url,
+            "https://github.com/MihneaMoso/spotify-dx/releases/download/v0.1.8/win.zip"
+        );
 
         assert!(pick_asset(body, "no-such-token").is_err());
+
+        // A non-GitHub download URL must be rejected, not fetched.
+        let evil = body.replace("https://github.com/", "https://example/");
+        assert!(pick_asset(&evil, LINUX_TOKEN).is_err());
     }
 
     #[test]

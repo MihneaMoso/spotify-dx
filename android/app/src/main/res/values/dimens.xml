@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="player_height">92dp</dimen>
+    <dimen name="topbar_height">56dp</dimen>
+    <dimen name="sidebar_width">240dp</dimen>
+    <dimen name="radius">10dp</dimen>
+    <dimen name="pad">16dp</dimen>
+    <dimen name="pad_half">8dp</dimen>
+</resources>

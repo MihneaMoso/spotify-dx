@@ -1,26 +1,18 @@
-//! Spotify DX — a cross-platform Spotify client that hides premium previews.
+//! Spotify DX — renderer entry points (thin shell over the native core).
 //!
-//! Renderers: `--features desktop` (primary), `web` and `mobile`. On desktop we
-//! boot a hidden wry WebView that runs the Web Playback SDK; it shares its data
-//! directory (session cookies) with the visible login WebView from `auth`.
+//! All services live in the `spotify_dx` library crate (`src/lib.rs`, Phase 0
+//! of `docs/KOTLIN_MIGRATION.md`); this binary keeps the per-renderer entry
+//! points (`desktop`/`web`/`mobile`/headless) plus the shared `bootstrap()`.
+//! The Kotlin Android app (`android/`) links the library directly and does not
+//! use this binary at all.
 
 #![forbid(unsafe_code)]
 
-pub mod adblock;
-pub mod app;
-pub mod app_error;
-pub mod auth;
-pub mod media;
-pub mod player;
-pub mod platform;
-pub mod profile;
-pub mod settings;
-pub mod spotify;
-pub mod state;
-pub mod streaming;
-pub mod ui;
-pub mod updater;
-pub mod util;
+use spotify_dx::adblock;
+#[cfg(any(feature = "desktop", feature = "web", feature = "mobile"))]
+use spotify_dx::app;
+#[cfg(feature = "desktop")]
+use spotify_dx::updater;
 
 /// Shared startup: tracing, ad-blocker, auth boot. Returns `true` when a valid
 /// session was restored from the keychain (main UI launches straight away).
@@ -32,7 +24,7 @@ async fn bootstrap() -> bool {
     if let Err(err) = adblock::init().await {
         tracing::warn!("adblock: bootstrap failed ({err:#}); continuing without a blocker");
     }
-    crate::auth::init().await
+    spotify_dx::auth::init().await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -60,7 +52,6 @@ fn init_logging() {
 
 #[cfg(feature = "desktop")]
 fn main() {
-    use app::App;
     use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 
     init_logging();
@@ -98,7 +89,7 @@ fn main() {
         // would only duplicate/replace the in-app chrome.
         .with_menu(None)
         .with_disable_context_menu(true);
-    dioxus::LaunchBuilder::desktop().with_cfg(config).launch(App);
+    dioxus::LaunchBuilder::desktop().with_cfg(config).launch(app::App);
 }
 
 /// Mobile renderer: the full app (bootstrap + SDK/open-engine playback via the
@@ -106,14 +97,13 @@ fn main() {
 /// the same multi-threaded tokio bootstrap as desktop.
 #[cfg(all(not(feature = "desktop"), not(feature = "web"), feature = "mobile"))]
 fn main() {
-    use app::App;
     init_logging();
 
     let rt = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
     rt.block_on(bootstrap());
     drop(rt);
 
-    dioxus::launch(App);
+    dioxus::launch(app::App);
 }
 
 /// Web renderer: run the full web-parity startup (adblock + auth session init)
@@ -121,14 +111,13 @@ fn main() {
 /// or blocking executor, so bootstrap runs as a `spawn_local` background task.
 #[cfg(all(not(feature = "desktop"), feature = "web"))]
 fn main() {
-    use app::App;
     init_logging();
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(async move {
         let restored = bootstrap().await;
         tracing::info!("web: bootstrap complete, session restored={restored}");
     });
-    dioxus::launch(App);
+    dioxus::launch(app::App);
 }
 
 /// Headless / tooling build (CI, tests, `cargo check` without renderers): just
@@ -145,7 +134,7 @@ fn main() {
 
     println!(
         "spotify-dx headless (tooling build): adblock={} auth={}",
-        if crate::state::is_blocker_ready() { "ready" } else { "not-ready" },
+        if spotify_dx::state::is_blocker_ready() { "ready" } else { "not-ready" },
         if has_session { "restored" } else { "none" }
     );
 }

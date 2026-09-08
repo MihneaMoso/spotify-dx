@@ -1266,6 +1266,112 @@ proxy** that holds the user's session cookie and mints tokens on their behalf
   var; update `auth/mod.rs` non-native `login()` + `web_login.rs` to use it;
   keep a graceful local fallback for dev.
 
+### 6.9h Kotlin migration — Phase 0 + Phase 1 (native core library + owned Kotlin app)
+
+Status: **Phase 0 gate green, Phase 1 shell smoke builds** (`docs/KOTLIN_MIGRATION.md`
+§14). The Kotlin app in `android/` is the primary Android build path
+(`scripts/build-kotlin.sh` → `scripts/build-android-install.sh` default;
+`DX_LEGACY=1` keeps the old dx renderer until the Phase 7 cutover). The
+dioxus-mobile Rust code is untouched and still builds.
+
+- **Core extraction shape (deliberate deviation from §5):** `app` + `ui` live
+  in the LIB (`src/lib.rs`), not binary-only. Reason: `app.rs`/`ui/*` use
+  `crate::` paths that only resolve inside one crate, and `ui/theme.rs` +
+  page tests must keep running on every feature combo including headless.
+  The `.so` carries dormant UI code until Phase 7 removes the legacy
+  renderer — accepted, documented in `KOTLIN_MIGRATION.md` terms as
+  "binary is a thin shell over the library" (true: `main.rs` is entry points
+  + `bootstrap()` only).
+- **The headless core builds for Android WITHOUT the `native` feature:**
+  `cargo build --no-default-features --target aarch64-linux-android` is the
+  Kotlin lib config. Three re-gates made it compile: `platform::android_views`
+  / `android_webview` are now `all(target_os="android", feature="native")`
+  (dioxus-renderer view layering — the Kotlin app owns its own in
+  `MainActivity`/`LoginWebView`); `updater::android_files_dir` /
+  `request_android_install` split into native (wry `dispatch`) vs headless
+  (`set_bridge_files_dir` + `request_android_install_with(env, activity)`)
+  variants; `updater::apply_now`'s android branch is native-only.
+- **`#![forbid(unsafe_code)]` vs JNI exports:** current rustc classifies
+  `#[no_mangle]` under `unsafe_code`, so a crate-level `forbid` rejects every
+  `Java_…` export with no per-item override. `src/lib.rs` is therefore
+  `#![deny(unsafe_code)]` (still a hard error for `unsafe {}` anywhere) with
+  `#[allow(unsafe_code)]` scoped to the bridge's `#[no_mangle]` attributes
+  only — verified: the allow silences the export lint while an `unsafe {}`
+  block elsewhere still fails. `main.rs` (bin) keeps `forbid`. The bridge
+  contains zero `unsafe` blocks — only the safe `jni` 0.21 API.
+- **jni 0.21 plumbing facts:** `JNIEnv<'local>` methods are mixed-receiver:
+  `new_string`/`convert_byte_array` take `&self`, but `get_string`/
+  `find_class`/`call_static_method` need `&mut self`. `JString` is a
+  raw-pointer wrapper (frame lifetime, not a borrow of `env`), so bridge
+  helpers take `env` by value: `guarded<'a>(mut env: JNIEnv<'a>,
+  f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a>`. Every entry is
+  panic-guarded (`catch_unwind` → `BRIDGE_PANIC` envelope, never unwinds
+  into the JVM). Kotlin calls blocking methods from `Dispatchers.IO` only.
+- **Signal-entangled services can't run headless:** dioxus `GlobalSignal`s
+  panic outside a runtime (`Runtime::new` is `pub(crate)` — no way to host
+  one from the bridge), and `session::ensure_token` gracefully errors there
+  by design. So the bridge implements only signal-free surfaces for real
+  (settings/profile file CRUD via new `profile::persist_to` + `util::`
+  dir overrides for `filesDir`/`cacheDir`, adblock engine, updater
+  network+staging, token-store, session mirror + event queue) and exposes
+  the exact §6.1 session/data/playback signatures as `PHASE_2_PLUS` stubs
+  (macro-generated) so Kotlin compiles against the final contract now.
+- **Owned Gradle project (`android/`, no generator, no Studio):** Groovy DSL
+  for the app module ON PURPOSE — the offline cache holds AGP 8.7.0 + KGP
+  2.0.20 jars but not the `plugins {}` marker artifacts, so the classic
+  `apply plugin` style is what resolves with `--offline`. Wrapper pins
+  Gradle 9.1.0 (cached dist; AGP 8.7.0 + KGP 2.0.20 configure fine on it).
+  Deps are pinned to cached versions only (appcompat 1.7.1, material 1.13.0,
+  activity 1.8.0, fragment 1.5.4, lifecycle 2.6.2, recyclerview 1.2.1,
+  webkit 1.13.0, coroutines 1.6.4) — notably NO `-ktx` artifacts (not
+  cached): fragments use `ViewModelProvider` directly and ViewModels extend
+  `ScopedViewModel` (same viewModelScope semantics). No Compose/Media3
+  (not cached): classic Views + Material3 + framework WebView/MediaPlayer/
+  MediaSession. First build on a fresh cache needs ONE online run (Gradle
+  metadata versioning); after that `--offline` holds.
+- **`scripts/build-kotlin.sh` runs the bridge-compat check (§13):** every
+  `Java_com_spotifydx_app_CoreBridge_*` symbol referenced from Kotlin must
+  exist in `libspotify_dx.so` (`nm -D`), else the build fails here instead
+  of at runtime. The staged `.so` under
+  `android/app/src/main/jniLibs/<abi>/` is git-ignored (rebuilt every time).
+- **`android/updater/` staging sources are now first-class:** copied verbatim
+  into the owned project; `scripts/stage-updater.sh` is legacy-path-only.
+- **Login capture JS (`CaptureJs.kt`) is `POLL_JS` verbatim** (TOTP key,
+  `0x98BADCFE`, fetch hook, relay, message vocabulary) with `window.ipc`
+  backed by the `SpotifyDx` JavascriptInterface instead of the title ferry.
+  Do not "simplify" either copy — and keep both in sync if the endpoint
+  contract changes.
+- **Material `setSelectedItemId` dispatches the selection listener
+  UNCONDITIONALLY** (even when the id is unchanged). A shell that writes the
+  selected id on every navigation (`syncNav`) therefore recurses
+  select → go → syncNav until `StackOverflowError` (verified on-device: 168
+  repeating `go`/`syncNav` frames, overflow surfacing in `findViewById`).
+  Guard both sides: only assign when different, and ignore selections already
+  current. Caught by launching on a real device — the emulator-less sandbox
+  never exercises this.
+- **Never ship `./gradlew assembleDebug` alone: always install via
+  `scripts/build-kotlin.sh`.** Gradle never rebuilds Rust, so a lone assemble
+  silently bundles the previous `jniLibs/libspotify_dx.so` — the symptom is a
+  fully-built APK whose new bridge calls return `PHASE_2_PLUS` (a `Phase 2+`
+  toast + no login page, in the case that caught this). The script's
+  bridge-compat check only verifies symbols exist, not that the `.so` is
+  fresh — cargo's incrementality is what keeps it fresh; skipping cargo
+  defeats it.
+- **Airplane mode kills wireless adb.** The device drops off `adb devices`
+  the moment offline mode goes on (and the PIC between shell and phone dies
+  with it) — plan offline tests as fire-and-observe-from-the-phone, and
+  re-connect after. Offline cold start shows Spotify's own reCAPTCHA/notice
+  UI (genuine page ⇒ same errors as today by construction); hard main-frame
+  failures additionally toast + keep the gate retry.
+- **Phase 2 refresh inversion (documented, not a hack):** the session page
+  lives in Kotlin, so refresh initiates there — `bridge::refreshToken` only
+  judges the mirror (fresh / `NEEDS_PAGE`), and `SessionRefresher` (single-
+  flight shared `Deferred` = the native fan-out semantics) revives the page,
+  captures, and retries. The raw token never crosses JNI. `currentUser` is
+  the silent-restore verifier over the mirrored token (`/v1/me`, 401 →
+  `SESSION_EXPIRED` transition). Expiry recovery is watchdog-timer-driven
+  (30s cadence, 5min horizon), never token-reactive.
+
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# LEGACY dx-renderer path only (DX_LEGACY=1). The Kotlin app (android/, the
+# primary build) carries SpotifyDxUpdater + SpotifyDxFileProvider as
+# first-class source sets + manifest entries — nothing needs staging.
+# This script remains for the dx-generated project until the Phase 7 cutover.
+#
 # Stage the in-repo Android self-update support (SpotifyDxUpdater +
 # SpotifyDxFileProvider) into the dx-generated Android project. The APK
 # self-update path needs a ContentProvider to serve the staged APK (avoiding

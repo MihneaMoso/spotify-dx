@@ -50,6 +50,8 @@ pub fn App() -> Element {
 
     // Check for updates once per process when the user has the startup check
     // enabled. Runs after mount so the dioxus runtime (and its spawn) exist.
+    // Delayed by 15s so the startup burst (session page load, feed fetches,
+    // artwork decoding) isn't contending with a release-metadata fetch.
     // The settings page offers a manual check + an apply button for whatever
     // this finds.
     let mut update_checked = use_signal(|| false);
@@ -57,7 +59,10 @@ pub fn App() -> Element {
         if !*update_checked.peek() {
             update_checked.set(true);
             if SETTINGS.read().auto_check_updates {
-                crate::updater::run_check();
+                dioxus::prelude::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    crate::updater::run_check();
+                });
             }
         }
     });

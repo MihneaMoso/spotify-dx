@@ -2,3 +2,16 @@
 /_deploy
 /web/app
 
+# Kotlin Android app (android/): Gradle outputs, staged native lib (330 MB+
+# debug .so, rebuilt by scripts/build-kotlin.sh), and produced APKs.
+/android/build
+/android/app/build
+/android/.gradle
+/android/.kotlin
+/android/app/src/main/jniLibs/arm64-v8a/*.so
+/android/app/src/main/jniLibs/x86_64/*.so
+/android/app/src/main/jniLibs/armeabi-v7a/*.so
+*.apk
+*.aab
+local.properties
+

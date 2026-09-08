@@ -96,6 +96,13 @@ fn save_to_file(access_token: &str, expires_at_ms: u64) {
         "expires_at_ms": expires_at_ms,
     });
     let _ = std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap_or_default());
+    // The fallback holds a live session token: restrict it to the owner so
+    // other users on the machine can't read it (default umask may allow more).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

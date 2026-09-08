@@ -17,14 +17,20 @@ pub mod webview;
 
 /// Android-only view-layering for the in-window WebViews (wry 0.53.5 has no
 /// multi-WebView support on Android — see `android_views` docstring).
-#[cfg(target_os = "android")]
+/// Dioxus-mobile-renderer only: it drives wry's view tree through
+/// `wry::prelude::dispatch`, which does not exist in the Kotlin app's
+/// headless core build (no `native` feature). The Kotlin interface owns its
+/// own view layering in `MainActivity`.
+#[cfg(all(target_os = "android", feature = "native"))]
 pub mod android_views;
 
 /// Android-only platform WebView for the Spotify sign-in/session page. A
 /// second wry WebView would permanently clobber the dioxus base view's
 /// custom-protocol handlers (see `android_webview` docstring), so the login
 /// page lives in a plain `android.webkit.WebView` driven over JNI instead.
-#[cfg(target_os = "android")]
+/// Same renderer-only scoping as `android_views`: the Kotlin app hosts its
+/// login page in `LoginWebView` and never uses this module.
+#[cfg(all(target_os = "android", feature = "native"))]
 pub mod android_webview;
 
 /// Browser login flow (whole-tab redirect + credentialed token capture).

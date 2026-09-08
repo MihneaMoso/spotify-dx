@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Design tokens ported 1:1 from src/ui/theme.rs + assets/main.css
+     (docs/KOTLIN_MIGRATION.md §7.4). DeepBlue is the default dark palette;
+     Onyx is the near-black alternative. -->
+<resources>
+    <color name="deep_bg">#0A0E1A</color>
+    <color name="deep_surface">#161C30</color>
+    <color name="deep_card">#1A2136</color>
+    <color name="deep_blue">#3B82F6</color>
+    <color name="deep_blue_2">#60A5FA</color>
+    <color name="deep_cyan">#22D3EE</color>
+    <color name="deep_text">#F1F5FB</color>
+    <color name="deep_muted">#9AA6C3</color>
+
+    <color name="onyx_bg">#05070D</color>
+    <color name="onyx_surface">#0B0E17</color>
+    <color name="onyx_card">#0E1322</color>
+    <color name="onyx_blue">#3B82F6</color>
+    <color name="onyx_blue_2">#60A5FA</color>
+    <color name="onyx_cyan">#22D3EE</color>
+    <color name="onyx_text">#F1F5FB</color>
+    <color name="onyx_muted">#9AA6C3</color>
+</resources>

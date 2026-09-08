@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Both palettes are dark (the app has no light theme); night mode is
+         forced in Theme.apply so WebViews and dialogs never flash light. -->
+    <style name="Theme.SpotifyDx" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/deep_blue</item>
+        <item name="colorOnPrimary">@color/deep_text</item>
+        <item name="colorSecondary">@color/deep_cyan</item>
+        <item name="android:colorBackground">@color/deep_bg</item>
+        <item name="colorSurface">@color/deep_surface</item>
+        <item name="colorOnSurface">@color/deep_text</item>
+        <item name="colorSurfaceVariant">@color/deep_card</item>
+        <item name="colorOnSurfaceVariant">@color/deep_muted</item>
+    </style>
+
+    <style name="Theme.SpotifyDx.Onyx" parent="Theme.SpotifyDx">
+        <item name="android:colorBackground">@color/onyx_bg</item>
+        <item name="colorSurface">@color/onyx_surface</item>
+        <item name="colorSurfaceVariant">@color/onyx_card</item>
+        <item name="colorOnSurface">@color/onyx_text</item>
+        <item name="colorOnSurfaceVariant">@color/onyx_muted</item>
+    </style>
+</resources>

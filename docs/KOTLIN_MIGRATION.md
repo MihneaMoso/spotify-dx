@@ -9,6 +9,25 @@ Companion: `docs/ARCHITECTURE.md` (current system, implementation-agnostic).
 That document is the behavioral spec — everything the Kotlin interface does
 must be traceable back to a section there.
 
+> **Status (2026-09): Phase 0 gate green, Phase 1 shell smoke builds, Phase 2
+> login flow live-verified on-device.** The native core is a `spotify_dx`
+> cdylib/rlib (`src/lib.rs`) with the versioned JNI bridge (`src/bridge.rs`);
+> the owned Kotlin app in `android/` (gate + 9 screens + shell + login
+> WebView + playback service + updater) is the primary Android build path
+> (`scripts/build-kotlin.sh`). Session/data/ playback core calls expose
+> their final §6.1 signatures as `PHASE_2_PLUS` until their phases land —
+> except `beginLogin`/`refreshToken`/`currentUser`, which are real (see §8
+> inversion note below). See `RULES.md` §6.9h for the load-bearing
+> deviations and gotchas.
+>
+> Phase 2 on-device results: beginLogin → fullscreen page → cookie bounce →
+> non-anonymous `/api/token` capture → mirror → gate→shell → park, all
+> confirmed in logcat + screenshots; cold-start restore replays the same
+> path; Settings sign-out tears down pages + store and lands back on a fresh
+> anonymous login page; offline cold start surfaces Spotify's own
+> challenge/notice UI (genuine page ⇒ same errors as today by construction).
+> Password login and no-escape tapping remain manual (need live credentials).
+
 ---
 
 ## Table of contents

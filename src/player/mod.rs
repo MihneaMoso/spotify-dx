@@ -183,7 +183,7 @@ async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), Ap
 
             // Keep the UI clock in sync with the sink thread. A single shared
             // ticker does this for every track (see `start_position_ticker`),
-            // so playing many tracks doesn't pile up one 250ms poller each.
+            // so playing many tracks doesn't pile up one poller each.
             start_position_ticker();
 
             Ok(())
@@ -194,14 +194,16 @@ async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), Ap
     }
 }
 
-/// One process-wide 250ms ticker that mirrors the audio sink's position into
+/// One process-wide ticker that mirrors the audio sink's position into
 /// `PLAYER_STATE`. Started lazily on first (open-engine) playback and reused
 /// for every subsequent track, so it never stacks.
 ///
 /// Cheap at idle: we `peek()` the current UI state and only acquire the write
 /// lock + mark the signal dirty when a value actually changed, so a paused /
-/// constant-position state does not re-render `PlayerBar`/`NowPlayingView`
-/// every 250ms.
+/// constant-position state does not re-render `PlayerBar`/`NowPlayingView`.
+/// The sink publishes at 500ms while playing and stays silent otherwise, so
+/// this task wakes at most at 2Hz during playback and sleeps indefinitely
+/// when paused or stopped.
 static POSITION_TICKER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 fn start_position_ticker() {
@@ -214,7 +216,10 @@ fn start_position_ticker() {
                 // so once playback stops this task sleeps indefinitely instead
                 // of waking on a fixed 250ms interval (no idle CPU).
                 let Some(state) = crate::media::sink::sink_state() else {
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    // Sink not spawned yet (no open-engine playback this
+                    // process): sleep long; a track start spawns it and the
+                    // notify path takes over from there.
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     continue;
                 };
                 state.position_changed.notified().await;
