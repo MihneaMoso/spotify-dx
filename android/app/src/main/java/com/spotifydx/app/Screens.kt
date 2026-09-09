@@ -104,7 +104,8 @@ class HomeFragment : Fragment() {
         list.adapter = shelves
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
-        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
+        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) },
+            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
         likedList.adapter = liked
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
@@ -143,7 +144,8 @@ class SearchFragment : Fragment() {
         val box: EditText = v.findViewById(R.id.search_box)
         val list: RecyclerView = v.findViewById(R.id.search_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) },
+            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
         list.adapter = adapter
         val albumList: RecyclerView = v.findViewById(R.id.search_albums)
         albumList.layoutManager = LinearLayoutManager(context)
@@ -165,8 +167,52 @@ class SearchFragment : Fragment() {
             vm.submit(tv.text.toString())
             true
         }
+        // Recent-search chips: visible only when the box is empty, history
+        // is non-empty, and no results are showing. Tapping re-runs the query.
+        val historyRow: View = v.findViewById(R.id.history_row)
+        val history: com.google.android.material.chip.ChipGroup =
+            v.findViewById(R.id.search_history)
+        var recentCache: List<String> = emptyList()
+        fun refreshHistory() {
+            val show = box.text.isNullOrEmpty() && recentCache.isNotEmpty() &&
+                vm.tracks.value.isEmpty() && vm.albums.value.isEmpty() &&
+                vm.artists.value.isEmpty()
+            historyRow.visibility = if (show) View.VISIBLE else View.GONE
+            history.visibility = if (show) View.VISIBLE else View.GONE
+            if (!show) return
+            history.removeAllViews()
+            recentCache.forEach { q ->
+                history.addView(
+                    com.google.android.material.chip.Chip(context).apply {
+                        text = q
+                        setOnClickListener {
+                            box.setText(q)
+                            box.setSelection(q.length)
+                            vm.submit(q)
+                        }
+                    },
+                )
+            }
+        }
+        v.findViewById<Button>(R.id.history_clear)?.setOnClickListener {
+            vm.clearHistory()
+        }
+        box.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = refreshHistory()
+        })
         viewLifecycleOwner.lifecycleScope.launch {
-            vm.state.collect { bindState(v, it) }
+            vm.recent.collect {
+                recentCache = it
+                refreshHistory()
+            }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            vm.state.collect {
+                bindState(v, it)
+                refreshHistory()
+            }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.tracks.collect { adapter.submitList(it) }
@@ -266,7 +312,8 @@ class LikedFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         val list: RecyclerView = v.findViewById(R.id.liked_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
+            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
         list.adapter = adapter
         // Incremental loading at the tail.
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -297,7 +344,8 @@ class QueueFragment : Fragment() {
         val now: TextView = v.findViewById(R.id.queue_now)
         val list: RecyclerView = v.findViewById(R.id.queue_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
+            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
         list.adapter = adapter
         v.findViewById<Button>(R.id.queue_clear)?.setOnClickListener {
             PlayerRepository.clearQueue()
@@ -330,7 +378,8 @@ class DetailFragment : Fragment() {
         val subtitle: TextView = v.findViewById(R.id.detail_subtitle)
         val list: RecyclerView = v.findViewById(R.id.detail_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
+            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
         list.adapter = adapter
         v.findViewById<Button>(R.id.detail_play)?.setOnClickListener {
             adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it) }

@@ -1408,6 +1408,27 @@ dioxus-mobile Rust code is untouched and still builds.
   `MainActivity.go()` uses `commitAllowingStateLoss()` — session/watchdog
   flows can emit after `onSaveInstanceState` (backgrounded app) and plain
   `commit()` crashes there (`IllegalStateException`, seen 2026-09-09).
+- **Caching layers (Phase 8 batch, 2026-09-09):**
+  - Artwork = Coil 2.6 (`ArtworkLoader.load` API unchanged): 25% memory +
+    100MB disk (`cacheDir/artwork`), custom `CoreGateFetcher` reads bytes
+    through the core gate (base64 → bytes) so ad-filter + core disk cache
+    stay intact — never direct HTTP. First build after adding a dep must run
+    ONLINE once to seed `~/.gradle` (local loop stays `--offline`).
+  - Music data = `android.util.LruCache(32)` + 5min TTL in `MusicRepository`
+    (successes only, JSON-string snapshots); cleared in
+    `SessionRepository.logout`. Core disk SWR stays the cross-restart layer.
+  - Persisted state = Room `spotifydx.db` v1 (`AppDb.kt`): `search_history`
+    (LRU 20), `queue_items` (ordered snapshots), `playback_state`
+    (track + position + wall-clock). `SearchHistory`/`PlaybackStore` +
+    `AppState` ctx holder; `PlayerRepository.restore()` rehydrates paused
+    (never autoplay); queue writes debounced, last-played on track/pause/seek
+    (never the 250ms ticker). Track snapshots via `Models.trackToJson`
+    (core-shaped, `Models.track` parses back).
+  - Long-press enqueues on all five track lists (was wired to nothing).
+- **Cold-start theme:** `setTheme` paints from the in-memory default before
+  the async store load; `MainActivity` recreates exactly once when the loaded
+  theme disagrees (`appliedTheme`/`themeReconciled` — no loop: the recreated
+  instance paints the loaded value).
 - **Release pipeline cut over (Phase 7, pending first tagged release):**
   `release.yml` `android-apk` now builds the owned Kotlin app with a stable
   key (see §6.9d). Until a tag is pushed and the published

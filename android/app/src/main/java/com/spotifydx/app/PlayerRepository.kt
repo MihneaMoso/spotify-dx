@@ -51,14 +51,21 @@ object PlayerRepository {
     }
 
     // -- Local queue semantics (real now; no core needed) --------------------------
-    fun enqueue(track: Track) = update { s ->
-        s.copy(queue = s.queue.filter { it.id != track.id } + track)
+    // Every mutation persists the queue (debounced replace) so it survives
+    // restarts; restore() rehydrates on boot.
+    fun enqueue(track: Track) {
+        update { s -> s.copy(queue = s.queue.filter { it.id != track.id } + track) }
+        PlaybackStore.saveQueueSoon(_state.value.queue)
     }
 
-    fun clearQueue() = update { s -> s.copy(queue = emptyList(), queueOriginal = emptyList()) }
+    fun clearQueue() {
+        update { s -> s.copy(queue = emptyList(), queueOriginal = emptyList()) }
+        PlaybackStore.saveQueueSoon(emptyList())
+    }
 
-    fun removeAt(index: Int) = update { s ->
-        s.copy(queue = s.queue.filterIndexed { i, _ -> i != index })
+    fun removeAt(index: Int) {
+        update { s -> s.copy(queue = s.queue.filterIndexed { i, _ -> i != index }) }
+        PlaybackStore.saveQueueSoon(_state.value.queue)
     }
 
     fun setShuffle(on: Boolean) = update { s ->
@@ -72,7 +79,7 @@ object PlayerRepository {
             val restored = s.queue.sortedBy { order[it.id] ?: Int.MAX_VALUE }
             s.copy(shuffle = false, queueOriginal = emptyList(), queue = restored)
         }
-    }
+    }.also { PlaybackStore.saveQueueSoon(_state.value.queue) }
 
     fun setRepeat(mode: Repeat) = update { s -> s.copy(repeat = mode) }
 
@@ -80,6 +87,7 @@ object PlayerRepository {
     fun advance(): Track? {
         val head = _state.value.queue.firstOrNull() ?: return null
         update { s -> s.copy(track = head, queue = s.queue.drop(1), isPlaying = true) }
+        PlaybackStore.saveQueueSoon(_state.value.queue)
         return head
     }
 
@@ -111,6 +119,8 @@ object PlayerRepository {
     }
 
     private fun dispatchPlay(track: Track) {
+        // New track = new last-played (position resets; timestamp = now).
+        PlaybackStore.saveLastSoon(track, 0)
         if (useSdkEngine()) {
             update { s -> s.copy(sdkActive = true, sdkDeviceId = null) }
             playViaSdk(track)
@@ -191,11 +201,15 @@ object PlayerRepository {
                 update { it.copy(isPlaying = true) }
             }
             publishSdkState()
+            if (s.isPlaying) {
+                PlaybackStore.saveLastSoon(s.track, _state.value.positionMs)
+            }
             return
         }
         val svc = PlaybackService.instance
         if (s.isPlaying) {
             svc?.pausePlayback() ?: update { it.copy(isPlaying = false) }
+            PlaybackStore.saveLastSoon(s.track, _state.value.positionMs)
         } else {
             // Resume in place when the service still holds the track;
             // otherwise (re)resolve from the top.
@@ -216,6 +230,7 @@ object PlayerRepository {
     fun seekTo(ms: Long) {
         update { _state.value.copy(positionMs = ms) }
         val s = _state.value
+        PlaybackStore.saveLastSoon(s.track, ms)
         if (s.sdkActive) {
             val device = s.sdkDeviceId
             if (device != null) {
@@ -255,6 +270,30 @@ object PlayerRepository {
         }
     }
 
+    /** Boot rehydrate: queue + last-played track/position/timestamp.
+     * Always lands paused — restores state, never autoplay. */
+    fun restore() {
+        scope.launch {
+            val queue = PlaybackStore.loadQueue()
+            val last = PlaybackStore.loadLast()
+            val track = last?.trackJson?.let { raw ->
+                runCatching {
+                    Models.track(org.json.JSONObject(raw)).takeIf { it.playable }
+                }.getOrNull()
+            }
+            update { s ->
+                s.copy(
+                    track = track ?: s.track,
+                    queue = queue,
+                    isPlaying = false,
+                    positionMs = last?.positionMs ?: s.positionMs,
+                    durationMs = track?.durationMs ?: s.durationMs,
+                )
+            }
+            Log.i(TAG, "restored queue=${queue.size} last=${track?.name ?: "none"}")
+        }
+    }
+
     /** Position ticks mirrored from the service (event-driven, §9.5). */
     fun onPosition(positionMs: Long, durationMs: Long) = update { s ->
         if (s.positionMs == positionMs && s.durationMs == durationMs) s
@@ -290,6 +329,7 @@ object PlayerRepository {
                     sdkActive = true,
                 )
             }
+            PlaybackStore.saveLastSoon(track ?: _state.value.track, pos)
             publishSdkState()
         }
     }

@@ -54,6 +54,28 @@ data class Playlist(
 
 /** Lenient readers over core JSON (per-operation field variants tolerated). */
 object Models {
+    /** Snapshot a [Track] to the core-shaped JSON [track] parses back —
+     * queue / last-played persistence round-trips through this. */
+    fun trackToJson(t: Track): org.json.JSONObject {
+        val artists = org.json.JSONArray()
+        t.artists.forEach { artists.put(org.json.JSONObject().put("name", it)) }
+        val images = org.json.JSONArray()
+        if (t.coverUrl.isNotEmpty()) {
+            images.put(org.json.JSONObject().put("url", t.coverUrl))
+        }
+        return org.json.JSONObject()
+            .put("id", t.id)
+            .put("name", t.name)
+            .put("duration_ms", t.durationMs)
+            .put("artists", artists)
+            .put(
+                "album", org.json.JSONObject()
+                    .put("name", t.albumName)
+                    .put("images", images),
+            )
+            .put("uri", t.uri)
+    }
+
     fun track(o: JSONObject): Track = Track(
         id = o.optString("id", ""),
         name = o.optString("name", ""),

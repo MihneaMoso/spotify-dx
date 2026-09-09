@@ -33,6 +33,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loginOverlay: FrameLayout
     private lateinit var loginManager: LoginWebViewManager
     private var sdkDriver: SdkWebViewDriver? = null
+    /** Theme painted in onCreate (pre-store-load); see collectRepos. */
+    private var appliedTheme: String? = null
+    private var themeReconciled = false
     private lateinit var toastView: TextView
     private var toastJob: Job? = null
     private var searchHandoff: String? = null
@@ -42,7 +45,11 @@ class MainActivity : AppCompatActivity() {
     enum class Destination { GATE, HOME, SEARCH, LIBRARY, LIKED, QUEUE, SETTINGS, DETAIL }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        setTheme(Theme.themeRes(Theme.current()))
+        // The store loads async (bridge); this paints from the in-memory
+        // value, which is the default on cold start. collectRepos() recreates
+        // once below if the loaded theme disagrees.
+        appliedTheme = Theme.current()
+        setTheme(Theme.themeRes(requireNotNull(appliedTheme)))
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -63,6 +70,10 @@ class MainActivity : AppCompatActivity() {
         SessionRepository.verifyAtBoot()
         SessionRepository.startWatchdog()
         UpdateCenter.checkAtBootIfEnabled()
+        // Persisted app state: context holder first, then queue/last-played
+        // rehydrate (lands paused — restore, never autoplay).
+        AppState.init(applicationContext)
+        PlayerRepository.restore()
         startService(PlaybackService.intentOf(this))
         requestNotificationPermission()
 
@@ -170,7 +181,16 @@ class MainActivity : AppCompatActivity() {
             ToastBus.toasts.collect { t -> showToast(t) }
         }
         lifecycleScope.launch {
-            SettingsStore.settings.collect { /* theme applies itself */ }
+            SettingsStore.settings.collect { s ->
+                // Cold start paints the default theme (store loads async).
+                // Recreate exactly once when the stored theme disagrees, so
+                // the launch theme is always the user's theme. No loop: the
+                // recreated activity paints the loaded value from the start.
+                if (!themeReconciled && s.theme != appliedTheme) {
+                    themeReconciled = true
+                    recreate()
+                }
+            }
         }
     }
 

@@ -10,6 +10,7 @@
 
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-kapt'
 
 android {
     namespace 'com.spotifydx.app'
@@ -66,4 +67,14 @@ dependencies {
     implementation 'androidx.recyclerview:recyclerview:1.2.1'
     implementation 'androidx.webkit:webkit:1.13.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
+    // Image loading (memory + disk cache, request dedup/cancel). Artwork
+    // bytes flow through the core gate via CoreGateFetcher — never direct
+    // HTTP — so filtering + the core disk cache stay intact.
+    implementation 'io.coil-kt:coil:2.6.0'
+    // Persisted app state (search history, queue, last-played). Room owns
+    // the SQL; DAOs are suspend/flow — no hand-rolled SQLite, no manual
+    // JSON files.
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+    kapt 'androidx.room:room-compiler:2.6.1'
 }

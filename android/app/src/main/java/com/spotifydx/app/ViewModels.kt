@@ -154,6 +154,20 @@ class SearchViewModel : ScopedViewModel() {
     private var debounce: Job? = null
     private var handoff: String? = null
 
+    private val _recent = MutableStateFlow<List<String>>(emptyList())
+    val recent: StateFlow<List<String>> = _recent.asStateFlow()
+
+    init {
+        vmScope.launch { _recent.value = SearchHistory.recent() }
+    }
+
+    fun clearHistory() {
+        vmScope.launch {
+            SearchHistory.clear()
+            _recent.value = emptyList()
+        }
+    }
+
     /** One-shot top-bar handoff: consumed on arrival, never re-seeded. */
     fun consumeHandoff(query: String?) {
         handoff = query
@@ -175,6 +189,9 @@ class SearchViewModel : ScopedViewModel() {
             delay(250)
             val g = ++generation
             _state.value = ScreenState.Loading
+            // Persist first (fire-and-forget): history survives even a failed fetch.
+            SearchHistory.record(query)
+            _recent.value = SearchHistory.recent()
             val res = MusicRepository.withSessionCheck { MusicRepository.search(query) }
             if (g != generation) return@launch
             val json = res.getOrNull()

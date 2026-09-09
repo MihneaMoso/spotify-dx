@@ -64,7 +64,13 @@ object SessionRepository {
     }
 
     fun logout() {
+        // Session-scoped memory caches die with the session (no cross-account
+        // bleed); the core clears its own stores in BridgeClient.logout().
+        MusicRepository.clear()
         scope.launch {
+            // Persisted queue/last-played belong to the account: wipe them so
+            // the next sign-in starts clean.
+            PlaybackStore.clearAll()
             BridgeClient.logout()
             _state.value = Snapshot()
         }

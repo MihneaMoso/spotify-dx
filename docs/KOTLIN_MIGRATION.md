@@ -51,6 +51,12 @@ must be traceable back to a section there.
 > with the stable release key (repo secrets) under the updater's asset name.
 > Legacy mobile-renderer removal stays deferred per spec (one clean release
 > with no regressions first).
+>
+> Phase 8 hardening batch 1 (2026-09-09, verified on-device): Coil artwork
+> (mem+disk, core-gate fetcher — also fixed playlist thumbs), Kotlin memory
+> data cache (5min LRU, logout-cleared), Room search history + chips,
+> serialized queue + last-played/timestamp with paused boot restore,
+> cold-start theme reconcile, long-press enqueue on all track lists.
 
 ---
 

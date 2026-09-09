@@ -12,21 +12,56 @@ import org.json.JSONObject
  * timed auto-retry in the ViewModel).
  */
 object MusicRepository {
-    suspend fun home(): Result<JSONObject> = BridgeClient.getHome()
+    /**
+     * Session memory tier (built-in `android.util.LruCache`, TTL-bounded):
+     * repeat screen loads skip the JNI round-trip + re-parse within the
+     * window. Only successes cache (never errors — same invariant as the
+     * core store); failures always run the fetch so session-expiry and
+     * rate-limit handling in `withSessionCheck` still see them. The core's
+     * disk SWR stays the cross-restart layer; [clear] runs on logout.
+     */
+    private data class Entry(val json: String, val fetchedAtMs: Long)
+    private const val TTL_MS = 5 * 60_000L
+    private val mem = object : android.util.LruCache<String, Entry>(32) {}
 
-    suspend fun search(query: String): Result<JSONObject> = BridgeClient.search(query)
+    private suspend fun cached(
+        key: String,
+        fetch: suspend () -> Result<JSONObject>,
+    ): Result<JSONObject> {
+        val now = System.currentTimeMillis()
+        mem.get(key)?.let { e ->
+            if (now - e.fetchedAtMs < TTL_MS) {
+                return Result.success(JSONObject(e.json))
+            }
+            mem.remove(key)
+        }
+        val res = fetch()
+        res.getOrNull()?.let { mem.put(key, Entry(it.toString(), now)) }
+        return res
+    }
 
-    suspend fun playlist(id: String): Result<JSONObject> = BridgeClient.playlist(id)
+    /** Drop all session data (logout / account switch). */
+    fun clear() = mem.evictAll()
 
-    suspend fun album(id: String): Result<JSONObject> = BridgeClient.album(id)
+    suspend fun home(): Result<JSONObject> = cached("home") { BridgeClient.getHome() }
 
-    suspend fun artistPage(id: String): Result<JSONObject> = BridgeClient.artistPage(id)
+    suspend fun search(query: String): Result<JSONObject> =
+        cached("search:${query.trim().lowercase()}") { BridgeClient.search(query) }
+
+    suspend fun playlist(id: String): Result<JSONObject> =
+        cached("playlist:$id") { BridgeClient.playlist(id) }
+
+    suspend fun album(id: String): Result<JSONObject> =
+        cached("album:$id") { BridgeClient.album(id) }
+
+    suspend fun artistPage(id: String): Result<JSONObject> =
+        cached("artist:$id") { BridgeClient.artistPage(id) }
 
     suspend fun likedTracks(limit: Int, offset: Int): Result<JSONObject> =
-        BridgeClient.likedTracks(limit, offset)
+        cached("liked:$limit:$offset") { BridgeClient.likedTracks(limit, offset) }
 
     suspend fun library(kind: String, limit: Int, offset: Int): Result<JSONObject> =
-        BridgeClient.library(kind, limit, offset)
+        cached("library:$kind:$limit:$offset") { BridgeClient.library(kind, limit, offset) }
 
     suspend fun artwork(url: String): Result<String> = BridgeClient.fetchArtwork(url)
 
