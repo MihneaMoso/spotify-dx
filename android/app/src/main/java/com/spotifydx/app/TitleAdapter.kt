@@ -12,9 +12,14 @@ import androidx.recyclerview.widget.RecyclerView
  * Generic title/subtitle rows for shelves and collection tabs (playlists,
  * albums, artists). Track rows use [TrackAdapter]; detail navigation is the
  * caller's intent.
+ *
+ * @param itemLayout row layout; defaults to the full-width [R.layout.item_title]
+ *   row. Horizontal shelves (Home playlists, desktop .shelf-row parity) pass
+ *   [R.layout.item_card] — same view IDs, so binding is shared.
  */
 class TitleAdapter(
     private val onClick: (Int) -> Unit = {},
+    private val itemLayout: Int = R.layout.item_title,
 ) : ListAdapter<TitleAdapter.Row, TitleAdapter.Holder>(DIFF) {
 
     data class Row(val title: String, val subtitle: String, val coverUrl: String = "")
@@ -43,7 +48,7 @@ class TitleAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
-        val v = LayoutInflater.from(parent.context).inflate(R.layout.item_title, parent, false)
+        val v = LayoutInflater.from(parent.context).inflate(itemLayout, parent, false)
         return Holder(v)
     }
 

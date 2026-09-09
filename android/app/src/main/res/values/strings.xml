@@ -12,6 +12,7 @@
     <string name="nav_queue">Queue</string>
     <string name="action_retry">Retry</string>
     <string name="search_hint">Search tracks, albums, artists</string>
+    <string name="home_playlists">Your playlists</string>
     <string name="library_filter_hint">Filter your library</string>
     <string name="tab_playlists">Playlists</string>
     <string name="tab_albums">Albums</string>

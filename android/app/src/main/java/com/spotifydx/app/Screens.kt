@@ -88,12 +88,19 @@ class HomeFragment : Fragment() {
         greeting.text = vm.greeting
         val banner: TextView = v.findViewById(R.id.home_banner)
         val list: RecyclerView = v.findViewById(R.id.home_list)
-        list.layoutManager = LinearLayoutManager(context)
-        val shelves = TitleAdapter { pos ->
-            vm.playlists.value.getOrNull(pos)?.let {
-                (activity as? MainActivity)?.openDetail("playlist", it.id, it.name)
-            }
-        }
+        // Playlist shelf scrolls horizontally (desktop .shelf-row parity:
+        // fixed-width cards, square art on top). Liked tracks below stay a
+        // vertical list, like desktop's track-list under the shelves.
+        list.layoutManager =
+            LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false)
+        val shelves = TitleAdapter(
+            onClick = { pos ->
+                vm.playlists.value.getOrNull(pos)?.let {
+                    (activity as? MainActivity)?.openDetail("playlist", it.id, it.name)
+                }
+            },
+            itemLayout = R.layout.item_card,
+        )
         list.adapter = shelves
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
@@ -140,19 +147,19 @@ class SearchFragment : Fragment() {
         list.adapter = adapter
         val albumList: RecyclerView = v.findViewById(R.id.search_albums)
         albumList.layoutManager = LinearLayoutManager(context)
-        val albums = TitleAdapter { pos ->
+        val albums = TitleAdapter(onClick = { pos ->
             vm.albums.value.getOrNull(pos)?.let {
                 (activity as? MainActivity)?.openDetail("album", it.id, it.name)
             }
-        }
+        })
         albumList.adapter = albums
         val artistList: RecyclerView = v.findViewById(R.id.search_artists)
         artistList.layoutManager = LinearLayoutManager(context)
-        val artists = TitleAdapter { pos ->
+        val artists = TitleAdapter(onClick = { pos ->
             vm.artists.value.getOrNull(pos)?.let {
                 (activity as? MainActivity)?.openDetail("artist", it.id, it.name)
             }
-        }
+        })
         artistList.adapter = artists
         box.setOnEditorActionListener { tv, _, _ ->
             vm.submit(tv.text.toString())
@@ -200,7 +207,7 @@ class LibraryFragment : Fragment() {
         }
         val list: RecyclerView = v.findViewById(R.id.library_list)
         list.layoutManager = LinearLayoutManager(context)
-        val rows = TitleAdapter { pos ->
+        val rows = TitleAdapter(onClick = { pos ->
             val act = activity as? MainActivity ?: return@TitleAdapter
             when (val r = vm.rows.value.getOrNull(pos)) {
                 is LibraryViewModel.LibraryRow.P ->
@@ -210,7 +217,7 @@ class LibraryFragment : Fragment() {
                 is LibraryViewModel.LibraryRow.T -> PlayerRepository.play(r.t)
                 null -> {}
             }
-        }
+        })
         list.adapter = rows
         v.findViewById<Button>(R.id.tab_playlists)?.setOnClickListener {
             vm.selectTab(LibraryViewModel.Tab.PLAYLISTS)

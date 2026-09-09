@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Media card for horizontal shelves (desktop .shelf-row/.media-card parity:
+     fixed-width column, square artwork on top, title + subtitle below).
+     View IDs match item_title.xml so TitleAdapter binds both layouts. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="150dp"
+    android:layout_height="wrap_content"
+    android:layout_marginEnd="12dp"
+    android:orientation="vertical">
+
+    <ImageView
+        android:id="@+id/title_art"
+        android:layout_width="150dp"
+        android:layout_height="150dp"
+        android:contentDescription="Artwork"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/title_main"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="?attr/colorOnSurface"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/title_sub"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:textSize="12sp" />
+</LinearLayout>

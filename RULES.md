@@ -1371,6 +1371,13 @@ dioxus-mobile Rust code is untouched and still builds.
   the silent-restore verifier over the mirrored token (`/v1/me`, 401 →
   `SESSION_EXPIRED` transition). Expiry recovery is watchdog-timer-driven
   (30s cadence, 5min horizon), never token-reactive.
+- **Horizontal shelves (desktop `.shelf-row` parity):** Home playlists use
+  `TitleAdapter` with `itemLayout = R.layout.item_card` (150dp card, square
+  art on top, same `title_art/title_main/title_sub` IDs so binding is shared)
+  + `LinearLayoutManager(HORIZONTAL)`. Search/Library keep the default
+  `item_title` vertical rows. Gotcha: adding the 2nd constructor param broke
+  all trailing-lambda `TitleAdapter { pos -> ... }` call sites (lambda binds
+  to the last param) — they must use named `onClick = { ... }`.
 
 ## 7. Testing
 
