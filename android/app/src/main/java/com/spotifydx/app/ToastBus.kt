@@ -27,7 +27,11 @@ object ToastBus {
             is BridgeError.NeedsPage -> "Session expired — signing you back in…"
             is BridgeError.SessionExpired -> "Session expired — please sign in again"
             is BridgeError.RateLimited -> "Spotify's API is temporarily limiting requests — retrying automatically."
-            is BridgeError.Core -> err.message.ifEmpty { "Request failed (${err.code})" }
+            is BridgeError.Core -> if (err.code == "PREMIUM_REQUIRED") {
+                "That needs Spotify Premium — playing via the open engine instead."
+            } else {
+                err.message.ifEmpty { "Request failed (${err.code})" }
+            }
             is BridgeError.Protocol -> "Internal error: ${err.message}"
             null -> e.message ?: "Something went wrong"
         }

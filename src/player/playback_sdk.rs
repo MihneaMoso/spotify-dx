@@ -73,10 +73,11 @@ window.onSpotifyWebPlaybackSDKReady = () => {
 </script></head><body></body></html>"#;
 
 use crate::spotify::models::{AlbumRef, ArtistRef, Track};
+use serde::Serialize;
 
 /// Structured playback state decoded from a Web Playback SDK
 /// `player_state_changed` payload.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct SdkState {
     pub track: Option<Track>,
     pub is_playing: bool,

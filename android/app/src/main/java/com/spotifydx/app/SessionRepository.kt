@@ -26,6 +26,8 @@ object SessionRepository {
         val authenticated: Boolean = false,
         val hasToken: Boolean = false,
         val expiresAtMs: Long = 0,
+        /** Account tier for the Phase 5 engine router (auto ⇒ SDK iff premium). */
+        val isPremium: Boolean = false,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -37,10 +39,12 @@ object SessionRepository {
     fun refresh() {
         scope.launch {
             val json = BridgeClient.sessionStatus().getOrNull() ?: return@launch
+            val user = json.optJSONObject("user")
             val next = Snapshot(
                 authenticated = json.optBoolean("authenticated", false),
                 hasToken = json.optBoolean("has_token", false),
                 expiresAtMs = json.optLong("expires_at_ms", 0),
+                isPremium = user?.optString("product", "") == "premium",
             )
             // Compare-before-write: touching the store re-renders subscribers.
             if (_state.value != next) _state.value = next

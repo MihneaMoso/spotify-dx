@@ -140,6 +140,42 @@ object BridgeClient {
     suspend fun resolveStream(trackJson: String): Result<JSONObject> =
         callData("Phase 4") { CoreBridge.resolveStream(trackJson) }
 
+    // -- Phase 5 SDK surface (real; Connect transport + document + parser) ----
+    /** The vendor SDK bootstrap document (single-sourced from the core). */
+    suspend fun sdkDocument(): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val raw = CoreBridge.sdkDocument("")
+            val o = JSONObject(raw)
+            if (!o.optBoolean("ok", false)) throw toException(parseEnvelope(raw), "Phase 5")
+            // getString performs full JSON unquoting (the document is full of
+            // embedded quotes; removeSurrounding would leave \" escapes behind).
+            o.getString("data")
+        }
+    }
+    suspend fun sdkPlay(deviceId: String, uri: String, positionMs: Long? = null): Result<String> =
+        callString("Phase 5") {
+            val a = JSONObject().put("device_id", deviceId).put("uri", uri)
+            if (positionMs != null) a.put("position_ms", positionMs)
+            CoreBridge.sdkPlay(a.toString())
+        }
+    suspend fun sdkPause(deviceId: String): Result<String> =
+        callString("Phase 5") { CoreBridge.sdkPause(JSONObject().put("device_id", deviceId).toString()) }
+    suspend fun sdkSkip(deviceId: String, next: Boolean): Result<String> =
+        callString("Phase 5") {
+            CoreBridge.sdkSkip(JSONObject().put("device_id", deviceId).put("next", next).toString())
+        }
+    suspend fun sdkSeek(deviceId: String, positionMs: Long): Result<String> =
+        callString("Phase 5") {
+            CoreBridge.sdkSeek(JSONObject().put("device_id", deviceId).put("position_ms", positionMs).toString())
+        }
+    suspend fun sdkVolume(deviceId: String, percent: Int): Result<String> =
+        callString("Phase 5") {
+            CoreBridge.sdkVolume(JSONObject().put("device_id", deviceId).put("volume", percent).toString())
+        }
+    /** Parse an SDK `player_state_changed` payload into `SdkState` JSON. */
+    suspend fun sdkParseState(payloadJson: String): Result<JSONObject> =
+        callData("Phase 5") { CoreBridge.sdkParseState(payloadJson) }
+
     /** Artwork bytes (base64) through the core's disk cache + filter gate. */
     suspend fun fetchArtwork(url: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -170,11 +206,11 @@ object BridgeClient {
             }
         }
 
-    private suspend fun callString(block: () -> String): Result<String> =
+    private suspend fun callString(phase: String = "Phase 2+", block: () -> String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val env = parseEnvelope(block())
-                if (!env.ok) throw toException(env)
+                if (!env.ok) throw toException(env, phase)
                 // `data` may be a JSON string or an object; return it raw.
                 env.data ?: ""
             }

@@ -1,7 +1,7 @@
 /// The HTML+JS bootstrap for the Web Playback SDK. Compiled for every native
 /// (non-WASM) renderer — desktop and mobile — since it is a plain string with
 /// no widget/wry coupling. Always available under `cargo test`.
-#[cfg(any(feature = "native", test))]
+#[cfg(any(feature = "native", test, target_os = "android"))]
 pub mod playback_sdk;
 
 /// Native builds (desktop AND mobile — `mobile` re-exports `dioxus::desktop`,

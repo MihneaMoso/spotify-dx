@@ -190,4 +190,12 @@
         android:textColor="@android:color/white"
         android:visibility="gone" />
 
+    <!-- Hidden 1px host for the Phase 5 SDK WebView (never GONE: a detached
+         view won't boot audio). -->
+    <FrameLayout
+        android:id="@+id/sdk_holder"
+        android:layout_width="1px"
+        android:layout_height="1px"
+        android:layout_gravity="bottom|end" />
+
 </FrameLayout>

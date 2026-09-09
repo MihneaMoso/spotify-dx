@@ -642,6 +642,12 @@ fn map_data_err(e: crate::app_error::AppError) -> String {
             err("SESSION_EXPIRED", "session rejected — please sign in again")
         }
         crate::app_error::AppError::RateLimited => err("RATE_LIMITED", e.to_string()),
+        // Surfaced typed (not NET) so the Kotlin engine router can tell
+        // "not Premium" apart from a transport failure and fall back to the
+        // open engine / show the upsell instead of a generic error.
+        crate::app_error::AppError::PremiumRequired(_) => {
+            err("PREMIUM_REQUIRED", e.to_string())
+        }
         _ => err("NET", e.to_string()),
     }
 }
@@ -998,7 +1004,7 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
                 let user_json = serde_json::json!({
                     "id": p.id,
                     "display_name": p.display_name,
-                    "product": p.product,
+                    "product": p.product.clone(),
                     "avatar_url": p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
                 })
                 .to_string();
@@ -1007,6 +1013,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
                     s.authenticated = true;
                     s.user_json = Some(user_json.clone());
                 }
+                // Fold the tier into AUTH_STATE (mirrors
+                // `auth::refresh_profile`, which the Kotlin flow never calls):
+                // the SDK transport's `require_premium` gate reads it.
+                crate::state::AUTH_STATE.write().product = p.product;
                 push_event("session", "{\"authenticated\":true}");
                 ok_data(&user_json)
             }
@@ -1087,6 +1097,144 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
             ),
             Ok(None) => err("NOT_FOUND", "no playable source found"),
             Err(e) => err("NET", e),
+        }
+    })
+}
+
+// -- SDK path (Phase 5, §9.2 migration): Connect transport against the
+// -- Kotlin-hosted SDK device. The device itself lives in a hidden platform
+// -- WebView driven from Kotlin (`SdkWebViewDriver`); these calls are the
+// -- "transport commands map to the Connect control calls the core already
+// -- makes" half — thin arg parsing over `spotify::player_api`, whose
+// -- `require_premium` gate stays intact (tier folded into AUTH_STATE by
+// -- `currentUser` above). The Dioxus-era `playTrack/pause/...` stubs below
+// -- are a different (dead) surface and stay untouched.
+fn sdk_str_arg(v: &serde_json::Value, key: &str) -> Result<String, String> {
+    v.get(key)
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_owned())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| err("INVALID_ARGS", format!("arg.{key} missing or empty")))
+}
+
+fn sdk_json_arg(env: &mut JNIEnv<'_>, arg: &JString<'_>) -> Result<serde_json::Value, String> {
+    let raw = rust_str(env, arg);
+    serde_json::from_str(&raw).map_err(|e| err("INVALID_ARGS", format!("bad arg JSON: {e}")))
+}
+
+/// `sdkDocument("") -> envelope{data: JSON-encoded SDK_HTML}`. Single-sourced:
+/// Kotlin must never duplicate the document (`player::playback_sdk::SDK_HTML`
+/// is the only copy). No token needed — the document carries no credentials.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkDocument<'a>(
+    env: JNIEnv<'a>,
+    _cls: JClass<'a>,
+    _arg: JString<'a>,
+) -> JString<'a> {
+    guarded(env, |_| {
+        ok_data(&serde_json::Value::String(crate::player::playback_sdk::SDK_HTML.to_owned()).to_string())
+    })
+}
+
+macro_rules! sdk_transport {
+    ($java:ident, $op:expr) => {
+        #[allow(unsafe_code)]
+        #[no_mangle]
+        pub extern "C" fn $java<'a>(
+            env: JNIEnv<'a>,
+            _cls: JClass<'a>,
+            arg: JString<'a>,
+        ) -> JString<'a> {
+            guarded(env, |env| {
+                if let Err(e) = need_fresh_token() {
+                    return e;
+                }
+                let v = match sdk_json_arg(env, &arg) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                };
+                let device_id = match sdk_str_arg(&v, "device_id") {
+                    Ok(d) => d,
+                    Err(e) => return e,
+                };
+                // `$op(device_id, v)` builds the future inline so its borrows
+                // stay concrete (a closure-returned future trips higher-ranked
+                // lifetime errors against `block_on`).
+                match rt().block_on($op(&device_id, &v)) {
+                    Ok(()) => ok_str("ok"),
+                    Err(e) => map_data_err(e),
+                }
+            })
+        }
+    };
+}
+
+async fn sdk_do_play(
+    device: &str,
+    v: &serde_json::Value,
+) -> Result<(), crate::app_error::AppError> {
+    let uri = sdk_str_arg(v, "uri").map_err(crate::app_error::AppError::Playback)?;
+    let pos = v.get("position_ms").and_then(|n| n.as_u64());
+    crate::spotify::player_api::play(device, &uri, pos).await
+}
+
+async fn sdk_do_pause(
+    device: &str,
+    _v: &serde_json::Value,
+) -> Result<(), crate::app_error::AppError> {
+    crate::spotify::player_api::pause(device).await
+}
+
+async fn sdk_do_skip(
+    device: &str,
+    v: &serde_json::Value,
+) -> Result<(), crate::app_error::AppError> {
+    let next = v.get("next").and_then(|b| b.as_bool()).unwrap_or(true);
+    crate::spotify::player_api::skip(device, next).await
+}
+
+async fn sdk_do_seek(
+    device: &str,
+    v: &serde_json::Value,
+) -> Result<(), crate::app_error::AppError> {
+    let ms = v.get("position_ms").and_then(|n| n.as_u64()).unwrap_or(0);
+    crate::spotify::player_api::seek(device, ms).await
+}
+
+async fn sdk_do_volume(
+    device: &str,
+    v: &serde_json::Value,
+) -> Result<(), crate::app_error::AppError> {
+    let pct = v.get("volume").and_then(|n| n.as_u64()).unwrap_or(80).min(100) as u8;
+    crate::spotify::player_api::set_volume(device, pct).await
+}
+
+sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkPlay, sdk_do_play);
+sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkPause, sdk_do_pause);
+sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkSkip, sdk_do_skip);
+sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkSeek, sdk_do_seek);
+sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkVolume, sdk_do_volume);
+
+/// `sdkParseState(payload) -> envelope{data: SdkState JSON}`. Reuses the
+/// tested core parser (`playback_sdk::parse_sdk_state`); unknown shapes
+/// degrade to defaults, never errors.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkParseState<'a>(
+    env: JNIEnv<'a>,
+    _cls: JClass<'a>,
+    arg: JString<'a>,
+) -> JString<'a> {
+    guarded(env, |env| {
+        let v = match sdk_json_arg(env, &arg) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let state = crate::player::playback_sdk::parse_sdk_state(&v);
+        match serde_json::to_value(&state) {
+            Ok(json) => ok_data(&json.to_string()),
+            Err(e) => err("NET", format!("state encode failed: {e}")),
         }
     })
 }

@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
     private lateinit var loginOverlay: FrameLayout
     private lateinit var loginManager: LoginWebViewManager
+    private var sdkDriver: SdkWebViewDriver? = null
     private lateinit var toastView: TextView
     private var toastJob: Job? = null
     private var searchHandoff: String? = null
@@ -48,6 +49,13 @@ class MainActivity : AppCompatActivity() {
         loginOverlay = findViewById(R.id.login_overlay)
         toastView = findViewById(R.id.toast)
         loginManager = LoginWebViewManager(this, loginOverlay)
+        // Phase 5 SDK device host (lazy: the view is only built on the SDK
+        // engine path). Events feed PlayerRepository on the main thread.
+        sdkDriver = SdkWebViewDriver(this, findViewById(R.id.sdk_holder)).also { d ->
+            d.onDeviceReady = { PlayerRepository.onSdkDevice(it) }
+            d.onPlayerState = { PlayerRepository.onSdkState(it) }
+            PlayerRepository.sdkDriver = d
+        }
         SessionRefresher.pageHost = { loginManager.takeIf { !isFinishing } }
 
         SettingsStore.load()
@@ -284,6 +292,7 @@ class MainActivity : AppCompatActivity() {
     fun logout() {
         SessionRefresher.pageHost = null
         loginManager.destroyForLogout()
+        sdkDriver?.shutdown()
         SessionRepository.logout()
     }
 
@@ -304,6 +313,11 @@ class MainActivity : AppCompatActivity() {
         // The core outlives the Activity: never tear down session/download
         // state here. Only the login view holder is released with its owner.
         if (isFinishing) loginManager.destroy()
+        // The SDK device dies with its WebView (rotation = new device on
+        // next SDK play; hardening may lift the view to the Application).
+        PlayerRepository.sdkDriver = null
+        sdkDriver?.shutdown()
+        sdkDriver = null
         super.onDestroy()
     }
 

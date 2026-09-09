@@ -35,6 +35,9 @@ object PlayerRepository {
         val shuffle: Boolean = false,
         val repeat: Repeat = Repeat.OFF,
         val transportReady: Boolean = false,
+        /** True while the SDK device (not the platform player) owns audio. */
+        val sdkActive: Boolean = false,
+        val sdkDeviceId: String? = null,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -80,10 +83,35 @@ object PlayerRepository {
         return head
     }
 
-    // -- Transport: open engine (§9.6) — resolve URL, platform player plays -----
-    // -- SDK transport (relay driving) lands in Phase 5; these stubs stay. --
+    // -- Transport: engine router (§9.1) + open engine (§9.6) --------------------
+    /** Process-wide SDK driver host (owned by MainActivity, like the login
+     * page host). Null until the activity attaches it. */
+    var sdkDriver: SdkWebViewDriver? = null
+
+    /** Engine choice: explicit pref wins; auto follows the account tier
+     * (SDK iff Premium — mirrors core `should_use_open_engine`). */
+    fun useSdkEngine(): Boolean = when (SettingsStore.settings.value.engine) {
+        "spotify-sdk" -> true
+        "open" -> false
+        else -> SessionRepository.snapshot().isPremium
+    }
+
     fun play(track: Track) {
         update { s -> s.copy(track = track, isPlaying = true) }
+        dispatchPlay(track)
+    }
+
+    private fun dispatchPlay(track: Track) {
+        if (useSdkEngine()) {
+            update { s -> s.copy(sdkActive = true, sdkDeviceId = null) }
+            playViaSdk(track)
+        } else {
+            update { s -> s.copy(sdkActive = false, sdkDeviceId = null) }
+            playViaOpen(track)
+        }
+    }
+
+    private fun playViaOpen(track: Track) {
         scope.launch {
             val res = withContext(Dispatchers.IO) { MusicRepository.resolveStream(track) }
             val url = res.getOrNull()?.optString("url", "")
@@ -99,8 +127,63 @@ object PlayerRepository {
         }
     }
 
+    /** SDK path: ensure the hidden device, then Connect-play the URI on it.
+     * Server-side start is confirmed by the `state` event stream. */
+    private fun playViaSdk(track: Track) {
+        val driver = sdkDriver
+        if (driver == null) {
+            Log.w(TAG, "SDK driver missing; falling back to open engine")
+            update { s -> s.copy(sdkActive = false) }
+            playViaOpen(track)
+            return
+        }
+        scope.launch {
+            if (!driver.ensure()) {
+                update { s -> s.copy(isPlaying = false, sdkActive = false) }
+                ToastBus.error("Spotify player unavailable — using the open engine.")
+                playViaOpen(track)
+                return@launch
+            }
+            val device = driver.awaitDevice() ?: run {
+                update { s -> s.copy(isPlaying = false, sdkActive = false) }
+                ToastBus.error("Spotify device not ready yet — using the open engine.")
+                playViaOpen(track)
+                return@launch
+            }
+            update { s -> s.copy(sdkDeviceId = device) }
+            val uri = track.uri.ifEmpty { "spotify:track:${track.id}" }
+            val res = withContext(Dispatchers.IO) { BridgeClient.sdkPlay(device, uri) }
+            if (res.isFailure) {
+                val code =
+                    ((res.exceptionOrNull() as? BridgeException)?.error as? BridgeError.Core)?.code
+                if (code == "PREMIUM_REQUIRED") {
+                    // Forced-SDK on a free account: say so, then fall back.
+                    ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("premium required"))
+                    update { s -> s.copy(sdkActive = false) }
+                    playViaOpen(track)
+                } else {
+                    update { s -> s.copy(isPlaying = false) }
+                    ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("SDK play failed"))
+                }
+            }
+        }
+    }
+
     fun toggle() {
         val s = _state.value
+        if (s.sdkActive) {
+            // Client-side relay (matches desktop): the server confirms via
+            // the state stream; no Connect round-trip for pause/resume.
+            if (s.isPlaying) {
+                sdkDriver?.pause()
+                update { it.copy(isPlaying = false) }
+            } else {
+                sdkDriver?.play()
+                update { it.copy(isPlaying = true) }
+            }
+            publishSdkState()
+            return
+        }
         val svc = PlaybackService.instance
         if (s.isPlaying) {
             svc?.pausePlayback() ?: update { it.copy(isPlaying = false) }
@@ -117,17 +200,37 @@ object PlayerRepository {
 
     fun nextTrack() {
         val next = advance() ?: return
-        play(next)
+        // Queue-first advance in both engines; dispatch picks the transport.
+        dispatchPlay(next)
     }
 
     fun seekTo(ms: Long) {
         update { _state.value.copy(positionMs = ms) }
-        PlaybackService.instance?.seekToMs(ms)
+        val s = _state.value
+        if (s.sdkActive) {
+            val device = s.sdkDeviceId
+            if (device != null) {
+                scope.launch {
+                    withContext(Dispatchers.IO) { BridgeClient.sdkSeek(device, ms) }
+                }
+            }
+        } else {
+            PlaybackService.instance?.seekToMs(ms)
+        }
     }
 
     fun setVolume(v: Float) {
         update { s -> s.copy(volume = v.coerceIn(0f, 1f)) }
         PlaybackService.instance?.setPlayerVolume(_state.value.volume)
+        val s = _state.value
+        if (s.sdkActive) {
+            s.sdkDeviceId?.let { device ->
+                val pct = (_state.value.volume * 100).toInt().coerceIn(0, 100)
+                scope.launch {
+                    withContext(Dispatchers.IO) { BridgeClient.sdkVolume(device, pct) }
+                }
+            }
+        }
         persistVolume()
     }
 
@@ -151,5 +254,62 @@ object PlayerRepository {
 
     fun onServiceState(playing: Boolean) = update { s ->
         if (s.isPlaying == playing) s else s.copy(isPlaying = playing)
+    }
+
+    // -- SDK state intake (§9.2): device + player_state_changed events ---------
+    fun onSdkDevice(id: String) {
+        update { s -> if (s.sdkActive) s.copy(sdkDeviceId = id) else s }
+    }
+
+    /** Apply an SDK `player_state_changed` payload (parsed by the core). */
+    fun onSdkState(payloadJson: String) {
+        if (!useSdkEngine() && !_state.value.sdkActive) return
+        scope.launch {
+            val st = withContext(Dispatchers.IO) {
+                BridgeClient.sdkParseState(payloadJson).getOrNull()
+            } ?: return@launch
+            val playing = st.optBoolean("is_playing", false)
+            val pos = st.optLong("position_ms", 0)
+            val dur = st.optLong("duration_ms", 0)
+            val track = st.optJSONObject("track")?.let { mapSdkTrack(it) }
+            update { s ->
+                s.copy(
+                    track = track ?: s.track,
+                    isPlaying = playing,
+                    positionMs = pos,
+                    durationMs = dur,
+                    sdkActive = true,
+                )
+            }
+            publishSdkState()
+        }
+    }
+
+    private fun mapSdkTrack(o: org.json.JSONObject): Track? {
+        val id = o.optString("id", "")
+        val name = o.optString("name", "")
+        if (id.isEmpty() || name.isEmpty()) return null
+        val artists = o.optJSONArray("artists")?.let { arr ->
+            List(arr.length()) { i -> arr.optJSONObject(i)?.optString("name", "") ?: "" }
+        }?.filter { it.isNotEmpty() } ?: emptyList()
+        val album = o.optJSONObject("album")
+        val cover = album?.optJSONArray("images")?.optJSONObject(0)?.optString("url", "") ?: ""
+        return Track(
+            id = id,
+            name = name,
+            artists = artists,
+            albumName = album?.optString("name", "") ?: "",
+            coverUrl = cover,
+            durationMs = o.optLong("duration_ms", 0),
+            uri = o.optString("uri", ""),
+        )
+    }
+
+    /** Mirror SDK-driven state into the notification + media session (the
+     * service owns those surfaces on both engines). */
+    private fun publishSdkState() {
+        val s = _state.value
+        val track = s.track ?: return
+        PlaybackService.instance?.publishExternal(track, s.isPlaying, s.positionMs)
     }
 }

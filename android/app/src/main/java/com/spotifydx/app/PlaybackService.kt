@@ -171,6 +171,17 @@ class PlaybackService : Service(),
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
+    /** Publish externally-driven (SDK-path) state to the notification +
+     * media session. The service owns those surfaces on both engines; only
+     * the audio source differs. */
+    fun publishExternal(track: Track, playing: Boolean, posMs: Long) {
+        updateNotification(track, playing)
+        updateSession(
+            if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+            posMs, track,
+        )
+    }
+
     // -- MediaPlayer callbacks ----------------------------------------------------
     override fun onPrepared(mp: MediaPlayer) {
         mp.start()

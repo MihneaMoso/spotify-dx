@@ -81,5 +81,15 @@ class CoreBridge private constructor() {
         @JvmStatic external fun setShuffle(arg: String): String
         @JvmStatic external fun setRepeat(arg: String): String
         @JvmStatic external fun resolveStream(arg: String): String
+
+        // -- SDK path (Phase 5, §9.2): Connect transport against the
+        // -- Kotlin-hosted SDK device + state parser + document source.
+        @JvmStatic external fun sdkDocument(arg: String): String
+        @JvmStatic external fun sdkPlay(arg: String): String
+        @JvmStatic external fun sdkPause(arg: String): String
+        @JvmStatic external fun sdkSkip(arg: String): String
+        @JvmStatic external fun sdkSeek(arg: String): String
+        @JvmStatic external fun sdkVolume(arg: String): String
+        @JvmStatic external fun sdkParseState(arg: String): String
     }
 }
