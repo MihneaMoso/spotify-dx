@@ -1119,8 +1119,11 @@ patterns in mind so new code doesn't reintroduce them):
     resolution. The script's bridge-symbol compat check is the §13 CI gate.
   - Phase 7 cutover (2026-09-09): the `android-apk` job builds the OWNED
     Kotlin app (`android/`) — no `dx build`, no `stage-updater.sh`, no NDK
-    symlink step (the script wraps the toolchain internally). Legacy mobile
-    renderer removal stays deferred per spec (one clean release first).
+    symlink step (the script wraps the toolchain internally, including an
+    `aarch64-linux-android-ar` → `llvm-ar` wrapper: cc-rs/ring do NOT read
+    `CARGO_TARGET_*_AR`, they probe `ar` on PATH — this exact gap broke CI).
+    Legacy mobile renderer removal stays deferred per spec (one clean release
+    first).
   - `dx build --platform web --release` writes the site to
     `target/dx/<crate>/release/web/public` — **`out_dir` is NOT honored for `dx
     build`** (DioxusLabs/dioxus#3328), so the `web` job packages from that path,

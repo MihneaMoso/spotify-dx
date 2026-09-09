@@ -42,11 +42,21 @@ cat > "$workdir/$TARGET-clang" <<EOF
 exec "$NDK_BIN/clang" --target=$TRIPLE "\$@"
 EOF
 chmod +x "$workdir/$TARGET-clang"
+# C build scripts (cc-rs, e.g. ring) probe `aarch64-linux-android-ar` on
+# PATH — they do NOT read CARGO_TARGET_*_AR — and stock NDK bins only carry
+# llvm-ar. Same wrapper trick as clang (this exact gap broke CI release).
+cat > "$workdir/$TARGET-ar" <<EOF
+#!/bin/bash
+exec "$NDK_BIN/llvm-ar" "\$@"
+EOF
+chmod +x "$workdir/$TARGET-ar"
 
 export PATH="$workdir:$PATH"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$workdir/$TARGET-clang"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_CC="$workdir/$TARGET-clang"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$NDK_BIN/llvm-ar"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$workdir/$TARGET-ar"
+export AR_aarch64_linux_android="$workdir/$TARGET-ar"
+export CC_aarch64_linux_android="$workdir/$TARGET-clang"
 
 # --- Native core (headless lib; the Kotlin app links it, not the binary) ---
 PROFILE_FLAG=""
@@ -95,6 +105,7 @@ echo "==> gradle $GRADLE_TASK"
   ./gradlew "$GRADLE_TASK" $OFFLINE_FLAG --no-daemon
 )
 
-APK="$(find android/app/build/outputs/apk -name '*.apk' | head -1)"
+APK_DIR="android/app/build/outputs/apk/$([ "$MODE" = "release" ] && echo release || echo debug)"
+APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
 test -n "${APK:-}" || { echo "no APK produced" >&2; exit 1; }
 echo "==> APK: $APK"
