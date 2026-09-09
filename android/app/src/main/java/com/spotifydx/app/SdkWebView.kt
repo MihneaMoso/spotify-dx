@@ -33,6 +33,10 @@ import org.json.JSONObject
  * *commands* (which track on which device) go through the core's Connect
  * calls (`BridgeClient.sdkPlay/...`), and SDK state events feed back into
  * [PlayerRepository].
+ *
+ * Platform note (verified on-device): Android WebView provides no EME
+ * keysystem (`EMEError: No supported keysystem`), so the SDK can never reach
+ * `ready` here — every attempt fails fast into the open-engine fallback.
  */
 class SdkWebViewDriver(
     private val activity: FragmentActivity,
@@ -56,8 +60,15 @@ class SdkWebViewDriver(
     var onDeviceReady: ((String) -> Unit)? = null
     /** Fired on the main thread with the raw `player_state_changed` payload. */
     var onPlayerState: ((String) -> Unit)? = null
+    /** SDK error text. The repository decides whether it deserves a toast:
+     * boot-time failures (no device yet) are recovered by open fallback and
+     * stay log-only; only an established SDK session toasts. */
+    var onError: ((String) -> Unit)? = null
 
     private var readySignal = CompletableDeferred<String>()
+    /** Permanent boot failure (e.g. no EME keysystem in WebView): fail
+     * `awaitDevice` fast instead of burning the full ready timeout. */
+    private var bootFailed = false
 
     inner class Ipc {
         /** Runs on a WebView background thread — marshal to main. */
@@ -104,7 +115,10 @@ class SdkWebViewDriver(
             "auth_error", "init_error", "token_error" -> {
                 val m = o.optString("message", o.optString("msg", "unknown SDK error"))
                 Log.w(TAG, "SDK error: $m")
-                ToastBus.error("Playback error: $m")
+                // A boot-time failure means this WebView will never produce a
+                // device (EME keysystem missing is permanent, not transient).
+                if (!deviceReady) bootFailed = true
+                onError?.invoke(m)
             }
             else -> Log.d(TAG, "ipc: ignored type ${o.optString("type", "?")}")
         }
@@ -127,6 +141,7 @@ class SdkWebViewDriver(
             return false
         }
         readySignal = CompletableDeferred()
+        bootFailed = false
         val wv = WebView(activity).apply {
             visibility = View.GONE
             settings.javaScriptEnabled = true
@@ -157,9 +172,11 @@ class SdkWebViewDriver(
         return true
     }
 
-    /** Device id, waiting for `ready` up to the timeout. Null = not ready. */
+    /** Device id, waiting for `ready` up to the timeout. Null = not ready.
+     * Returns immediately when boot already failed permanently. */
     suspend fun awaitDevice(timeoutMs: Long = READY_TIMEOUT_MS): String? {
         deviceId?.takeIf { deviceReady }?.let { return it }
+        if (bootFailed) return null
         return withTimeoutOrNull(timeoutMs) { readySignal.await() }
     }
 
@@ -186,6 +203,7 @@ class SdkWebViewDriver(
         webView = null
         deviceReady = false
         deviceId = null
+        bootFailed = false
         readySignal = CompletableDeferred()
     }
 

@@ -84,10 +84,15 @@ fi
 echo "bridge compat OK"
 
 # --- Gradle (owned project; offline = cache only, installs nothing) ---
-echo "==> gradle $GRADLE_TASK (offline)"
+echo "==> gradle $GRADLE_TASK"
 (
   cd android
-  ./gradlew "$GRADLE_TASK" --offline --no-daemon
+  # Offline by default (local loop installs nothing); CI exports
+  # GRADLE_OFFLINE=0 for first-time dependency resolution.
+  OFFLINE_FLAG="--offline"
+  [ "${GRADLE_OFFLINE:-1}" = "0" ] && OFFLINE_FLAG=""
+  # shellcheck disable=SC2086
+  ./gradlew "$GRADLE_TASK" $OFFLINE_FLAG --no-daemon
 )
 
 APK="$(find android/app/build/outputs/apk -name '*.apk' | head -1)"

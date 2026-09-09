@@ -27,6 +27,30 @@ must be traceable back to a section there.
 > anonymous login page; offline cold start surfaces Spotify's own
 > challenge/notice UI (genuine page ⇒ same errors as today by construction).
 > Password login and no-escape tapping remain manual (need live credentials).
+>
+> Phase 4 open-engine playback is live-verified (resolve → MediaPlayer, queue
+> advance, seek, volume persist). Phase 5 SDK path is implemented end to end
+> (core `sdkDocument`/`sdkPlay/…`/`sdkParseState` + Kotlin hidden-WebView
+> driver + engine router with open fallback) but **blocked by platform**:
+> Android WebView provides no EME keysystem (`EMEError: No supported
+> keysystem`), so the Web Playback SDK can never reach `ready` on-device —
+> every SDK attempt fails fast into the open engine (verified 2026-09).
+>
+> Phase 6 substantially verified on-device (2026-09): settings survive
+> force-stop byte-identical (`files/settings.json`, user values intact);
+> update check runs at boot against the live GitHub API ("Up to date
+> (v0.1.10)"); profile/avatar/engine/privacy screens live. The
+> download→stage→apply round-trip is **blocked on the release pipeline**:
+> `release.yml` still publishes the legacy `dx build` scaffold APK (per-run
+> keystore, wrong app) — cutover (Phase 7) must publish the owned Kotlin APK
+> with a stable signing key before apply can be tested.
+>
+> Phase 7 CI cutover done (2026-09-09, unreleased): `android-apk` builds the
+> owned Kotlin app (`build-kotlin.sh release` + bridge-compat gate),
+> versionCode from `github.run_number` / versionName from the tag, signed
+> with the stable release key (repo secrets) under the updater's asset name.
+> Legacy mobile-renderer removal stays deferred per spec (one clean release
+> with no regressions first).
 
 ---
 

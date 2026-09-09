@@ -45,10 +45,24 @@ class LoginViewModel : ScopedViewModel() {
         vmScope.launch {
             val res = BridgeClient.beginLogin()
             val json = res.getOrNull()
-            if (json != null && !json.optBoolean("authenticated", false)) {
-                _loginUrl.value =
-                    if (json.isNull("login_url")) null else json.getString("login_url")
-            } else if (res.isFailure) {
+            if (json != null && json.optBoolean("authenticated", false)) {
+                // Live mirror (reopen with surviving process, or a logout
+                // that raced a still-valid token): never stick on
+                // "Opening login…" — drop the spinner and re-emit the
+                // session snapshot so the gate→shell switch fires.
+                _starting.value = false
+                SessionRepository.refresh()
+            } else if (json != null) {
+                val url = if (json.isNull("login_url")) null else json.getString("login_url")
+                if (url == null) {
+                    // Not authenticated and no page to show: surface retry,
+                    // never a stuck spinner.
+                    _starting.value = false
+                    ToastBus.error("Sign-in unavailable — please retry.")
+                } else {
+                    _loginUrl.value = url
+                }
+            } else {
                 _starting.value = false
                 ToastBus.fromBridge(res.exceptionOrNull() ?: return@launch)
             }

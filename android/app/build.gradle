@@ -22,10 +22,15 @@ android {
         // hosts rely on need API 30+. See Dioxus.toml [mobile] + RULES.md.
         minSdk 30
         targetSdk 34
-        versionCode 1
+        // CI injects both from the release tag (Phase 7 cutover: updates
+        // only install when versionCode rises). Local builds keep 1/0.1.0.
+        // (Plain if/else: chained Elvis + toInteger mis-evaluates on AGP 8/Gradle 9.)
+        def vc = System.getenv('SPOTIFY_DX_VERSION_CODE')
+        versionCode vc != null ? vc.toInteger() : 1
         // Mirrors the Cargo package version by hand until the build script
         // stamps it (single source stays Cargo.toml).
-        versionName '0.1.0'
+        def vn = System.getenv('SPOTIFY_DX_VERSION_NAME')
+        versionName vn != null ? vn : '0.1.0'
 
         ndk {
             abiFilters 'arm64-v8a'

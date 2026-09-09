@@ -1099,11 +1099,28 @@ patterns in mind so new code doesn't reintroduce them):
     `android-sdk-preview-license` = `84831b9409646a918e30573bab4c9c91346d8abd`.
     The subsequent `sdkmanager "ndk;…"` install still enforces acceptance, so a
     broken fallback fails there loudly instead of silently.
-  - Signing: `keytool -genkeypair` (throwaway keystore) + `apksigner sign` from
-    `build-tools/34.0.0` on the unsigned release APK
-    (`…/app/build/outputs/apk/release/app-release-unsigned.apk`); verify with
-    `apksigner verify`; upload `*-signed.apk` from
-    `target/dx/spotify-dx/release/android/app/app/build/outputs/apk/release/`.
+  - Signing (Phase 7 cutover): stable release key from repo secrets
+    (`ANDROID_KEYSTORE_B64/PASSWORD/ALIAS/KEY_PASSWORD`, RSA-2048 PKCS12,
+    30y, alias `spotifydx` — created 2026-09-09, private key exists ONLY in
+    Secrets) + `apksigner sign` from `build-tools/34.0.0` on the unsigned
+    owned-app release APK; verify with `apksigner verify`. The job FAILS
+    LOUDLY when secrets are missing — per-release keystores silently break
+    the updater (signature mismatch), so no throwaway fallback. Asset keeps
+    the updater's basename `app-release-unsigned-signed.apk` (ANDROID_TOKEN).
+  - Version stamping: `SPOTIFY_DX_VERSION_CODE=${{ github.run_number }}`
+    (monotonic — updates require a rising code) and
+    `SPOTIFY_DX_VERSION_NAME=${GITHUB_REF_NAME#v}` into
+    `android/app/build.gradle` env-driven `versionCode/versionName`
+    (local defaults stay 1/0.1.0). Groovy gotcha: chained
+    `(System.getenv(..) ?: '1').toInteger()` mis-evaluates to null on
+    AGP 8/Gradle 9 — use explicit `def` + ternary.
+  - `scripts/build-kotlin.sh` runs Gradle `--offline` by default (local loop
+    installs nothing); CI exports `GRADLE_OFFLINE=0` for first-time dep
+    resolution. The script's bridge-symbol compat check is the §13 CI gate.
+  - Phase 7 cutover (2026-09-09): the `android-apk` job builds the OWNED
+    Kotlin app (`android/`) — no `dx build`, no `stage-updater.sh`, no NDK
+    symlink step (the script wraps the toolchain internally). Legacy mobile
+    renderer removal stays deferred per spec (one clean release first).
   - `dx build --platform web --release` writes the site to
     `target/dx/<crate>/release/web/public` — **`out_dir` is NOT honored for `dx
     build`** (DioxusLabs/dioxus#3328), so the `web` job packages from that path,
@@ -1378,6 +1395,26 @@ dioxus-mobile Rust code is untouched and still builds.
   `item_title` vertical rows. Gotcha: adding the 2nd constructor param broke
   all trailing-lambda `TitleAdapter { pos -> ... }` call sites (lambda binds
   to the last param) — they must use named `onClick = { ... }`.
+- **Phase 5 SDK path blocked by platform (verified on-device 2026-09):**
+  Android WebView has no EME keysystem, so the Web Playback SDK fails init
+  (`EMEError: No supported keysystem`, `init_error`) and never reaches
+  `ready` — regardless of account tier. The driver (`SdkWebViewDriver`)
+  fails fast (`bootFailed` short-circuits `awaitDevice`; errors route via
+  `onError`, toasted only when an SDK session is active) into the open
+  engine, which then plays normally. Do not retry SDK boot or add fallback
+  timers around it; the failure is permanent. A native Android SDK (App
+  Remote) would be a separate integration, not this path.
+- **Fragment commits from async collectors must allow state loss:**
+  `MainActivity.go()` uses `commitAllowingStateLoss()` — session/watchdog
+  flows can emit after `onSaveInstanceState` (backgrounded app) and plain
+  `commit()` crashes there (`IllegalStateException`, seen 2026-09-09).
+- **Release pipeline cut over (Phase 7, pending first tagged release):**
+  `release.yml` `android-apk` now builds the owned Kotlin app with a stable
+  key (see §6.9d). Until a tag is pushed and the published
+  `app-release-unsigned-signed.apk` is confirmed installable-as-update, the
+  updater's apply step remains live-untested. Verified 2026-09: check path
+  live ("Up to date (v0.1.10)"), settings survive force-stop, local
+  `assembleRelease` + version stamping green (99999/9.9.9-test in aapt).
 
 ## 7. Testing
 

@@ -71,7 +71,15 @@ class MainActivity : AppCompatActivity() {
         bindPlayerBar()
         collectRepos()
 
-        if (savedInstanceState == null) go(Destination.GATE)
+        if (savedInstanceState == null) {
+            // Reopen with a surviving process (service playing): the session
+            // mirror is live, so land straight on the app — never flash the
+            // gate. Fresh process starts unauthenticated → gate as usual.
+            go(
+                if (SessionRepository.snapshot().authenticated) Destination.HOME
+                else Destination.GATE,
+            )
+        }
     }
 
     // -- Navigation ------------------------------------------------------------------
@@ -92,9 +100,13 @@ class MainActivity : AppCompatActivity() {
             Destination.SETTINGS -> SettingsFragment()
             Destination.DETAIL -> DetailFragment().apply { arguments = args }
         }
+        // Allowing state loss: navigation is driven by async repo state
+        // (session/watchdog collectors) that can legally emit after
+        // onSaveInstanceState (backgrounded app) — a lost frame beats a
+        // crash (IllegalStateException seen on-device 2026-09-09).
         supportFragmentManager.beginTransaction()
             .replace(R.id.content, frag)
-            .commit()
+            .commitAllowingStateLoss()
         syncNav(dest)
     }
 

@@ -134,11 +134,13 @@ jobs:
             *.zip
             *.sha256
 
-  # Android APK — headless build, no Android Studio. `dx build --platform android`
-  # auto-generates the entire Gradle project from the CLI's built-in template, so
-  # there is nothing android/ to commit. The APK is signed with a generated
-  # keystore via apksigner so it installs cleanly, then uploaded as a release asset.
-  # See docs/PLATFORM_PARITY.md Phase D + RULES.md §6.9d.
+  # Android APK — Phase 7 cutover: the OWNED Kotlin app in android/ (primary
+  # build path, docs/KOTLIN_MIGRATION.md §13). No dx generator, no staging
+  # scripts: scripts/build-kotlin.sh cross-compiles the native core, checks
+  # bridge-symbol compat, and runs assembleRelease. Signed with the stable
+  # release key from repo secrets (per-release keystores would break
+  # updates); the asset keeps the updater's expected basename
+  # (ANDROID_TOKEN in src/updater.rs). See RULES.md §6.9d.
   android-apk:
     runs-on: ubuntu-latest
     env:
@@ -146,11 +148,6 @@ jobs:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_NDK_HOME: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
       ANDROID_NDK_VERSION: 25.2.9519653
-      # cargo does NOT expand env vars in .cargo/config.toml paths, and the
-      # checked-in config points at a machine-specific NDK. These env overrides
-      # take precedence over that config file for the aarch64-linux-android target.
-      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-clang
-      CARGO_TARGET_AARCH64_LINUX_ANDROID_AR: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
     steps:
       - uses: actions/checkout@v4
 
@@ -179,9 +176,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-aarch64-linux-android-${{ hashFiles('Cargo.lock') }}
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-kotlin-release-${{ hashFiles('Cargo.lock', 'android/**/*.gradle', 'android/gradle/wrapper/*') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-aarch64-linux-android-
+            ${{ runner.os }}-kotlin-release-
 
       - name: Install Android command-line tools + SDK/NDK
         shell: bash
@@ -231,85 +230,57 @@ jobs:
             "platform-tools" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Create un-versioned NDK tool symlinks (cc-rs requires exact names)
+      - name: Build owned Kotlin APK (release)
         shell: bash
         run: |
           set -euo pipefail
-          bin="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # The un-versioned `aarch64-linux-android-clang` wrapper defaults the
-          # API level to 21, whose sysroot lib dir has no libaaudio.so — `cpal`
-          # links `-laaudio` → `Unable to find library -laaudio`. Point it at a
-          # versioned wrapper >= 26 (where libaaudio lives), preferring the
-          # app's min_sdk (30) so the selected sysroot matches the manifest.
-          for api in 30 33 31 29 28 26 24 21; do
-            if [ -x "${bin}/aarch64-linux-android${api}-clang" ]; then
-              ln -sfn "aarch64-linux-android${api}-clang" "${bin}/aarch64-linux-android-clang"
-              break
-            fi
+          # Updates only install when versionCode rises: CI stamps both from
+          # the tag (name) + run number (monotonic code). The native version
+          # comes from the top-level SPOTIFY_DX_RELEASE_VERSION env.
+          export SPOTIFY_DX_VERSION_CODE="${{ github.run_number }}"
+          export SPOTIFY_DX_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          # GRADLE_OFFLINE=0: the runner has no pre-seeded Gradle cache, so
+          # plugins + deps resolve from the network (local builds stay offline).
+          export GRADLE_OFFLINE=0
+          ./scripts/build-kotlin.sh release
+          ls -la android/app/build/outputs/apk/release/
+
+      - name: Sign APK with stable release key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # A stable key is load-bearing: per-release keystores silently break
+          # the updater (signature mismatch on install). Fail loudly instead.
+          for v in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!v:-}" ] || { echo "$v secret missing — see RULES.md §6.9d." >&2; exit 1; }
           done
-          [ -e "${bin}/aarch64-linux-android-clang" ] \
-            || { echo "no versioned aarch64 clang wrapper in NDK" >&2; exit 1; }
-          ln -sfn llvm-ar "${bin}/aarch64-linux-android-ar"
-
-      - name: Build release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install dioxus-cli --version 0.7.10 --locked 2>/dev/null || true
-          # dx is not on PATH from the install; use the cargo bin dir
-          export PATH="${HOME}/.cargo/bin:${PATH}"
-          # Explicit `--target` — the default android triple follows the HOST
-          # arch (x86_64 on CI runners), which would silently produce an x86_64
-          # APK. `dx build` generates the Gradle project + compiles the Rust
-          # .so, but without a `[bundle.android]` config it only runs Gradle's
-          # `assembleDebug`; we run `assembleRelease` ourselves for a real
-          # release APK (see RULES.md §6.9d).
-          dx build --platform android --release --target aarch64-linux-android
-
-          # Stage the in-repo self-update support (content provider + intent
-          # launcher) into the generated Android project so it compiles with
-          # libmain.so. Must run before Gradle builds.
-          "${GITHUB_WORKSPACE}/scripts/stage-updater.sh"
-
-          # Gradle project generated by dx (same path the build log reports).
-          android_dir="${GITHUB_WORKSPACE}/target/dx/spotify-dx/release/android/app"
-          cd "${android_dir}"
-          # The 0.7.10 template targets Java 17, which matches setup-java 17;
-          # we just skip the lint-vital tasks that crash under AGP 8.7 (see
-          # DioxusLabs/dioxus#5251). Output lands unsigned
-          # (no [bundle.android] signing config) at app/build/outputs/apk/release/.
-          ./gradlew assembleRelease \
-            -x lintVitalAnalyzeRelease \
-            -x lintVitalRelease \
-            -x lintVitalReportRelease
-          cd "${GITHUB_WORKSPACE}"
-
-          apk_dir="${android_dir}/app/build/outputs/apk/release"
-          ls -la "${apk_dir}"
-
-      - name: Sign APK with generated keystore
-        shell: bash
-        run: |
-          set -euo pipefail
-          android_dir="${GITHUB_WORKSPACE}/target/dx/spotify-dx/release/android/app"
-          apk_dir="${android_dir}/app/build/outputs/apk/release"
-          apk="$(ls "${apk_dir}"/app-release-unsigned.apk 2>/dev/null || ls "${apk_dir}"/app-release.apk | head -1)"
-          [ -n "${apk}" ] && [ -f "${apk}" ] || { echo "no release APK found in ${apk_dir}" >&2; exit 1; }
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/release.jks"
           bt="${ANDROID_HOME}/build-tools/34.0.0"
-          ks="${HOME}/debug.keystore"
-          keytool -genkeypair -v -keystore "$ks" -storepass android -alias androiddebugkey \
-            -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Spotify DX, OU=DX, O=Spotify DX, L=Nowhere, ST=Nowhere, C=US" 2>/dev/null
-          "${bt}/apksigner" sign --ks "$ks" --ks-pass pass:android \
-            --key-pass pass:android --out "${apk%.apk}-signed.apk" "$apk"
-          "${bt}/apksigner" verify --verbose "${apk%.apk}-signed.apk"
+          apk_dir="android/app/build/outputs/apk/release"
+          apk="$(ls "${apk_dir}"/app-release-unsigned.apk 2>/dev/null || ls "${apk_dir}"/app-release.apk | head -1)"
+          [ -n "${apk}" ] && [ -f "${apk}" ] || { echo "no release APK in ${apk_dir}" >&2; exit 1; }
+          # Asset basename MUST stay app-release-unsigned-signed.apk: the
+          # updater matches releases by ANDROID_TOKEN (src/updater.rs).
+          out="android/app-release-unsigned-signed.apk"
+          "${bt}/apksigner" sign --ks "${RUNNER_TEMP}/release.jks" \
+            --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+            --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+            --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+            --out "$out" "$apk"
+          "${bt}/apksigner" verify --verbose "$out"
+          rm -f "${RUNNER_TEMP}/release.jks"
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-android
           if-no-files-found: error
-          path: target/dx/spotify-dx/release/android/app/app/build/outputs/apk/release/*-signed.apk
+          path: android/app-release-unsigned-signed.apk
 
   # Web (WASM) — build the browser bundle with `dx build --platform web` and ship
   # the generated site as an artifact. Note: web login (credentialed

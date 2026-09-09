@@ -87,6 +87,15 @@ object PlayerRepository {
     /** Process-wide SDK driver host (owned by MainActivity, like the login
      * page host). Null until the activity attaches it. */
     var sdkDriver: SdkWebViewDriver? = null
+        set(v) {
+            field = v
+            // Boot-time SDK failures are recovered by fallback and stay
+            // log-only; only an established SDK session toasts errors.
+            v?.onError = { m ->
+                if (_state.value.sdkActive) ToastBus.error("Playback error: $m")
+                else Log.w(TAG, "SDK boot failure (open fallback active): $m")
+            }
+        }
 
     /** Engine choice: explicit pref wins; auto follows the account tier
      * (SDK iff Premium — mirrors core `should_use_open_engine`). */
