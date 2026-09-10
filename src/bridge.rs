@@ -169,8 +169,22 @@ fn java_str<'x, 'a>(env: &'x JNIEnv<'a>, s: &str) -> JString<'a> {
 /// Takes `env` by value: `JString` is a raw-pointer wrapper (its lifetime is
 /// the JNI frame's, not a borrow of `env`), so moving `env` is sound.
 fn guarded<'a>(mut env: JNIEnv<'a>, f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a> {
-    let out = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut env)))
-        .unwrap_or_else(|_| err("BRIDGE_PANIC", "native bridge panicked"));
+    let out = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut env))).unwrap_or_else(|payload| {
+        // Extract the panic message (String / &str / unknown) so the envelope
+        // — and logcat — name the culprit instead of a bare "panicked".
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        let location = std::panic::Location::caller();
+        // Full backtrace goes to logcat only (too long for a toast); the
+        // envelope carries the message.
+        let bt = std::backtrace::Backtrace::capture();
+        tracing::error!("bridge panic at {location}: {msg}\n{bt}");
+        let short = msg.chars().take(300).collect::<String>();
+        err("BRIDGE_PANIC", format!("native bridge panicked: {short}"))
+    });
     java_str(&env, &out)
 }
 
@@ -252,11 +266,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getSettings<'a>(
     _cls: JClass<'a>,
 ) -> JString<'a> {
     guarded(env, |_env| {
-        // Mirror into the SETTINGS signal: providers read credentials from
-        // the signal, but the bridge otherwise talks files directly — without
-        // this write-through they would always see defaults on Android.
+        // Mirror into the runtime-free provider slot (NOT the SETTINGS
+        // signal — signal access panics on bridge threads; see settings.rs).
         let loaded = settings::Settings::load();
-        *crate::state::SETTINGS.write() = loaded.clone();
+        settings::sync_stream_credentials(&loaded);
         match serde_json::to_string(&loaded) {
             Ok(json) => ok_data(&json),
             Err(e) => err("IO", e),
@@ -279,9 +292,8 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_setSettings<'a>(
             Err(e) => return err("INVALID_ARGS", format!("bad settings JSON: {e}")),
         };
         parsed.normalize();
-        // Write-through to the signal (see getSettings): provider credential
-        // reads must observe saves immediately, not just after a restart.
-        *crate::state::SETTINGS.write() = parsed.clone();
+        // Write-through to the runtime-free mirror (see getSettings).
+        settings::sync_stream_credentials(&parsed);
         match parsed.save() {
             Ok(()) => match serde_json::to_string(&parsed) {
                 Ok(j) => ok_data(&j),
@@ -563,6 +575,13 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_notifySession<'a>(
         auth::token_store::save(token, expires_at_ms);
         crate::spotify::session::set_headless_token(token.to_string(), expires_at_ms);
         let user_json = v.get("user").map(|u| u.to_string());
+        // Premium mirror (see currentUser): capture carries the user object.
+        let premium = v
+            .get("user")
+            .and_then(|u| u.get("product"))
+            .and_then(|p| p.as_str())
+            == Some("premium");
+        crate::settings::set_session_premium(premium);
         *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession {
             authenticated: true,
             access_token: Some(token.to_string()),
@@ -589,6 +608,7 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_logout<'a>(
         // lines below reset the bridge-owned mirror and provider slot.
         auth::logout();
         crate::spotify::session::clear_headless_token();
+        crate::settings::set_session_premium(false);
         *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession::default();
         push_event("session", "{\"authenticated\":false}");
         ok_str("logged-out")
@@ -1021,10 +1041,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
                     s.authenticated = true;
                     s.user_json = Some(user_json.clone());
                 }
-                // Fold the tier into AUTH_STATE (mirrors
-                // `auth::refresh_profile`, which the Kotlin flow never calls):
-                // the SDK transport's `require_premium` gate reads it.
-                crate::state::AUTH_STATE.write().product = p.product;
+                // Premium mirror for the runtime-free SDK gate (never touches
+                // AUTH_STATE — signal access panics on bridge threads).
+                crate::settings::set_session_premium(p.product.as_deref() == Some("premium"));
                 push_event("session", "{\"authenticated\":true}");
                 ok_data(&user_json)
             }

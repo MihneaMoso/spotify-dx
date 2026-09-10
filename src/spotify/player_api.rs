@@ -7,7 +7,14 @@ use dioxus::prelude::ReadableExt;
 const PLAYER_BASE: &str = "https://api.spotify.com/v1/me/player";
 
 fn require_premium() -> Result<(), AppError> {
-    if !AUTH_STATE.read().is_premium() {
+    // Android runs this on bridge worker threads (no Dioxus runtime), where
+    // even signal reads panic — consult the runtime-free session mirror the
+    // bridge maintains instead. Desktop reads the live signal.
+    #[cfg(target_os = "android")]
+    let premium = crate::settings::session_premium();
+    #[cfg(not(target_os = "android"))]
+    let premium = AUTH_STATE.peek().is_premium();
+    if !premium {
         return Err(AppError::PremiumRequired(
             "Playback requires Spotify Premium. Browsing is available for all accounts."
                 .into(),

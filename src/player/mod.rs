@@ -91,13 +91,13 @@ pub fn on_authenticated() {
 /// Decide which engine to use based on settings and account state.
 fn should_use_open_engine() -> bool {
     use crate::settings::EnginePreference;
-    let pref = crate::state::SETTINGS.read().engine;
+    let pref = crate::state::SETTINGS.peek().engine;
     match pref {
         EnginePreference::Open => true,
         EnginePreference::SpotifySdk => false,
         EnginePreference::Auto => {
             // Use SDK when Premium; open engine for free accounts.
-            !crate::state::AUTH_STATE.read().is_premium()
+            !crate::state::AUTH_STATE.peek().is_premium()
         }
     }
 }
@@ -130,7 +130,7 @@ pub async fn play_track(track: &crate::spotify::models::Track) -> Result<(), App
         return open_play_track(track).await;
     }
     // SDK path: requires Premium + device_id.
-    if !AUTH_STATE.read().is_premium() {
+    if !AUTH_STATE.peek().is_premium() {
         return Err(AppError::PremiumRequired(
             "Playback requires Spotify Premium — your account can browse freely.".into(),
         ));

@@ -18,7 +18,6 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dioxus::prelude::ReadableExt;
 
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
@@ -42,12 +41,15 @@ impl Default for QobuzProvider {
 }
 
 /// Configured credentials, if the user supplied both halves.
+/// Reads the runtime-free settings mirror (bridge threads must never touch
+/// Dioxus signals — not even `peek` on some paths; the mirror is synced by
+/// bridge get/setSettings).
 pub fn credentials() -> Option<(String, String)> {
-    let s = crate::state::SETTINGS.read();
-    if s.qobuz_app_id.is_empty() || s.qobuz_auth_token.is_empty() {
+    let c = crate::settings::stream_credentials();
+    if c.qobuz_app_id.is_empty() || c.qobuz_auth_token.is_empty() {
         None
     } else {
-        Some((s.qobuz_app_id.clone(), s.qobuz_auth_token.clone()))
+        Some((c.qobuz_app_id.clone(), c.qobuz_auth_token.clone()))
     }
 }
 

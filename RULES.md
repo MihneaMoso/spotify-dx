@@ -1535,6 +1535,17 @@ dioxus-mobile Rust code is untouched and still builds.
   wasm32-unknown-unknown` (toolchain installed locally) — desktop/android
   checks do not catch wasm-gated API absences. Same for warning hygiene
   (e.g. cooldown consts unused on wasm need cfg-gating).
+- **Dioxus signals are FORBIDDEN on bridge threads (fixed 2026-09-11):**
+  even `write()` panics ("Must be called from inside a Dioxus runtime")
+  outside the runtime — surfacing as BRIDGE_PANIC on every call. This broke
+  ALL playback (qobuz `is_available` read the signal per resolve) AND all
+  settings load/save (bridge write-through), which also explains the
+  theme-switch churn. Rule: bridge/provider code uses ONLY the runtime-free
+  mirrors in `settings.rs` (`sync/stream_credentials`,
+  `set/session_premium`), synced from bridge get/setSettings +
+  currentUser/notifySession/logout. `peek()` is equally suspect — prefer
+  the mirrors. `guarded` now captures the panic message + backtrace into
+  logcat (envelope carries the first 300 chars).
 - **Provider expansion Phase C (JioSaavn direct, 2026-09-10):**
   `providers/saavn.rs` after `piped`: FIRST-PARTY `api.php`
   (`search.getResults`, songs-only bucket) — never wrapper deployments.

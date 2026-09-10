@@ -6,6 +6,68 @@
 //! the theme attribute and playback defaults.
 
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// Runtime-free mirrors for bridge threads.
+//
+// Dioxus signals (`SETTINGS`, `AUTH_STATE`) REQUIRE a Dioxus runtime: even
+// `write()` panics ("Must be called from inside a Dioxus runtime") on JNI
+// worker threads, surfacing as BRIDGE_PANIC on every call. Anything the
+// bridge or providers need therefore lives here in plain std primitives,
+// synced from the bridge calls that already own the data. (Desktop UI keeps
+// using the signals — those run inside the runtime where they are legal.)
+// ---------------------------------------------------------------------------
+
+/// Streaming-provider credentials mirrored from `Settings` (see
+/// `sync_stream_credentials`). Read by providers; never logged.
+#[derive(Debug, Clone, Default)]
+pub struct StreamCredentials {
+    pub qobuz_app_id: String,
+    pub qobuz_auth_token: String,
+}
+
+static STREAM_CREDENTIALS: OnceLock<Mutex<StreamCredentials>> = OnceLock::new();
+
+fn credentials_slot() -> &'static Mutex<StreamCredentials> {
+    STREAM_CREDENTIALS.get_or_init(|| Mutex::new(StreamCredentials::default()))
+}
+
+/// Sync the provider mirror after any settings load/save on the bridge.
+pub fn sync_stream_credentials(s: &Settings) {
+    if let Ok(mut slot) = credentials_slot().lock() {
+        slot.qobuz_app_id = s.qobuz_app_id.clone();
+        slot.qobuz_auth_token = s.qobuz_auth_token.clone();
+    }
+}
+
+/// Snapshot for provider use (bridge threads safe).
+pub fn stream_credentials() -> StreamCredentials {
+    credentials_slot()
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_default()
+}
+
+/// Premium tier mirror for the Android SDK-transport gate. The bridge sets
+/// this from `/v1/me` (`currentUser`) and session captures
+/// (`notifySession`); `logout` clears it. `player_api::require_premium`
+/// consults it on Android, where `AUTH_STATE` is unreadable (no runtime).
+static SESSION_PREMIUM: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::new();
+
+fn premium_slot() -> &'static std::sync::atomic::AtomicBool {
+    SESSION_PREMIUM.get_or_init(|| std::sync::atomic::AtomicBool::new(false))
+}
+
+/// Record the account tier (`true` iff product == "premium").
+pub fn set_session_premium(premium: bool) {
+    premium_slot().store(premium, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Cached tier for runtime-free contexts.
+pub fn session_premium() -> bool {
+    premium_slot().load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Canonical storage key for the settings blob. Same value lands in
 /// `{data_dir}/settings.json` on native and a `localStorage` key on wasm.
