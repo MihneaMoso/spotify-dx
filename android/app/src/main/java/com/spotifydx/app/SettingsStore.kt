@@ -23,6 +23,11 @@ object SettingsStore {
         val engine: String = "auto",
         val hideUpsell: Boolean = false,
         val autoCheckUpdates: Boolean = true,
+        /** Phase F credential tier: opaque tokens, local-only, never logged. */
+        val qobuzAppId: String = "",
+        val qobuzAuthToken: String = "",
+        val tidalToken: String = "",
+        val deezerArl: String = "",
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -47,6 +52,10 @@ object SettingsStore {
                 .put("engine", next.engine)
                 .put("hide_upsell", next.hideUpsell)
                 .put("auto_check_updates", next.autoCheckUpdates)
+                .put("qobuz_app_id", next.qobuzAppId)
+                .put("qobuz_auth_token", next.qobuzAuthToken)
+                .put("tidal_token", next.tidalToken)
+                .put("deezer_arl", next.deezerArl)
                 .toString()
             BridgeClient.setSettings(json).onFailure {
                 _settings.value = prev
@@ -62,6 +71,10 @@ object SettingsStore {
             engine = json.optString("engine", "auto"),
             hideUpsell = json.optBoolean("hide_upsell", false),
             autoCheckUpdates = json.optBoolean("auto_check_updates", true),
+            qobuzAppId = json.optString("qobuz_app_id", ""),
+            qobuzAuthToken = json.optString("qobuz_auth_token", ""),
+            tidalToken = json.optString("tidal_token", ""),
+            deezerArl = json.optString("deezer_arl", ""),
         )
         if (next != _settings.value) _settings.value = next
         Theme.apply(next.theme)

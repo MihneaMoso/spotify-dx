@@ -31,4 +31,11 @@
     <string name="settings_engine">Playback engine</string>
     <string name="settings_privacy">Privacy</string>
     <string name="settings_updates">Software &amp; updates</string>
+    <string name="settings_credentials">Streaming credentials</string>
+    <string name="cred_note">Optional keys that unlock lossless providers. Stored only on this device, empty means parked. Qobuz needs both fields.</string>
+    <string name="cred_qobuz_app">Qobuz app ID</string>
+    <string name="cred_qobuz_token">Qobuz user auth token</string>
+    <string name="cred_tidal">Tidal token (reserved)</string>
+    <string name="cred_deezer">Deezer ARL (reserved)</string>
+    <string name="cred_save">Save keys</string>
 </resources>

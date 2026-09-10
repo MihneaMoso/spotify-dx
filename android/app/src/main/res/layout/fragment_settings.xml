@@ -133,6 +133,73 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/pad"
+            android:text="@string/settings_credentials"
+            android:textSize="20sp"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/cred_note"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/cred_qobuz_app"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/cred_qobuz_app"
+            android:inputType="text"
+            android:singleLine="true" />
+
+        <EditText
+            android:id="@+id/cred_qobuz_token"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/cred_qobuz_token"
+            android:inputType="textPassword"
+            android:singleLine="true" />
+
+        <EditText
+            android:id="@+id/cred_tidal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/cred_tidal"
+            android:inputType="textPassword"
+            android:singleLine="true" />
+
+        <EditText
+            android:id="@+id/cred_deezer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/cred_deezer"
+            android:inputType="textPassword"
+            android:singleLine="true" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/cred_save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/cred_save" />
+
+            <TextView
+                android:id="@+id/cred_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/pad_half"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/pad"
             android:text="@string/settings_privacy"
             android:textSize="20sp"
             android:textColor="?attr/colorOnSurface" />

@@ -1477,6 +1477,66 @@ dioxus-mobile Rust code is untouched and still builds.
   verify unknown GQL shapes via key/value logcat before guessing).
   `RECENT` sinks untimestamped rows; Kotlin `Track.addedAt` round-trips
   through queue snapshots.
+- **Provider expansion Phase A (YouTube hardening, 2026-09-10):**
+  `youtube.rs` tries ranked query variants (`artist title audio` →
+  `title artist` → `title artist topic`; later variants run only when
+  earlier yield nothing — happy path stays one search), collects up to 6
+  deduped candidates with `lengthText` durations, duration-gates (±15s;
+  unknown durations accept either side — no regression), and walks
+  candidates: transport errors abort (no timeout multiplication), content
+  errors advance. Ciphered URLs recover via Piped `/streams` for the same
+  videoId (primary + 1 fallback; Phase B builds the health-checked pool).
+  Pure helpers unit-tested (`search_queries`, `parse_length_secs`,
+  `duration_accepts`, `pick_piped_audio`, mappings). Explicit content is
+  NOT filtered anywhere (provider sets contentCheckOk/racyCheckOk) —
+  misses are catalog gaps, not blocks.
+- **Provider expansion Phase B (Piped provider, 2026-09-10):**
+  `providers/piped.rs` sits after `youtube`: pinned API hosts + in-process
+  health (2 consecutive transport failures → 5min cooldown; content gaps
+  never blame the host), 8s client timeout, `/search?filter=videos` →
+  duration-gated pick → `/streams/{id}` → best non-video audio (shared
+  `pick_piped_audio`/`duration_accepts`/`quality_for_bitrate`/
+  `format_for_mime` now `pub(crate)` in `youtube.rs`). Region variance is
+  the point: content misses retry the next instance, transport failures
+  cool it. Unit-tested (URL parse, urlencode, response shape).
+- **Provider expansion Phase D (Audius + SoundCloud, 2026-09-10):**
+  `audius.rs` (after `saavn`): keyless `api.audius.co/v1` search →
+  duration-gated pick (skips deleted/unlisted) → `/tracks/{id}/stream`
+  with redirects DISABLED (302 Location is the signed URL, ~days validity
+  >> 50min cache; 200 means proxied bytes). `soundcloud.rs` (last):
+  client_id auto-scraped from public JS bundles (24h cache, refresh on
+  401/403 + single retry), api-v2 search → skips snippet-only
+  (`policy != ALLOW` — a 30s preview cutting off is worse than chaining
+  on) → progressive transcoding only (no HLS on the platform player) →
+  resolve to direct URL. Pinned live before coding (client_id verified
+  working, transcoding + preview behavior confirmed). Unit-tested
+  (pickers, regex, shapes).
+- **Provider expansion Phases E+F (ISRC enrichment + credential tier):**
+  `streaming/isrc.rs`: MusicBrainz recording lookup (strict title, lenient
+  artist/length), shared 1 req/s gate + 512-entry cache, miss-path ONLY and
+  only when Qobuz is configured. Resolver hook retries the Qobuz consumer
+  alone (others can't use ISRC — no full second pass). Cache probe order is
+  a shared `CACHE_PROBE_ORDER` const with a unit test (a hardcoded subset
+  left new providers' entries write-only — caught here).
+  Credentials: 4 opaque fields on core `Settings` (serde-default, `Copy`
+  removed — desktop `*peek()` sites now `.clone()`), write-through into the
+  `SETTINGS` signal in bridge get/setSettings (Android bypasses the signal
+  otherwise), Kotlin store round-trips them (a save omitting keys would
+  WIPE them) + password-field UI section. Qobuz revived behind both keys
+  (ISRC/text search + `getFileUrl` format 6, documented surface,
+  LIVE-VERIFY PENDING with real keys). Tidal stays parked (direct revival
+  needs keys to verify); Deezer field reserved, gw_light flow deliberately
+  unshipped. Tokens never logged.
+- **Provider expansion Phase C (JioSaavn direct, 2026-09-10):**
+  `providers/saavn.rs` after `piped`: FIRST-PARTY `api.php`
+  (`search.getResults`, songs-only bucket) — never wrapper deployments.
+  DES-ECB decrypt of `encrypted_media_url` with the API's public static key
+  (`38346591`; `des`+`cipher` crates) → `_96`→`_320` quality swap (160 when
+  not advertised 320). Skips withdrawn items (`disabled`, non-zero
+  `rights.code`) and duration-gates; own 8s client + outage cooldown.
+  Pinned live: endpoint shape, key, and template verified against real
+  responses before coding (wrong remembered keys do exist — verify, don't
+  trust memory). Unit-tested incl. a fixed live decrypt vector.
 - **Release pipeline cut over (Phase 7, pending first tagged release):**
   `release.yml` `android-apk` now builds the owned Kotlin app with a stable
   key (see §6.9d). Until a tag is pushed and the published

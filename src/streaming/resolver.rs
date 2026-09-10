@@ -8,7 +8,7 @@
 //! 4. Cache the result.
 
 use crate::streaming::cache;
-use crate::streaming::provider::{Resolution, TrackQuery};
+use crate::streaming::provider::{Provider, Resolution, TrackQuery};
 use crate::streaming::providers;
 
 /// Result of resolving a track to a playable URL.
@@ -27,8 +27,9 @@ pub struct ResolvedStream {
 pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<ResolvedStream>, String> {
     let track_id = &track.id;
 
-    // Step 1: Check cache.
-    for provider_name in &["tidal", "qobuz", "youtube"] {
+    // Step 1: Check cache (every chain provider — see CACHE_PROBE_ORDER;
+    // a hardcoded subset would leave some providers' entries write-only).
+    for provider_name in providers::CACHE_PROBE_ORDER {
         if let Some(cached) = cache::get(track_id, provider_name) {
             if !cached.is_expired() {
                 tracing::debug!(
@@ -92,6 +93,33 @@ pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<Res
             Resolution::Error(e) => {
                 tracing::warn!("provider {} error: {e}", provider.name());
                 continue;
+            }
+        }
+    }
+
+    // Miss-path ISRC enrichment (Phase E): the name-based chain found
+    // nothing. If an ISRC consumer is configured and we have no ISRC yet,
+    // look one up (cached, rate-gated) and retry ONLY that consumer — other
+    // providers can't use an ISRC, so a full second pass would just burn
+    // timeouts for nothing.
+    if query.isrc.is_none() && providers::qobuz::is_configured() {
+        if let Some(isrc) = super::isrc::lookup_isrc(&query.title, &query.artist, query.duration_ms).await
+        {
+            tracing::info!("enriched {track_id} with ISRC, retrying ISRC consumers");
+            let mut enriched = query.clone();
+            enriched.isrc = Some(isrc);
+            let qobuz = providers::qobuz::QobuzProvider::new();
+            if let Resolution::Success { url, format, quality } =
+                qobuz.resolve(&enriched).await
+            {
+                tracing::info!("resolved {track_id} via qobuz (ISRC) → {format:?} {quality:?}");
+                cache::put(track_id, qobuz.name(), &url, &format.to_string());
+                return Ok(Some(ResolvedStream {
+                    url,
+                    format,
+                    quality,
+                    provider: qobuz.name().to_string(),
+                }));
             }
         }
     }

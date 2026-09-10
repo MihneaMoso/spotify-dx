@@ -47,7 +47,7 @@ pub enum EnginePreference {
     Open,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeName,
@@ -61,6 +61,20 @@ pub struct Settings {
     /// Check for app updates at startup (native builds only). Consumed by the
     /// updater's startup hook in `app.rs`.
     pub auto_check_updates: bool,
+    /// User-supplied streaming credentials (Phase F provider tier). Opaque
+    /// tokens, stored locally in settings.json, NEVER logged. Empty =
+    /// provider stays parked. Qobuz needs both app_id and a user auth token;
+    /// Tidal/Deezer fields unblock future revivals (Deezer's unofficial
+    /// gw_light flow is deliberately not implemented — too brittle to ship
+    /// blind; the field reserves the schema).
+    #[serde(default)]
+    pub qobuz_app_id: String,
+    #[serde(default)]
+    pub qobuz_auth_token: String,
+    #[serde(default)]
+    pub tidal_token: String,
+    #[serde(default)]
+    pub deezer_arl: String,
 }
 
 impl Default for Settings {
@@ -71,6 +85,10 @@ impl Default for Settings {
             engine: EnginePreference::Auto,
             hide_upsell: false,
             auto_check_updates: true,
+            qobuz_app_id: String::new(),
+            qobuz_auth_token: String::new(),
+            tidal_token: String::new(),
+            deezer_arl: String::new(),
         }
     }
 }

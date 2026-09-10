@@ -40,6 +40,10 @@ url           = "2"
 # images. Keep them. oauth2/rand were only used by the deleted PKCE flow.
 sha2          = "0.10"
 base64        = "0.22"
+# DES-ECB for JioSaavn `encrypted_media_url` (public static key — the API's
+# own scheme, same as every third-party client). Pure Rust, all targets.
+des           = "0.8"
+cipher        = "0.4"
 
 # ── Ad-block ──────────────────────────────────────────────────────────────────
 # Brave-style ad-block engine. Compiles to wasm; its DNS-over-HTTPS helper
@@ -64,6 +68,7 @@ parking_lot     = "0.12"
 chrono          = { version = "0.4", features = ["serde"] }
 urlencoding     = "2"
 async-trait     = "0.1"
+regex           = "1"
 
 # ── Per-target deps ───────────────────────────────────────────────────────────
 # Native (desktop/mobile): full multi-threaded tokio, native reqwest, OS

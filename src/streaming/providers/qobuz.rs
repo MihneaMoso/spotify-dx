@@ -1,26 +1,35 @@
-//! Qobuz provider: resolves tracks via community Qobuz proxy endpoints.
+//! Qobuz provider: lossless FLAC via user credentials.
 //!
-//! Qobuz is matched by ISRC (International Standard Recording Code) when
-//! available, which gives very accurate matches. Falls back to title+artist
-//! search.
+//! Revived (Phase F) behind user-supplied credentials (`qobuz_app_id` +
+//! `qobuz_auth_token` in Settings; empty = parked, zero cost). Flow:
+//! 1. ISRC search when the query carries one (most accurate), else
+//!    title+artist text search — both with `app_id` + `user_auth_token`.
+//! 2. `track/getFileUrl` (format 6 = CD FLAC) for the first hit's numeric
+//!    track id → direct stream URL.
 //!
-//! Resolution flow:
-//! 1. Odesli gives us a Qobuz URL → extract the Qobuz album/track ID.
-//! 2. Alternatively, search Qobuz by ISRC or title+artist.
-//! 3. POST to a Qobuz proxy endpoint for the stream URL.
+//! LIVE-VERIFY PENDING: written against the documented Qobuz API surface,
+//! but no user keys were available to confirm search params, `streamable`
+//! gating, or `getFileUrl` response shape on-device. The miss-path ISRC
+//! retry only runs when configured, so unverified code never executes
+//! without keys. Verify with real credentials before trusting: ISRC hit →
+//! FLAC URL → playback.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
+use dioxus::prelude::ReadableExt;
 
-use crate::streaming::odesli;
+use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
-/// Community Qobuz proxy instances.
-const QOBUZ_INSTANCES: &[&str] = &[
-    "https://api.qobuz.com",  // public API (limited)
-];
+const API: &str = "https://api.qobuz.com/api/2.0";
+/// CD-quality FLAC (16/44.1): the most widely available lossless tier.
+/// Higher tiers (24-bit) fail per-track far more often.
+const FORMAT_CD_FLAC: u8 = 6;
+
+#[cfg(not(target_arch = "wasm32"))]
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct QobuzProvider {
     client: reqwest::Client,
@@ -32,93 +41,153 @@ impl Default for QobuzProvider {
     }
 }
 
+/// Configured credentials, if the user supplied both halves.
+pub fn credentials() -> Option<(String, String)> {
+    let s = crate::state::SETTINGS.read();
+    if s.qobuz_app_id.is_empty() || s.qobuz_auth_token.is_empty() {
+        None
+    } else {
+        Some((s.qobuz_app_id.clone(), s.qobuz_auth_token.clone()))
+    }
+}
+
+/// Whether the provider may run (resolver miss-path hook consults this
+/// before spending a MusicBrainz lookup).
+pub fn is_configured() -> bool {
+    credentials().is_some()
+}
+
 impl QobuzProvider {
     pub fn new() -> Self {
         Self {
             client: {
                 let builder = reqwest::Client::builder();
                 #[cfg(not(target_arch = "wasm32"))]
-                let builder = builder.timeout(Duration::from_secs(10));
+                let builder = builder.timeout(REQUEST_TIMEOUT);
                 builder.build().unwrap_or_default()
             },
         }
     }
 
-    /// Try to get a stream URL by ISRC search via the Qobuz public search.
-    async fn resolve_by_isrc(&self, isrc: &str) -> Resolution {
-        let search_url = format!(
-            "https://api.qobuz.com/api/2.0/track/search?isrc={isrc}&limit=1"
+    /// Search tracks (ISRC string or `title artist` text); first hit's
+    /// numeric track id + title for duration gating.
+    async fn search_track_id(
+        &self,
+        app_id: &str,
+        token: &str,
+        query: &str,
+    ) -> Result<Option<(u64, String, u64)>, SearchError> {
+        let url = format!(
+            "{API}/track/search?query={}&limit=5&app_id={app_id}&user_auth_token={token}",
+            urlencoding::encode(query)
         );
-        match self.client.get(&search_url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(body) = resp.text().await {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                        if let Some(tracks) = val.get("tracks").and_then(|t| t.as_array()) {
-                            if let Some(first) = tracks.first() {
-                                if let Some(url) =
-                                    first.get("stream_url").and_then(|u| u.as_str())
-                                {
-                                    return Resolution::Success {
-                                        url: url.to_string(),
-                                        format: AudioFormat::Flac,
-                                        quality: Quality::Lossless,
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-                Resolution::NotFound
-            }
-            Ok(resp) if resp.status().as_u16() == 503 => Resolution::Cooldown {
-                retry_after_secs: 60,
-            },
-            Ok(resp) => Resolution::Error(format!("Qobuz search HTTP {}", resp.status())),
-            Err(e) => Resolution::Error(format!("Qobuz search: {e}")),
+        let resp = self.client.get(&url).send().await.map_err(|_| SearchError::Other)?;
+        match resp.status().as_u16() {
+            401 | 403 => return Err(SearchError::Auth),
+            429 | 503 => return Err(SearchError::Cooldown),
+            s if !(200..300).contains(&s) => return Err(SearchError::Other),
+            _ => {}
         }
+        let val: serde_json::Value = resp.json().await.map_err(|_| SearchError::Other)?;
+        let items = val
+            .get("tracks")
+            .and_then(|t| t.get("items"))
+            .and_then(|i| i.as_array())
+            .ok_or(SearchError::Other)?;
+        for item in items {
+            let id = match item.get("id").and_then(|i| i.as_u64()) {
+                Some(id) => id,
+                None => continue,
+            };
+            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            // Qobuz reports duration in SECONDS; 0 = unknown.
+            let secs = item.get("duration").and_then(|d| d.as_u64()).unwrap_or(0);
+            return Ok(Some((id, title, secs)));
+        }
+        Ok(None)
     }
 
-    /// Try to get a stream URL via Odesli's Qobuz link.
-    async fn resolve_by_odesli(&self, spotify_id: &str) -> Resolution {
-        let odesli_ids = match odesli::resolve(spotify_id).await {
-            Some(ids) => ids,
-            None => return Resolution::Error("odesli mapping failed".into()),
-        };
-        let qobuz_url = match odesli_ids.qobuz_url {
-            Some(url) => url,
-            None => return Resolution::NotFound,
-        };
+    /// Direct file URL for a numeric track id (CD FLAC).
+    async fn file_url(
+        &self,
+        app_id: &str,
+        token: &str,
+        track_id: u64,
+    ) -> Result<Option<String>, SearchError> {
+        let url = format!(
+            "{API}/track/getFileUrl?format_id={FORMAT_CD_FLAC}\
+             &track_id={track_id}&app_id={app_id}&user_auth_token={token}"
+        );
+        let resp = self.client.get(&url).send().await.map_err(|_| SearchError::Other)?;
+        match resp.status().as_u16() {
+            401 | 403 => return Err(SearchError::Auth),
+            429 | 503 => return Err(SearchError::Cooldown),
+            s if !(200..300).contains(&s) => return Err(SearchError::Other),
+            _ => {}
+        }
+        let val: serde_json::Value = resp.json().await.map_err(|_| SearchError::Other)?;
+        Ok(val
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| u.starts_with("http"))
+            .map(|u| u.to_string()))
+    }
 
-        // Try each proxy instance.
-        for instance in QOBUZ_INSTANCES {
-            let api_url = format!(
-                "{}/api/dl/{}",
-                instance.trim_end_matches('/'),
-                odesli::extract_id_from_url(&qobuz_url).unwrap_or_default()
-            );
-            match self.client.get(&api_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(body) = resp.text().await {
-                        let url = extract_url_from_response(&body);
-                        if !url.is_empty() {
-                            return Resolution::Success {
-                                url,
-                                format: AudioFormat::Flac,
-                                quality: Quality::Lossless,
-                            };
-                        }
+    async fn resolve_inner(
+        &self,
+        app_id: &str,
+        token: &str,
+        query: &TrackQuery,
+    ) -> Resolution {
+        // ISRC first (exact recording match), then text fallback.
+        let mut attempts = Vec::new();
+        if let Some(ref isrc) = query.isrc {
+            attempts.push(isrc.clone());
+        }
+        attempts.push(format!("{} {}", query.title, query.artist));
+        for q in attempts {
+            let hit = match self.search_track_id(app_id, token, &q).await {
+                Ok(h) => h,
+                Err(SearchError::Auth) => {
+                    return Resolution::Error("qobuz credentials rejected".into())
+                }
+                Err(SearchError::Cooldown) => {
+                    return Resolution::Cooldown { retry_after_secs: 60 }
+                }
+                Err(SearchError::Other) => continue,
+            };
+            let Some((id, _title, secs)) = hit else {
+                continue;
+            };
+            if secs != 0 && !youtube::duration_accepts(query.duration_ms, Some(secs)) {
+                continue;
+            }
+            match self.file_url(app_id, token, id).await {
+                Ok(Some(url)) => {
+                    return Resolution::Success {
+                        url,
+                        format: AudioFormat::Flac,
+                        quality: Quality::Lossless,
                     }
                 }
-                Ok(resp) if resp.status().as_u16() == 503 => {
-                    return Resolution::Cooldown {
-                        retry_after_secs: 60,
-                    };
+                Ok(None) => continue,
+                Err(SearchError::Auth) => {
+                    return Resolution::Error("qobuz credentials rejected".into())
                 }
-                _ => continue,
+                Err(SearchError::Cooldown) => {
+                    return Resolution::Cooldown { retry_after_secs: 60 }
+                }
+                Err(SearchError::Other) => continue,
             }
         }
         Resolution::NotFound
     }
+}
+
+enum SearchError {
+    Auth,
+    Cooldown,
+    Other,
 }
 
 #[async_trait(?Send)]
@@ -128,37 +197,16 @@ impl Provider for QobuzProvider {
     }
 
     fn is_available(&self) -> bool {
-        // DISABLED: same root cause as TIDAL — Odesli (the Spotify→Qobuz ID
-        // mapper) is sunset/401, and Qobuz's own search API requires paid
-        // credentials. Skip so the resolver doesn't call the dead Odesli API.
-        false
+        // Parked without user credentials (zero cost); revived by Settings.
+        is_configured()
     }
 
     async fn resolve(&self, query: &TrackQuery) -> Resolution {
-        // Prefer ISRC match (most accurate).
-        if let Some(ref isrc) = query.isrc {
-            match self.resolve_by_isrc(isrc).await {
-                res @ Resolution::Success { .. } => return res,
-                res @ Resolution::Cooldown { .. } => return res,
-                _ => {} // fall through to Odesli
-            }
-        }
-        // Fall back to Odesli mapping.
-        self.resolve_by_odesli(&query.spotify_id).await
-    }
-}
-
-fn extract_url_from_response(body: &str) -> String {
-    let trimmed = body.trim();
-    if trimmed.starts_with("http") {
-        return trimmed.to_string();
-    }
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(url) = val.get("url").and_then(|u| u.as_str()) {
-            return url.to_string();
+        match credentials() {
+            Some((app_id, token)) => self.resolve_inner(&app_id, &token, query).await,
+            None => Resolution::NotFound,
         }
     }
-    String::new()
 }
 
 #[cfg(test)]
@@ -166,19 +214,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_url_plain() {
-        assert_eq!(
-            extract_url_from_response("https://qobuz.example.com/s.flac"),
-            "https://qobuz.example.com/s.flac"
-        );
+    fn search_hit_shape() {
+        // Documents the api.qobuz.com contract this provider relies on
+        // (LIVE-VERIFY PENDING with real credentials).
+        let v = serde_json::json!({ "tracks": { "items": [
+            { "id": 123456, "title": "Mercy", "duration": 267 },
+            { "title": "No id here" }
+        ] } });
+        let items = v["tracks"]["items"].as_array().unwrap();
+        assert_eq!(items[0]["id"].as_u64(), Some(123456));
+        assert_eq!(items[0]["duration"].as_u64(), Some(267));
+        assert!(youtube::duration_accepts(267_111, Some(267)));
+        assert!(!youtube::duration_accepts(267_111, Some(30)));
     }
 
     #[test]
-    fn extract_url_json() {
-        let body = r#"{"url": "https://qobuz.example.com/s.flac"}"#;
+    fn file_url_shape() {
+        let v = serde_json::json!({ "url": "https://streaming.qobuz.com/file?uid=1" });
         assert_eq!(
-            extract_url_from_response(body),
-            "https://qobuz.example.com/s.flac"
+            v["url"].as_str().filter(|u| u.starts_with("http")),
+            Some("https://streaming.qobuz.com/file?uid=1")
         );
     }
 }

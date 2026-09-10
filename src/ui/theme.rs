@@ -41,7 +41,7 @@ pub fn apply_persisted_theme() {
 /// persist asynchronously, and repaint immediately.
 pub fn set_theme(theme: ThemeName) {
     crate::state::SETTINGS.write().theme = theme;
-    let snapshot = *crate::state::SETTINGS.peek();
+    let snapshot = crate::state::SETTINGS.peek().clone();
     dioxus::prelude::spawn(async move {
         if let Err(err) = snapshot.save() {
             tracing::warn!("settings: failed to save theme ({err})");

@@ -8,6 +8,7 @@
 //! The audio decode/sink layer lives in `media::sink`.
 
 pub mod cache;
+pub mod isrc;
 pub mod odesli;
 pub mod provider;
 pub mod providers;

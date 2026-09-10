@@ -117,11 +117,13 @@ impl Provider for TidalProvider {
     }
 
     fn is_available(&self) -> bool {
-        // DISABLED: Odesli (song.link) — the only Spotify→TIDAL ID mapper — was
-        // sunset (API now returns 401 PUBLIC_API_ACCESS_DEPRECATED and requires
-        // a paid API key), and the community proxy instances return 404. Until a
-        // working ID mapper exists, TIDAL cannot resolve; return false so the
-        // resolver skips it without calling the dead Odesli API.
+        // STILL PARKED (Phase F assessment): Odesli (song.link) — the only
+        // Spotify→TIDAL ID mapper in this file — was sunset, and the
+        // community proxy instances return 404. A `tidal_token` settings
+        // field now exists, but a direct-search+stream revival needs real
+        // credentials to verify against (endpoint shapes, token type,
+        // manifest parsing) — deliberately NOT shipped blind. Until then it
+        // returns false so the resolver skips it without network calls.
         false
     }
 

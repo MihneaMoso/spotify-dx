@@ -252,7 +252,12 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getSettings<'a>(
     _cls: JClass<'a>,
 ) -> JString<'a> {
     guarded(env, |_env| {
-        match serde_json::to_string(&settings::Settings::load()) {
+        // Mirror into the SETTINGS signal: providers read credentials from
+        // the signal, but the bridge otherwise talks files directly — without
+        // this write-through they would always see defaults on Android.
+        let loaded = settings::Settings::load();
+        *crate::state::SETTINGS.write() = loaded.clone();
+        match serde_json::to_string(&loaded) {
             Ok(json) => ok_data(&json),
             Err(e) => err("IO", e),
         }
@@ -274,6 +279,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_setSettings<'a>(
             Err(e) => return err("INVALID_ARGS", format!("bad settings JSON: {e}")),
         };
         parsed.normalize();
+        // Write-through to the signal (see getSettings): provider credential
+        // reads must observe saves immediately, not just after a restart.
+        *crate::state::SETTINGS.write() = parsed.clone();
         match parsed.save() {
             Ok(()) => match serde_json::to_string(&parsed) {
                 Ok(j) => ok_data(&j),

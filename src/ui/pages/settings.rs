@@ -17,7 +17,7 @@ pub fn Settings() -> Element {
 
     let set_engine = move |e: EnginePreference| {
         SETTINGS.write().engine = e;
-        let snapshot = *SETTINGS.peek();
+        let snapshot = SETTINGS.peek().clone();
         dioxus::prelude::spawn(async move {
             let _ = snapshot.save();
         });
@@ -158,7 +158,7 @@ fn UpdateToggle() -> Element {
             class: if on { "menu-item radio-row active" } else { "menu-item radio-row" },
             onclick: move |_| {
                 SETTINGS.write().auto_check_updates = !on;
-                let snapshot = *SETTINGS.peek();
+                let snapshot = SETTINGS.peek().clone();
                 dioxus::prelude::spawn(async move {
                     let _ = snapshot.save();
                 });
@@ -312,7 +312,7 @@ fn UpsellToggle() -> Element {
             class: if on { "menu-item radio-row active" } else { "menu-item radio-row" },
             onclick: move |_| {
                 SETTINGS.write().hide_upsell = !on;
-                let snapshot = *SETTINGS.peek();
+                let snapshot = SETTINGS.peek().clone();
                 dioxus::prelude::spawn(async move {
                     let _ = snapshot.save();
                 });

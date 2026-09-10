@@ -30,6 +30,7 @@ class SettingsFragment : Fragment() {
         bindProfile(v)
         bindAppearance(v)
         bindEngine(v)
+        bindCredentials(v)
         bindPrivacy(v)
         bindUpdates(v)
         bindCacheNote(v)
@@ -143,6 +144,42 @@ class SettingsFragment : Fragment() {
         v.findViewById<View>(R.id.upsell_toggle)?.setOnClickListener {
             val cur = SettingsStore.settings.value
             SettingsStore.save(cur.copy(hideUpsell = !cur.hideUpsell))
+        }
+    }
+
+    // -- Streaming credentials (Phase F tier: opaque, local-only) ----------------
+    private fun bindCredentials(v: View) {
+        val appId: EditText = v.findViewById(R.id.cred_qobuz_app)
+        val token: EditText = v.findViewById(R.id.cred_qobuz_token)
+        val tidal: EditText = v.findViewById(R.id.cred_tidal)
+        val deezer: EditText = v.findViewById(R.id.cred_deezer)
+        val status: TextView = v.findViewById(R.id.cred_status)
+        fun fill(s: SettingsStore.Settings) {
+            // Don't clobber in-progress typing on unrelated emissions.
+            if (!appId.isFocused) appId.setText(s.qobuzAppId)
+            if (!token.isFocused) token.setText(s.qobuzAuthToken)
+            if (!tidal.isFocused) tidal.setText(s.tidalToken)
+            if (!deezer.isFocused) deezer.setText(s.deezerArl)
+            status.text = if (s.qobuzAppId.isNotEmpty() && s.qobuzAuthToken.isNotEmpty()) {
+                "Qobuz active"
+            } else {
+                ""
+            }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            SettingsStore.settings.collect { fill(it) }
+        }
+        v.findViewById<Button>(R.id.cred_save)?.setOnClickListener {
+            val cur = SettingsStore.settings.value
+            SettingsStore.save(
+                cur.copy(
+                    qobuzAppId = appId.text.toString().trim(),
+                    qobuzAuthToken = token.text.toString().trim(),
+                    tidalToken = tidal.text.toString().trim(),
+                    deezerArl = deezer.text.toString().trim(),
+                ),
+            )
+            status.text = "Saved"
         }
     }
 
