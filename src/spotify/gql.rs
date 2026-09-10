@@ -189,6 +189,7 @@ fn parse_gql_track(track_data: &Value, uri_override: Option<&str>) -> Option<cra
         explicit: track_data["contentRating"]["label"].as_str() == Some("EXPLICIT"),
         preview_url: None,
         popularity: 0,
+        added_at: String::new(),
     })
 }
 
@@ -472,6 +473,10 @@ async fn fetch_playlist_page(id: &str, offset: u32) -> Result<Value, AppError> {
 }
 
 /// Items of one playlist page; unparseable entries skip (established rule).
+/// The add timestamp rides on the item element as an `addedAt` OBJECT
+/// (`{isoString}`, sibling of `itemV2`), not the track node — threaded onto
+/// the parsed track for Recently Added sort. Absent = empty (those rows sink
+/// in that order).
 fn parse_playlist_items(playlist_data: &Value) -> Vec<crate::spotify::models::Track> {
     let mut tracks = Vec::new();
     if let Some(items) = playlist_data["content"]["items"].as_array() {
@@ -479,7 +484,14 @@ fn parse_playlist_items(playlist_data: &Value) -> Vec<crate::spotify::models::Tr
             let wrapper = &elem["itemV2"];
             let track_data = &wrapper["data"];
             let uri_override = wrapper["_uri"].as_str().or_else(|| wrapper["uri"].as_str());
-            if let Some(t) = parse_gql_track(track_data, uri_override) {
+            if let Some(mut t) = parse_gql_track(track_data, uri_override) {
+                let added = &elem["addedAt"];
+                t.added_at = added
+                    .get("isoString")
+                    .and_then(|s| s.as_str())
+                    .or_else(|| added.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
                 tracks.push(t);
             }
         }
@@ -992,7 +1004,8 @@ mod tests {
     #[test]
     fn parse_playlist_items_skips_unparseable_entries() {
         let v = json!({ "content": { "items": [
-            { "itemV2": { "uri": "spotify:track:good",
+            { "addedAt": { "isoString": "2026-03-04T05:06:07Z" },
+              "itemV2": { "uri": "spotify:track:good",
                 "data": { "uri": "spotify:track:good", "name": "Good" } } },
             { "itemV2": { "data": { "name": "" } } },
             { "bogus": true }
@@ -1000,6 +1013,7 @@ mod tests {
         let items = parse_playlist_items(&v);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "good");
+        assert_eq!(items[0].added_at, "2026-03-04T05:06:07Z");
     }
 
     #[test]

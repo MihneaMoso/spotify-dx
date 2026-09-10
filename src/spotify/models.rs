@@ -19,6 +19,11 @@ pub struct Track {
     pub preview_url: Option<String>,
     #[serde(default)]
     pub popularity: u32,
+    /// ISO-8601 add time from the playlist item wrapper (Recently Added
+    /// sort). Empty when the source carries none (albums, search).
+    /// Lexicographic order == chronological order.
+    #[serde(default)]
+    pub added_at: String,
 }
 
 /// An album (browse view or full album with tracks).

@@ -384,6 +384,36 @@ class DetailFragment : Fragment() {
         v.findViewById<Button>(R.id.detail_play)?.setOnClickListener {
             adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it) }
         }
+        // Playlist sort (Spotify parity): popup menu anchored to the sort
+        // button; the button label always shows the active order. Albums and
+        // artists keep their natural order (button hidden).
+        val detailKind = arguments?.getString("kind", "playlist") ?: "playlist"
+        val sortBtn = v.findViewById<Button>(R.id.detail_sort)
+        sortBtn?.visibility = if (detailKind == "playlist") View.VISIBLE else View.GONE
+        sortBtn?.setOnClickListener { anchor ->
+            val menu = android.widget.PopupMenu(context, anchor)
+            DetailViewModel.SortOrder.entries.forEachIndexed { i, order ->
+                menu.menu.add(0, i, i, order.label).isCheckable = true
+            }
+            menu.menu.setGroupCheckable(0, true, true)
+            menu.menu.getItem(vm.sort.value.ordinal)?.isChecked = true
+            menu.setOnMenuItemClickListener { item ->
+                DetailViewModel.SortOrder.entries.getOrNull(item.itemId)
+                    ?.let { vm.setSort(it) }
+                true
+            }
+            menu.show()
+        }
+        fun sortLabel(): Int = when (vm.sort.value) {
+            DetailViewModel.SortOrder.TITLE -> R.string.sort_title
+            DetailViewModel.SortOrder.ARTIST -> R.string.sort_artist
+            DetailViewModel.SortOrder.ALBUM -> R.string.sort_album
+            DetailViewModel.SortOrder.RECENT -> R.string.sort_recent
+            DetailViewModel.SortOrder.CUSTOM -> R.string.sort_custom
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            vm.sort.collect { sortBtn?.setText(sortLabel()) }
+        }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
         }

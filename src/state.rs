@@ -313,6 +313,7 @@ mod tests {
             album: Default::default(),
             preview_url: None,
             popularity: 0,
+            added_at: String::new(),
         });
         assert_eq!(ps.subtitle(), "Kanye, Chance");
     }
@@ -344,6 +345,7 @@ mod tests {
             },
             preview_url: None,
             popularity: 0,
+            added_at: String::new(),
         });
         assert_eq!(ps.large_art_url(), "large");
     }
@@ -398,6 +400,7 @@ mod tests {
             album: Default::default(),
             preview_url: None,
             popularity: 0,
+            added_at: String::new(),
         }
     }
 

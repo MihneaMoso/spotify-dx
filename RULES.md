@@ -1466,6 +1466,17 @@ dioxus-mobile Rust code is untouched and still builds.
   unit-tested with canned payloads. Pre-existing failure note:
   `ui::theme::app_shell_grid_wires_every_shell_zone` fails on the pristine
   tree too — unrelated.
+- **Playlist sort (2026-09-10, all 5 orders verified on-device):**
+  `DetailViewModel.SortOrder` (CUSTOM/TITLE/ARTIST/ALBUM/RECENT) over a
+  pristine `original` list (no drift); stable in-memory sorts, button +
+  checkable `PopupMenu` next to Play, playlist-only (albums/artists keep
+  natural order). `Track.added_at` (ISO string, lexicographic ==
+  chronological) threaded from the item element — GQL shape gotcha: it is
+  an OBJECT `{isoString}` on the element (sibling of `itemV2`), NOT a
+  string and NOT inside the track node (two temp-diag builds proved it;
+  verify unknown GQL shapes via key/value logcat before guessing).
+  `RECENT` sinks untimestamped rows; Kotlin `Track.addedAt` round-trips
+  through queue snapshots.
 - **Release pipeline cut over (Phase 7, pending first tagged release):**
   `release.yml` `android-apk` now builds the owned Kotlin app with a stable
   key (see §6.9d). Until a tag is pushed and the published

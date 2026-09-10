@@ -132,6 +132,7 @@ fn track_from_sdk(value: &serde_json::Value) -> Option<Track> {
             .unwrap_or_default(),
         preview_url: None,
         popularity: 0,
+        added_at: String::new(),
         artists: value
             .get("artists")
             .and_then(|a| a.as_array())

@@ -19,6 +19,11 @@
     <string name="tab_albums">Albums</string>
     <string name="tab_liked">Liked</string>
     <string name="play">Play</string>
+    <string name="sort_custom">Sort: Custom order</string>
+    <string name="sort_title">Sort: Title</string>
+    <string name="sort_artist">Sort: Artist</string>
+    <string name="sort_album">Sort: Album</string>
+    <string name="sort_recent">Sort: Recently added</string>
     <string name="shuffle">Shuffle</string>
     <string name="clear">Clear</string>
     <string name="settings_profile">Profile</string>

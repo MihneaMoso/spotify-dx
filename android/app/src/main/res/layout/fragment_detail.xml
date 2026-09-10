@@ -18,12 +18,27 @@
         android:layout_height="wrap_content"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
-    <Button
-        android:id="@+id/detail_play"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad_half"
-        android:text="@string/play" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/detail_play"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/play" />
+
+        <Button
+            android:id="@+id/detail_sort"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/pad_half"
+            android:text="@string/sort_custom" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/screen_message"

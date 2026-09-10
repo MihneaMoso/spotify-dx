@@ -363,6 +363,15 @@ class LikedViewModel : ScopedViewModel() {
 
 // -- Detail (album / artist / playlist) ------------------------------------------------
 class DetailViewModel : ScopedViewModel() {
+    /** Playlist sort orders (Spotify parity). CUSTOM = fetch order, default. */
+    enum class SortOrder(val label: String) {
+        CUSTOM("Custom order"),
+        TITLE("Title"),
+        ARTIST("Artist"),
+        ALBUM("Album"),
+        RECENT("Recently added"),
+    }
+
     private val _state = MutableStateFlow<ScreenState>(ScreenState.Loading)
     val state: StateFlow<ScreenState> = _state.asStateFlow()
     private val _title = MutableStateFlow("")
@@ -371,6 +380,31 @@ class DetailViewModel : ScopedViewModel() {
     val subtitle: StateFlow<String> = _subtitle.asStateFlow()
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
+    private val _sort = MutableStateFlow(SortOrder.CUSTOM)
+    val sort: StateFlow<SortOrder> = _sort.asStateFlow()
+
+    /** Pristine fetch order — every sort derives from this (no drift). */
+    private var original: List<Track> = emptyList()
+
+    fun setSort(order: SortOrder) {
+        if (order == _sort.value) return
+        _sort.value = order
+        applySort()
+    }
+
+    /** Stable in-memory sort (even 10k rows sort in ms — no bridge trip). */
+    private fun applySort() {
+        _tracks.value = when (_sort.value) {
+            SortOrder.CUSTOM -> original
+            SortOrder.TITLE -> original.sortedBy { it.name.lowercase() }
+            SortOrder.ARTIST -> original.sortedBy { it.artistNames.lowercase() }
+            SortOrder.ALBUM -> original.sortedBy { it.albumName.lowercase() }
+            // ISO timestamps sort chronologically; untimestamped rows sink.
+            SortOrder.RECENT -> original.sortedWith(
+                compareBy<Track> { it.addedAt.isEmpty() }.thenByDescending { it.addedAt },
+            )
+        }
+    }
 
     fun load(kind: String, id: String) {
         _state.value = ScreenState.Loading
@@ -384,25 +418,28 @@ class DetailViewModel : ScopedViewModel() {
             }
             val json = res.getOrNull()
             if (json != null) {
+                val parsed: List<Track>
                 when (kind) {
                     "album" -> {
                         val album = json.optJSONObject("album") ?: org.json.JSONObject()
                         _title.value = album.optString("name", "")
                         _subtitle.value = album.optString("release_date", "")
-                        _tracks.value = Models.tracks(json.optJSONArray("tracks"))
+                        parsed = Models.tracks(json.optJSONArray("tracks"))
                     }
                     "artist" -> {
                         val artist = json.optJSONObject("artist") ?: org.json.JSONObject()
                         _title.value = artist.optString("name", "")
                         _subtitle.value = "Artist"
-                        _tracks.value = Models.tracks(json.optJSONArray("top_tracks"))
+                        parsed = Models.tracks(json.optJSONArray("top_tracks"))
                     }
                     else -> {
                         _title.value = json.optString("name", "")
                         _subtitle.value = json.optString("description", "")
-                        _tracks.value = Models.playlistTracks(json)
+                        parsed = Models.playlistTracks(json)
                     }
                 }
+                original = parsed
+                applySort()
                 _state.value = ScreenState.Content(empty = _tracks.value.isEmpty())
             } else {
                 _state.value = ScreenState.Error(UiStates.errorCopy(res.exceptionOrNull())) {

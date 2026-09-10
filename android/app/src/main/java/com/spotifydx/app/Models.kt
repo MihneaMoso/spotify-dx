@@ -26,6 +26,8 @@ data class Track(
     val coverUrl: String = "",
     val durationMs: Long = 0,
     val uri: String = "",
+    /** ISO-8601 playlist add time; "" when the source carries none. */
+    val addedAt: String = "",
 ) {
     val artistNames: String get() = artists.joinToString(", ")
     val playable: Boolean get() = id.isNotEmpty() && name.isNotEmpty()
@@ -74,6 +76,7 @@ object Models {
                     .put("images", images),
             )
             .put("uri", t.uri)
+            .put("added_at", t.addedAt)
     }
 
     fun track(o: JSONObject): Track = Track(
@@ -84,6 +87,7 @@ object Models {
         coverUrl = widest(o.optJSONObject("album")?.optJSONArray("images")),
         durationMs = o.optLong("duration_ms", o.optLong("durationMs", 0)),
         uri = o.optString("uri", ""),
+        addedAt = o.optString("added_at", ""),
     )
 
     fun album(o: JSONObject): Album = Album(

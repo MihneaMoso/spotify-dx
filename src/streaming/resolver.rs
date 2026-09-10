@@ -145,6 +145,7 @@ mod tests {
             },
             preview_url: None,
             popularity: 50,
+            added_at: String::new(),
         }
     }
 
