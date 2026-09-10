@@ -31,7 +31,9 @@ if [ -z "$NDK_BIN" ]; then
 fi
 
 case "$TARGET" in
-  aarch64-linux-android) TRIPLE="aarch64-linux-android21" ;;
+  # Match Dioxus.toml [mobile] min_sdk_version = 30 so link-time system stubs
+  # (notably libaaudio.so) resolve from the selected Android API sysroot.
+  aarch64-linux-android) TRIPLE="aarch64-linux-android30" ;;
   *) echo "Unsupported target: $TARGET" >&2; exit 1 ;;
 esac
 

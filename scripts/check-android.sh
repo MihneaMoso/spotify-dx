@@ -19,7 +19,8 @@ if [ -z "$NDK_BIN" ]; then
 fi
 
 case "$TARGET" in
-  aarch64-linux-android) TRIPLE="aarch64-linux-android21" ;;
+  # Keep local verification aligned with the app's min_sdk_version (30).
+  aarch64-linux-android) TRIPLE="aarch64-linux-android30" ;;
   *) echo "Unsupported target: $TARGET" >&2; exit 1 ;;
 esac
 
@@ -34,7 +35,12 @@ chmod +x "$workdir/$TARGET-clang"
 export PATH="$workdir:$PATH"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$workdir/$TARGET-clang"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_CC="$workdir/$TARGET-clang"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$NDK_BIN/llvm-ar"
+cat > "$workdir/$TARGET-ar" <<EOF
+#!/bin/bash
+exec "$NDK_BIN/llvm-ar" "\$@"
+EOF
+chmod +x "$workdir/$TARGET-ar"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$workdir/$TARGET-ar"
 
 echo "Verifying $TARGET ..."
 if [ "$LINK" = "--build" ]; then
