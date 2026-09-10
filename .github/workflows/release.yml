@@ -251,15 +251,24 @@ jobs:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           # A stable key is load-bearing: per-release keystores silently break
           # the updater (signature mismatch on install). Fail loudly instead.
-          for v in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+          # Single password for store + key (hex alphabet: no shell-quoting
+          # hazard); see RULES.md §6.9d.
+          for v in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS; do
             [ -n "${!v:-}" ] || { echo "$v secret missing — see RULES.md §6.9d." >&2; exit 1; }
           done
           echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/release.jks"
+          # Fail-fast guard: store opens + alias holds a key, with a clear
+          # message (apksigner's "Wrong password?" hides which secret broke).
+          keytool -list -keystore "${RUNNER_TEMP}/release.jks" \
+            -storepass "${ANDROID_KEYSTORE_PASSWORD}" \
+            -alias "${ANDROID_KEY_ALIAS}" > /dev/null || {
+            echo "keystore guard failed: B64 corrupt, wrong PASSWORD, or wrong ALIAS." >&2
+            exit 1
+          }
           bt="${ANDROID_HOME}/build-tools/34.0.0"
           apk_dir="android/app/build/outputs/apk/release"
           apk="$(ls "${apk_dir}"/app-release-unsigned.apk 2>/dev/null || ls "${apk_dir}"/app-release.apk | head -1)"
@@ -269,7 +278,7 @@ jobs:
           out="android/app-release-unsigned-signed.apk"
           "${bt}/apksigner" sign --ks "${RUNNER_TEMP}/release.jks" \
             --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
-            --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+            --key-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
             --ks-key-alias "${ANDROID_KEY_ALIAS}" \
             --out "$out" "$apk"
           "${bt}/apksigner" verify --verbose "$out"

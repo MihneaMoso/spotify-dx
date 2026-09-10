@@ -1100,13 +1100,18 @@ patterns in mind so new code doesn't reintroduce them):
     The subsequent `sdkmanager "ndk;…"` install still enforces acceptance, so a
     broken fallback fails there loudly instead of silently.
   - Signing (Phase 7 cutover): stable release key from repo secrets
-    (`ANDROID_KEYSTORE_B64/PASSWORD/ALIAS/KEY_PASSWORD`, RSA-2048 PKCS12,
-    30y, alias `spotifydx` — created 2026-09-09, private key exists ONLY in
-    Secrets) + `apksigner sign` from `build-tools/34.0.0` on the unsigned
-    owned-app release APK; verify with `apksigner verify`. The job FAILS
-    LOUDLY when secrets are missing — per-release keystores silently break
-    the updater (signature mismatch), so no throwaway fallback. Asset keeps
-    the updater's basename `app-release-unsigned-signed.apk` (ANDROID_TOKEN).
+    (`ANDROID_KEYSTORE_B64/PASSWORD/ALIAS`, RSA-2048 PKCS12, 30y, alias
+    `spotifydx` — rotated 2026-09-10 after a store/key password mismatch
+    killed a release; private key exists ONLY in Secrets) + `apksigner sign`
+    from `build-tools/34.0.0` on the unsigned owned-app release APK; verify
+    with `apksigner verify`. Conventions that prevent repeats: SINGLE hex
+    password for store + key (no shell-quoting hazard, halves mismatch
+    surface), and a `keytool -list` guard right after decode so a broken
+    secret fails with "B64 corrupt / wrong PASSWORD / wrong ALIAS" instead
+    of apksigner's opaque "Wrong password?". The job FAILS LOUDLY when
+    secrets are missing — per-release keystores silently break the updater
+    (signature mismatch), so no throwaway fallback. Asset keeps the
+    updater's basename `app-release-unsigned-signed.apk` (ANDROID_TOKEN).
   - Version stamping: `SPOTIFY_DX_VERSION_CODE=${{ github.run_number }}`
     (monotonic — updates require a rising code) and
     `SPOTIFY_DX_VERSION_NAME=${GITHUB_REF_NAME#v}` into
