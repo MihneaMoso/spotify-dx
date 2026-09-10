@@ -34,6 +34,7 @@ const SC_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 /// client_id cache TTL (matches the proven 24h pattern).
 #[cfg(not(target_arch = "wasm32"))]
 const KEY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+#[cfg(not(target_arch = "wasm32"))]
 const COOL_AFTER_FAILURES: u32 = 3;
 #[cfg(not(target_arch = "wasm32"))]
 const COOLDOWN: Duration = Duration::from_secs(5 * 60);

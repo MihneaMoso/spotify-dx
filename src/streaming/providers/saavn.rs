@@ -34,6 +34,7 @@ const DES_KEY: &[u8] = b"38346591";
 
 /// Consecutive failures before the provider cools down (single host — no
 /// pool to rotate, so this only gates total-outage storms).
+#[cfg(not(target_arch = "wasm32"))]
 const COOL_AFTER_FAILURES: u32 = 3;
 #[cfg(not(target_arch = "wasm32"))]
 const COOLDOWN: Duration = Duration::from_secs(5 * 60);

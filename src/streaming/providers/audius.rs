@@ -28,13 +28,16 @@ const APP_NAME: &str = "SpotifyDX";
 
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(not(target_arch = "wasm32"))]
 const COOL_AFTER_FAILURES: u32 = 3;
 #[cfg(not(target_arch = "wasm32"))]
 const COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
 pub struct AudiusProvider {
     client: reqwest::Client,
-    /// Redirects disabled: the 302 Location IS the product.
+    /// Redirects disabled: the 302 Location IS the product. Wasm has no
+    /// redirect control (browser fetch follows automatically) — absent there.
+    #[cfg(not(target_arch = "wasm32"))]
     bare_client: reqwest::Client,
     failures: Mutex<u32>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +60,7 @@ impl AudiusProvider {
         };
         Self {
             client: build(),
+            #[cfg(not(target_arch = "wasm32"))]
             bare_client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -129,28 +133,45 @@ impl AudiusProvider {
     }
 
     /// Resolve the signed direct URL: 302 Location wins; a 200 means the
-    /// node proxies bytes, so the stream URL itself is returned.
+    /// node proxies bytes, so the stream URL itself is returned. On wasm the
+    /// browser follows redirects itself — the final response URL is used.
     async fn stream_url(&self, id: &str) -> Option<String> {
         let url = format!("{API}/tracks/{id}/stream?app_name={APP_NAME}");
-        // `bare_client` never follows: inspect the raw status instead.
-        let resp = self.bare_client.get(&url).send().await.ok()?;
-        let status = resp.status().as_u16();
-        if (300..400).contains(&status) {
-            let loc = resp
-                .headers()
-                .get(reqwest::header::LOCATION)?
-                .to_str()
-                .ok()?
-                .to_string();
-            if loc.starts_with("http") {
-                return Some(loc);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // `bare_client` never follows: inspect the raw status instead.
+            let resp = self.bare_client.get(&url).send().await.ok()?;
+            let status = resp.status().as_u16();
+            if (300..400).contains(&status) {
+                let loc = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)?
+                    .to_str()
+                    .ok()?
+                    .to_string();
+                if loc.starts_with("http") {
+                    return Some(loc);
+                }
+                return None;
             }
-            return None;
+            if (200..300).contains(&status) {
+                return Some(url);
+            }
+            None
         }
-        if (200..300).contains(&status) {
-            return Some(url);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let resp = self.client.get(&url).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            let final_url = resp.url().to_string();
+            if final_url.starts_with("http") {
+                Some(final_url)
+            } else {
+                None
+            }
         }
-        None
     }
 }
 

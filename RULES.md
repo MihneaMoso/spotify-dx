@@ -1527,6 +1527,14 @@ dioxus-mobile Rust code is untouched and still builds.
   LIVE-VERIFY PENDING with real keys). Tidal stays parked (direct revival
   needs keys to verify); Deezer field reserved, gw_light flow deliberately
   unshipped. Tokens never logged.
+- **wasm breakage pattern (fixed 2026-09-10):** `reqwest::redirect` does not
+  exist on wasm (browser owns redirects) — `bare_client` and redirect logic
+  are `cfg(not(wasm))`; the wasm path uses `resp.url()` after following.
+  New provider code MUST be checked with
+  `cargo check --no-default-features --features web --target
+  wasm32-unknown-unknown` (toolchain installed locally) — desktop/android
+  checks do not catch wasm-gated API absences. Same for warning hygiene
+  (e.g. cooldown consts unused on wasm need cfg-gating).
 - **Provider expansion Phase C (JioSaavn direct, 2026-09-10):**
   `providers/saavn.rs` after `piped`: FIRST-PARTY `api.php`
   (`search.getResults`, songs-only bucket) — never wrapper deployments.
