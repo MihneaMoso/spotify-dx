@@ -20,4 +20,9 @@
     <color name="onyx_cyan">#22D3EE</color>
     <color name="onyx_text">#F1F5FB</color>
     <color name="onyx_muted">#9AA6C3</color>
+
+    <!-- Spotify affordance (mirrors the spotify-green token in
+         assets/main.css): swipe-to-queue reveal. Not a theme token —
+         identical in both themes. -->
+    <color name="spotify_green">#1DB954</color>
 </resources>

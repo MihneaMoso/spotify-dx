@@ -10,6 +10,7 @@ import android.widget.SearchView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.addCallback
 import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -36,6 +37,15 @@ class MainActivity : AppCompatActivity() {
     /** Theme painted in onCreate (pre-store-load); see collectRepos. */
     private var appliedTheme: String? = null
     private var themeReconciled = false
+
+    companion object {
+        private const val KEY_DEST = "current_destination"
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(KEY_DEST, current.name)
+    }
     private lateinit var toastView: TextView
     private var toastJob: Job? = null
     private var searchHandoff: String? = null
@@ -45,7 +55,16 @@ class MainActivity : AppCompatActivity() {
     enum class Destination { GATE, HOME, SEARCH, LIBRARY, LIKED, QUEUE, SETTINGS, DETAIL }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // The store loads async (bridge); this paints from the in-memory
+        // FragmentManager restores the visible fragment itself, but the
+        // `current` field resets to GATE — resync it or system back reads a
+        // stale destination and exits from sub-screens.
+        if (savedInstanceState != null) {
+            runCatching {
+                current = Destination.valueOf(
+                    savedInstanceState.getString(KEY_DEST) ?: Destination.GATE.name,
+                )
+            }
+        }        // The store loads async (bridge); this paints from the in-memory
         // value, which is the default on cold start. collectRepos() recreates
         // once below if the loaded theme disagrees.
         appliedTheme = Theme.current()
@@ -81,6 +100,19 @@ class MainActivity : AppCompatActivity() {
         bindNav()
         bindPlayerBar()
         collectRepos()
+        // System back (gesture or button) mirrors the top-left back button:
+        // sub-screens land on HOME instead of exiting the app. On HOME/GATE
+        // finish() keeps the platform exit — WITHOUT disabling the callback:
+        // a disabled callback stays dead for the activity instance, so one
+        // back-press on HOME/GATE would silently break every later
+        // sub-screen back (permanent-exit bug).
+        onBackPressedDispatcher.addCallback(this) {
+            if (current != Destination.HOME && current != Destination.GATE) {
+                go(Destination.HOME)
+            } else {
+                finish()
+            }
+        }
 
         if (savedInstanceState == null) {
             // Reopen with a surviving process (service playing): the session

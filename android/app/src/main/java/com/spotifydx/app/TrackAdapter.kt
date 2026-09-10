@@ -14,11 +14,13 @@ import androidx.recyclerview.widget.RecyclerView
  * object (zero network, §9.1). Region-blocked null tracks never reach the
  * adapter — repositories filter them; the header/row grid stays aligned by
  * always emitting the index spacer (see `track-row--noindex` parity note).
+ *
+ * Queueing is a swipe gesture ([swipeToQueue], Spotify parity), not a
+ * long-press — attach it wherever a TrackAdapter is bound.
  */
 class TrackAdapter(
     private val showIndex: Boolean = true,
     private val onPlay: (Track) -> Unit = {},
-    private val onEnqueue: ((Track) -> Unit)? = null,
 ) : ListAdapter<Track, TrackAdapter.Holder>(DIFF) {
 
     companion object {
@@ -55,10 +57,6 @@ class TrackAdapter(
             subtitle.text = sub.joinToString(" · ")
             duration.text = formatDuration(t.durationMs)
             itemView.setOnClickListener { onPlay(t) }
-            itemView.setOnLongClickListener {
-                onEnqueue?.invoke(t)
-                true
-            }
         }
     }
 

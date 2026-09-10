@@ -1437,6 +1437,35 @@ dioxus-mobile Rust code is untouched and still builds.
   the async store load; `MainActivity` recreates exactly once when the loaded
   theme disagrees (`appliedTheme`/`themeReconciled` — no loop: the recreated
   instance paints the loaded value).
+- **Gestures (2026-09-10):**
+  - Swipe-to-queue (`SwipeToQueue.kt`, Spotify parity): `ItemTouchHelper`
+    LEFT|RIGHT on all five track lists, 0.4 commit threshold, green
+    (`spotify_green`, mirrors the CSS token) rounded reveal + queue-add icon
+    with threshold-ramped alpha; `onSwiped` enqueues + `notifyItemChanged`
+    springs the row back (dataset unchanged). Replaced long-press (removed
+    from `TrackAdapter`); shared `queueWithToast` action. XML comments must
+    not contain `--` (resource merger rejects it).
+  - System back mirrors the top-left button: sub-screen → HOME via
+    `onBackPressedDispatcher.addCallback` (no fragment back-stack exists —
+    `go()` replaces without adding); HOME/GATE keeps platform exit (else
+    back could never leave the app). Two gotchas, both "back exits from a
+    sub-screen": (1) never `isEnabled = false` + redispatch in the callback
+    — a disabled callback stays dead for the activity instance; use
+    `finish()` for the exit branch. (2)     `current` must survive recreation
+    (`onSaveInstanceState`, resync in `onCreate`) — rotation/theme-recreate
+    restores the visible fragment but resets the field to GATE.
+- **Playlist/album >100 tracks (fixed 2026-09-10, user-verified on-device):**
+  `gql_playlist`/`gql_album` sent a single page (`offset: 0, limit: 100`).
+  Now page 0 reveals the total, remaining offsets fan out via
+  `try_join_all`, assembled into the unchanged `TracksMeta`/album shape —
+  zero bridge/Kotlin/desktop changes. Rules: `PAGE_LIMIT`/`MAX_PAGES`
+  (10k-track ceiling), page failure fails the whole call (never gappy
+  lists), offsets advance by requested amounts (parse-skips don't shift
+  windows), `total_tracks` stays the rendered count. Pure helpers
+  (`remaining_offsets`, `playlist_total`, `album_total`, page parsers) are
+  unit-tested with canned payloads. Pre-existing failure note:
+  `ui::theme::app_shell_grid_wires_every_shell_zone` fails on the pristine
+  tree too — unrelated.
 - **Release pipeline cut over (Phase 7, pending first tagged release):**
   `release.yml` `android-apk` now builds the owned Kotlin app with a stable
   key (see §6.9d). Until a tag is pushed and the published

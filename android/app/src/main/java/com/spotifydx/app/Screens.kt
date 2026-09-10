@@ -104,9 +104,9 @@ class HomeFragment : Fragment() {
         list.adapter = shelves
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
-        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) },
-            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
+        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
         likedList.adapter = liked
+        likedList.swipeToQueue(liked)
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
         }
@@ -144,9 +144,9 @@ class SearchFragment : Fragment() {
         val box: EditText = v.findViewById(R.id.search_box)
         val list: RecyclerView = v.findViewById(R.id.search_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) },
-            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
+        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
         list.adapter = adapter
+        list.swipeToQueue(adapter)
         val albumList: RecyclerView = v.findViewById(R.id.search_albums)
         albumList.layoutManager = LinearLayoutManager(context)
         val albums = TitleAdapter(onClick = { pos ->
@@ -312,9 +312,9 @@ class LikedFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         val list: RecyclerView = v.findViewById(R.id.liked_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
-            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
         list.adapter = adapter
+        list.swipeToQueue(adapter)
         // Incremental loading at the tail.
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
@@ -344,9 +344,9 @@ class QueueFragment : Fragment() {
         val now: TextView = v.findViewById(R.id.queue_now)
         val list: RecyclerView = v.findViewById(R.id.queue_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
-            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
         list.adapter = adapter
+        list.swipeToQueue(adapter)
         v.findViewById<Button>(R.id.queue_clear)?.setOnClickListener {
             PlayerRepository.clearQueue()
         }
@@ -378,9 +378,9 @@ class DetailFragment : Fragment() {
         val subtitle: TextView = v.findViewById(R.id.detail_subtitle)
         val list: RecyclerView = v.findViewById(R.id.detail_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) },
-            onEnqueue = { PlayerRepository.enqueue(it); ToastBus.error("Added to queue") })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
         list.adapter = adapter
+        list.swipeToQueue(adapter)
         v.findViewById<Button>(R.id.detail_play)?.setOnClickListener {
             adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it) }
         }
