@@ -1,7 +1,7 @@
 //! Phase-0 audio-stack spike: decode compressed audio (FLAC today; AAC/M4A,
 //! MP3, Ogg enabled in the feature set) straight from bytes with **symphonia**,
 //! proving the three operations the open playback engine needs
-//! (SYSTEM_DESIGN §6.3):
+//! (docs/old/SYSTEM_DESIGN §6.3):
 //!
 //! 1. decode from an in-memory/streamed source (no temp files),
 //! 2. accurate seek inside the decoded timeline,

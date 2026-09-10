@@ -24,8 +24,12 @@ object MusicRepository {
     private const val TTL_MS = 5 * 60_000L
     private val mem = object : android.util.LruCache<String, Entry>(32) {}
 
+    // Empty-but-successful payloads (e.g. a failed fan-out leg that
+    // defaulted) must NOT cache — they'd pin an empty screen until TTL.
+    // `fetch` stays last so call sites keep trailing-lambda syntax.
     private suspend fun cached(
         key: String,
+        isValid: (JSONObject) -> Boolean = { true },
         fetch: suspend () -> Result<JSONObject>,
     ): Result<JSONObject> {
         val now = System.currentTimeMillis()
@@ -36,14 +40,23 @@ object MusicRepository {
             mem.remove(key)
         }
         val res = fetch()
-        res.getOrNull()?.let { mem.put(key, Entry(it.toString(), now)) }
+        res.getOrNull()?.let { json ->
+            if (isValid(json)) mem.put(key, Entry(json.toString(), now))
+        }
         return res
     }
 
     /** Drop all session data (logout / account switch). */
     fun clear() = mem.evictAll()
 
-    suspend fun home(): Result<JSONObject> = cached("home") { BridgeClient.getHome() }
+    suspend fun home(): Result<JSONObject> = cached(
+        "home",
+        isValid = { json ->
+            (json.optJSONArray("playlists")?.length() ?: 0) > 0 ||
+                (json.optJSONArray("liked_tracks")?.length() ?: 0) > 0
+        },
+        fetch = { BridgeClient.getHome() },
+    )
 
     suspend fun search(query: String): Result<JSONObject> =
         cached("search:${query.trim().lowercase()}") { BridgeClient.search(query) }

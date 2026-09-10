@@ -175,11 +175,12 @@ lists) drops third-party ad/tracker requests.
 - Formatting follows `cargo fmt` defaults; edition 2021.
 - **Releases run through `.github/workflows/release.yml`, triggered by a
   `v*` tag push (or `./scripts/release.sh <ver>`).** It builds the `desktop`
-  feature for linux-gnu / macOS (arm64+x86_64) / windows-msvc and publishes a
-  GitHub Release. Because this is a GTK/WebKit GUI, Linux is **glibc with the
-  system webkit2gtk dev packages**, never musl. Web/Android/iOS are still
-  Connect-only and tracked in `docs/PLATFORM_PARITY.md` (do not add them to the
-  release matrix yet).## 6. Discoveries & gotchas (learned the hard way)
+  feature for linux-gnu / macOS (arm64+x86_64) / windows-msvc, the owned
+  Kotlin Android APK (`android-apk` job), and the web bundle — and publishes
+  a GitHub Release. Because this is a GTK/WebKit GUI, Linux is **glibc with the
+  system webkit2gtk dev packages**, never musl. (The old
+  `docs/old/PLATFORM_PARITY.md` Connect-only matrix no longer applies:
+  Android has full open-engine playback via the Kotlin app.)## 6. Discoveries & gotchas (learned the hard way)
 
 ### 6.1 The dioxus 0.6 → 0.7 migration (important!)
 

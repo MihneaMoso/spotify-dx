@@ -1,5 +1,5 @@
 //! Request store: the performance tier every API GET flows through
-//! (`SYSTEM_DESIGN.md` §6.1).
+//! (`docs/old/SYSTEM_DESIGN.md` §6.1).
 //!
 //! Layers, innermost first:
 //!

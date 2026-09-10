@@ -54,9 +54,23 @@ must be traceable back to a section there.
 >
 > Phase 8 hardening batch 1 (2026-09-09, verified on-device): Coil artwork
 > (mem+disk, core-gate fetcher — also fixed playlist thumbs), Kotlin memory
-> data cache (5min LRU, logout-cleared), Room search history + chips,
-> serialized queue + last-played/timestamp with paused boot restore,
-> cold-start theme reconcile, long-press enqueue on all track lists.
+> data cache (5min LRU, logout-cleared, empty payloads never cache),
+> Room search history + chips, serialized queue + last-played/timestamp
+> with paused boot restore, cold-start theme reconcile, swipe-to-queue
+> (Spotify-style reveal, replaced long-press).
+>
+> Provider expansion (2026-09-10, core, benefits desktop + Android):
+> YouTube hardening (query variants, duration gate, cipher recovery) →
+> Piped → JioSaavn direct → Audius → SoundCloud → user-keyed Qobuz
+> lossless, with miss-path MusicBrainz ISRC enrichment. Lazy sequential
+> chain preserved throughout. Dioxus signals are forbidden on bridge
+> threads (BRIDGE_PANIC root cause — runtime-free mirrors in `settings.rs`).
+>
+> Follow-ups (2026-09-10/11, verified on-device): >100-track playlists via
+> fetch-all page fan-out (albums too); playlist sort (Title/Artist/Album/
+> Recently added/Custom, `addedAt{isoString}` threading); swipe-to-queue
+> replacing long-press; system back mirrors the in-app button (with
+> recreation-safe destination tracking).
 
 ---
 

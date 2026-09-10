@@ -89,7 +89,7 @@ Rejects `isAnonymous == true`. Login URL forces the password form:
 > **Assessment:** dependent on volunteer proxies with real latency variance — mitigated
 > by exactly the patterns this code demonstrates: live uptime lists, cooldown-aware
 > failover, and persistent URL caches. **Adopted** (owner decision 2026-08) as the open
-> playback engine; implementation plan in SYSTEM_DESIGN §6.7.
+> playback engine; implementation plan in docs/old/SYSTEM_DESIGN §6.7 (superseded; see KOTLIN_MIGRATION.md).
 
 ### 2.4 Caching lessons
 - **Stream URL cache (memory + persistent)**: skip re-resolution on repeat plays.
@@ -266,7 +266,7 @@ memory/CPU per frame. Brave embeds a **native Rust engine** in the browser proce
 
 | Need | Take from | Apply as |
 | --- | --- | --- |
-| Spotify layout vocabulary | SpotiCap (lives inside the real UI) | Page/section inventory + `data-testid` naming inspiration (SYSTEM_DESIGN §4) |
+| Spotify layout vocabulary | SpotiCap (lives inside the real UI) | Page/section inventory + `data-testid` naming inspiration (docs/old/SYSTEM_DESIGN §4) |
 | Theme system that doesn't rot | SpotiCap `sc-*` tagger | Not needed for native UI; pure CSS-variable themes instead |
 | Fast layered caching | Spotufi stream/history caches | Two-tier API cache + artwork disk cache + instant local-history paint |
 | List stability | Spotufi dedup-by-id | Dedup tracks at ingestion into queue/page state |
@@ -275,7 +275,7 @@ memory/CPU per frame. Brave embeds a **native Rust engine** in the browser proce
 
 **Owner decision (2026-08, supersedes the original scoping):** multi-source FLAC/YouTube
 streaming IS adopted — both playback engines get built and compared during testing, and
-free accounts get full-track playback (no-paywall philosophy; SYSTEM_DESIGN §6.3/§6.7).
+free accounts get full-track playback (no-paywall philosophy; docs/old/SYSTEM_DESIGN §6.3/§6.7).
 Still out of scope: webpack/esperanto probing in shipped code, replacing the native
 Dioxus UI with a wrapped webview.
 

@@ -96,7 +96,7 @@ impl ThemeName {
 }
 
 /// Which playback engine should drive playback when both are available
-/// (`SYSTEM_DESIGN.md` §6.3).
+/// (`docs/old/SYSTEM_DESIGN.md` §6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EnginePreference {

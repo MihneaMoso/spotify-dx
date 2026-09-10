@@ -1,12 +1,14 @@
 # Spotify DX
 
-A cross-platform Spotify client written in Rust + [Dioxus](https://dioxuslabs.com)
-that behaves like **open.spotify.com**: it signs you in through the real Spotify
-login page inside the app, keeps you logged in across restarts, and renders the
-whole UI as fast native components. **Every signed-in user gets full-track
-playback** — Premium accounts use the official Web Playback SDK, free accounts
-use an open multi-source engine (TIDAL/Qobuz/YouTube community backends). An
-in-process AdGuard blocklist drops third-party ad/tracker requests.
+A cross-platform Spotify client — a shared Rust core plus a native UI per
+platform — that behaves like **open.spotify.com**: it signs you in through
+the real Spotify login page inside the app, keeps you logged in across
+restarts, and renders the whole UI as fast native components.
+**Every signed-in user gets full-track playback** — Premium accounts use the
+official Web Playback SDK, free accounts use an open multi-source engine
+(YouTube → Piped → JioSaavn → Audius → SoundCloud, plus an optional
+user-keyed lossless tier). An in-process AdGuard blocklist drops
+third-party ad/tracker requests.
 
 ## How it works
 
@@ -18,11 +20,14 @@ in-process AdGuard blocklist drops third-party ad/tracker requests.
 3. Injected JS polls Spotify's internal `get_access_token` endpoint to detect
    the login and capture the short-lived **web-player access token**. It's
    mirrored to the OS keychain so startup can restore a session without a window.
-4. On **desktop and mobile** (all native wry renderers), playback is driven by
+4. On **desktop**, playback is driven by
    the [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk)
-   running in a hidden wry WebView that reuses the same session cookies, so no
-   token hand-over is needed. **Free accounts** get full-track playback through
-   an open multi-source engine (TIDAL/Qobuz/YouTube community backends) instead.
+   running in a hidden WebView that reuses the same session cookies, so no
+   token hand-over is needed. On **Android** (owned Kotlin app, see below),
+   the open engine plays through the platform media stack (foreground
+   service + media session). **Free accounts** get full-track playback
+   through an open multi-source engine (YouTube → Piped → JioSaavn →
+   Audius → SoundCloud, plus optional user-keyed Qobuz lossless) instead.
 5. Every outbound request goes through an in-process **Brave-style ad-block
    engine** (`adblock/`); third-party ad/tracker hosts are dropped before
    hitting the network. The engine runs on a dedicated thread and checks URLs
@@ -36,7 +41,8 @@ in-process AdGuard blocklist drops third-party ad/tracker requests.
 - [x] Request store: in-flight coalescing, memory TTL cache, disk stale-while-revalidate
 - [x] Disk-cached artwork (SHA-256 keyed, 128-file LRU, 30-day TTL)
 - [x] Web Playback SDK boot via hidden WebView (desktop) with shared cookie jar
-- [x] Open multi-source engine (TIDAL/Qobuz/YouTube) for free-tier full-track playback
+- [x] Open multi-source engine (YouTube → Piped → JioSaavn → Audius → SoundCloud + optional Qobuz lossless) for free-tier full-track playback
+- [x] Android: owned Kotlin app (`android/`) over a versioned JNI bridge — gate, 9 screens, login WebView, foreground playback service + media session, self-updater, Room-persisted history/queue/state (see `docs/KOTLIN_MIGRATION.md`)
 - [x] Player bar: play/pause, next/prev, seek, volume, shuffle/repeat
 - [x] Pages: Home (featured + new releases + recommended), Search (debounced), Library, Playlist, Album, Artist
 - [x] Artwork pipeline: colored placeholder → blur-up → full (downscaled, base64, thumbnails never hit the disk)
@@ -54,8 +60,9 @@ cargo run --release
 # Web (WASM) — bundles to `dist/`; login/playback still live-validation-pending
 cargo build --no-default-features --features web
 
-# Mobile (Android/iOS native — wry webview login + Web Playback SDK playback)
-cargo build --no-default-features --features mobile
+# Android — owned Kotlin app + cross-compiled native core (primary path,
+# no Android Studio; needs the Android SDK/NDK, see RULES.md §6.9d)
+./scripts/build-kotlin.sh debug
 ```
 
 No `SPOTIFY_CLIENT_ID` or Spotify Developer app is required — the app uses the
@@ -136,18 +143,18 @@ Assets per release target:
 | `spotify-dx-<version>-x86_64-unknown-linux-gnu.tar.gz` (+ alias `spotify-dx-<target>.tar.gz`) | Linux |
 | `spotify-dx-<version>-aarch64-apple-darwin.tar.gz` / `...-x86_64-apple-darwin.tar.gz` (+ aliases) | macOS |
 | `spotify-dx-<version>-x86_64-pc-windows-msvc.zip` (+ alias `spotify-dx-<target>.zip`) | Windows |
-| `spotify-dx-<version>-signed.apk` | Android (aarch64, generated keystore) |
+| `app-release-unsigned-signed.apk` | Android (arm64, owned Kotlin app, stable release key) |
 | `spotify-dx-<version>-web.tar.gz` (+ alias `spotify-dx-web.tar.gz`) | Web (WASM bundle) |
 
 Each asset ships with a `.sha256` checksum, and each target has an unversioned
 alias so `…/releases/latest/download/…` always fetches the newest build.
 
-> **Note on web / Android / iOS:** mobile now builds the same native app as
-> desktop (in-app `open.spotify.com` login via the wry webview + Web Playback
-> SDK playback). The **web (WASM)** renderer still bundles, but its
+> **Note on web:** the **web (WASM)** renderer still bundles, but its
 > credentialed cross-origin `get_access_token` login is live-validation-pending
-> and falls back to the Connect API until confirmed in a real browser — see
-> `docs/PLATFORM_PARITY.md`.
+> and falls back to the Connect API until confirmed in a real browser.
+> **Android** is the owned Kotlin app in `android/` (not a generated scaffold):
+> in-app login WebView, foreground-service playback, self-updater —
+> see `docs/KOTLIN_MIGRATION.md`.
 
 ## Configuration
 
@@ -173,12 +180,12 @@ src/
   auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
   media/       audio.rs (symphonia decode), images.rs (disk-cached artwork), sink.rs (rodio audio output)
   player/      PlaybackEngine trait, SDK bootstrap (native wry renderers) / Connect API fallback
-  streaming/   Open engine: provider trait, TIDAL/Qobuz/YouTube, resolver, Odesli ID mapping, URL cache
+  streaming/   Open engine: provider trait, YouTube/Piped/JioSaavn/Audius/SoundCloud (+ Qobuz credential tier), ISRC enrichment, resolver, URL cache
   spotify/     API client, models, request store (coalescing + SWR), playback API
   ui/          pages, components, router, theme, inline icons
   app.rs       login gate / routed shell
   main.rs      per-renderer entry points + bootstrap
-  settings.rs  persistent settings (theme, volume, engine preference, cosmetic toggle)
+  settings.rs  persistent settings (theme, volume, engine preference, cosmetic toggle, streaming credentials)
 assets/
   main.css             design system
   blocklist_cache.txt  bundled blocklist snapshot

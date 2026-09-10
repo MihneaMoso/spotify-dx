@@ -1,4 +1,4 @@
-//! Open multi-source streaming engine (`SYSTEM_DESIGN.md` §6.7).
+//! Open multi-source streaming engine (`docs/old/SYSTEM_DESIGN.md` §6.7).
 //!
 //! Resolves a Spotify track ID into a playable audio URL by:
 //! 1. Mapping the Spotify ID → provider IDs via Odesli (song.link).

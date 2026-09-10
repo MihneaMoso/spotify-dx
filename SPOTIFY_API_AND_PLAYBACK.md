@@ -1,13 +1,14 @@
 # Spotify API architecture & dual-engine playback
 
-This document explains, for this repo (`spotify-dx`, a Rust + Dioxus desktop
-client):
+This document explains, for this repo (`spotify-dx`, shared Rust core +
+native UIs):
 
 1. how the current Spotify API layer is structured,
 2. how that API layer connects to the UI layer, and
 3. how **every signed-in user** gets full-track playback — Premium accounts via
-   the official Web Playback SDK, free accounts via an open multi-source engine
-   (TIDAL/Qobuz/YouTube community backends).
+   the official Web Playback SDK, free accounts via an open multi-source
+   engine (YouTube → Piped → JioSaavn → Audius → SoundCloud, plus an
+   optional user-keyed lossless tier).
 
 It is written from the code in `src/` and from documented Spotify Web API /
 Web Playback SDK behavior. Read `AGENTS.md`/`RULES.md` for the project-wide
@@ -87,8 +88,10 @@ Playback is split by engine behind a unified `PlaybackEngine` trait
     running in a hidden 1×1 off-screen wry WebView (`webview_bridge.rs` +
     embedded HTML/JS in `playback_sdk.rs`). Premium-only.
   - **Open engine** (`src/streaming/`): resolves a `spotify:track:` URI to a
-    direct audio URL via TIDAL/Qobuz/YouTube community backends, then plays it
-    through a local Rust audio sink (`rodio` + `symphonia` decode). Works on
+    direct audio URL via the multi-provider chain (YouTube → Piped →
+    JioSaavn → Audius → SoundCloud, plus user-keyed Qobuz lossless), then
+    plays it through a local Rust audio sink (`rodio` + `symphonia` decode)
+    on desktop or the platform player on Android. Works on
     **any account tier**.
 - **web / mobile**: falls back to the **Connect API** (`player_api.rs`).
 
@@ -212,16 +215,29 @@ When `should_use_open_engine()` returns `true` (free account, or user chose
 `EnginePreference::Open`), the playback path never touches the Connect API:
 
 1. `play_uri(uri)` dispatches to `src/streaming/resolver.rs`.
-2. The resolver maps the Spotify track ID to provider IDs via **Odesli
-   (song.link)**, then tries providers in order:
-   - **TIDAL**: community Hi-Fi proxy instances with live uptime lists.
-   - **Qobuz**: ISRC search + Odesli fallback.
-   - **YouTube InnerTube**: audio-only fallback with PoToken timeout guard.
-3. The first successful resolution returns a direct stream URL, cached in
-   `src/streaming/cache.rs` (memory + disk, 50-min TTL).
-4. The URL is fed to `src/media/sink.rs` (rodio + symphonia decode) for local
-   playback. Metadata and artwork still come from Spotify — the UX is pure
-   "Spotify" regardless of which engine plays.
+2. The resolver tries providers **in order, lazily** (a provider costs
+   nothing unless all before it failed); the first `Success` wins, and the
+   URL is cached (`src/streaming/cache.rs`, memory + disk, 50-min TTL).
+   Provider health (cooldowns, instance pools) is tracked so dead sources
+   are skipped without network calls. Current chain
+   (`src/streaming/providers/`, see `RULES.md` for the full history):
+   - **YouTube InnerTube** (self-contained): ranked query variants, duration
+     matching, multi-candidate walk, Piped recovery for ciphered URLs.
+   - **Piped**: same catalog through independent backends (region blocks,
+     cipher recovery) with instance health gating.
+   - **JioSaavn** (first-party `api.php`): DES-decrypted 320kbps MP3;
+     withdrawn items skipped.
+   - **Audius** (keyless open catalog): search → signed stream URL.
+   - **SoundCloud**: auto-scraped client_id, snippet-only results skipped,
+     progressive transcodings only.
+   - **Qobuz lossless** (FLAC): revives only with user-supplied credentials
+     (Settings → Streaming credentials); ISRC enrichment via MusicBrainz
+     runs on the miss path to feed it. TIDAL stays parked (mapper sunset).
+3. The URL is fed to the platform audio output — `src/media/sink.rs`
+   (rodio + symphonia decode) on desktop, the platform `MediaPlayer` via
+   the Kotlin foreground service on Android. Metadata and artwork still
+   come from Spotify — the UX is pure "Spotify" regardless of which engine
+   plays.
 
 ### 4.4 Engine selection & automatic fallback
 
@@ -262,9 +278,11 @@ playback.
    - **Premium + SDK engine**: needs `PLAYER_STATE.device_id` (from Web Playback
      SDK) → `player_api::play` → `PUT /v1/me/player/play` → plays via Spotify
      Connect.
-   - **Free or Open engine**: resolves `spotify:track:` → Odesli → TIDAL/Qobuz/
-     YouTube → direct stream URL (cached) → local rodio+symphonia decode → plays
-     locally. Metadata/artwork still from Spotify.
+   - **Free or Open engine**: resolves `spotify:track:` through the lazy
+     provider chain (YouTube → Piped → JioSaavn → Audius → SoundCloud, +
+     user-keyed Qobuz) → direct stream URL (cached) → local rodio+symphonia
+     decode on desktop, platform player on Android → plays. Metadata/artwork
+     still from Spotify.
 
 For a full architectural map (module layout, router, features, gotchas), see
 `RULES.md` §4 and §6.
