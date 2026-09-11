@@ -177,6 +177,18 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <!-- Full-screen player sheet (persistent overlay à la Echo Music — NOT
+         a DialogFragment: dialog windows brought theme/window-token issues
+         and rendered empty. Plain views, slide animation, back-aware). -->
+    <FrameLayout
+        android:id="@+id/player_sheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <include layout="@layout/view_player_sheet" />
+    </FrameLayout>
+
     <!-- Toast floats above the player bar (§10.1). -->
     <TextView
         android:id="@+id/toast"

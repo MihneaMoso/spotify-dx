@@ -176,6 +176,19 @@ object BridgeClient {
     suspend fun sdkParseState(payloadJson: String): Result<JSONObject> =
         callData("Phase 5") { CoreBridge.sdkParseState(payloadJson) }
 
+    /** Lyrics for a track (Phase 9): `{synced, plain, instrumental, found}`. */
+    suspend fun fetchLyrics(artist: String, title: String, album: String, durationMs: Long): Result<JSONObject> =
+        callData("Lyrics") {
+            CoreBridge.fetchLyrics(
+                JSONObject()
+                    .put("artist", artist)
+                    .put("title", title)
+                    .put("album", album)
+                    .put("duration_ms", durationMs)
+                    .toString(),
+            )
+        }
+
     /** Artwork bytes (base64) through the core's disk cache + filter gate. */
     suspend fun fetchArtwork(url: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {

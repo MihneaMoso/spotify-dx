@@ -9,6 +9,7 @@
 
 pub mod cache;
 pub mod isrc;
+pub mod lyrics;
 pub mod odesli;
 pub mod provider;
 pub mod providers;

@@ -83,7 +83,7 @@ object PlaybackStore {
             }
         }
 
-    fun saveLastSoon(track: Track?, positionMs: Long) {
+    fun saveLastSoon(track: Track?, positionMs: Long, source: String = "") {
         scope.launch {
             withContext(Dispatchers.IO) {
                 AppDb.get(AppState.ctx()).playback().save(
@@ -91,6 +91,7 @@ object PlaybackStore {
                         trackJson = track?.let { Models.trackToJson(it).toString() },
                         positionMs = positionMs,
                         updatedAtMs = System.currentTimeMillis(),
+                        source = source,
                     ),
                 )
             }

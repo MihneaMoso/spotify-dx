@@ -78,6 +78,19 @@ object MusicRepository {
 
     suspend fun artwork(url: String): Result<String> = BridgeClient.fetchArtwork(url)
 
+    /** Lyrics for [track] (null when none exist — a normal outcome). */
+    suspend fun lyrics(track: Track): Result<JSONObject?> {
+        if (track.artistNames.isEmpty() || track.name.isEmpty()) {
+            return Result.success(null)
+        }
+        return BridgeClient.fetchLyrics(
+            track.artists.firstOrNull() ?: "",
+            track.name,
+            track.albumName,
+            track.durationMs,
+        ).map { json -> json.takeIf { it.optBoolean("found", false) } }
+    }
+
     /**
      * Resolve [track] to `{url, format, provider}`. Sends the core-shaped
      * Track object (id/name required, artists as [{name}] refs, album with

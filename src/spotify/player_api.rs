@@ -1,7 +1,9 @@
 use crate::app_error::AppError;
 use crate::spotify::client;
 use crate::spotify::session;
+#[cfg(not(target_os = "android"))]
 use crate::state::AUTH_STATE;
+#[cfg(not(target_os = "android"))]
 use dioxus::prelude::ReadableExt;
 
 const PLAYER_BASE: &str = "https://api.spotify.com/v1/me/player";

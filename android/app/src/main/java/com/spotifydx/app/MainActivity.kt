@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loginOverlay: FrameLayout
     private lateinit var loginManager: LoginWebViewManager
     private var sdkDriver: SdkWebViewDriver? = null
+    private lateinit var playerSheet: PlayerSheetController
     /** Theme painted in onCreate (pre-store-load); see collectRepos. */
     private var appliedTheme: String? = null
     private var themeReconciled = false
@@ -74,6 +75,9 @@ class MainActivity : AppCompatActivity() {
 
         loginOverlay = findViewById(R.id.login_overlay)
         toastView = findViewById(R.id.toast)
+        playerSheet = PlayerSheetController(this).also {
+            it.bind(findViewById(android.R.id.content))
+        }
         loginManager = LoginWebViewManager(this, loginOverlay)
         // Phase 5 SDK device host (lazy: the view is only built on the SDK
         // engine path). Events feed PlayerRepository on the main thread.
@@ -107,7 +111,10 @@ class MainActivity : AppCompatActivity() {
         // back-press on HOME/GATE would silently break every later
         // sub-screen back (permanent-exit bug).
         onBackPressedDispatcher.addCallback(this) {
-            if (current != Destination.HOME && current != Destination.GATE) {
+            // Open player sheet minimizes first (Echo parity).
+            if (playerSheet.isOpen) {
+                playerSheet.close()
+            } else if (current != Destination.HOME && current != Destination.GATE) {
                 go(Destination.HOME)
             } else {
                 finish()
@@ -123,6 +130,11 @@ class MainActivity : AppCompatActivity() {
                 else Destination.GATE,
             )
         }
+    }
+
+    /** Full-screen player sheet (persistent overlay — see PlayerSheetController). */
+    fun openPlayer() {
+        playerSheet.open()
     }
 
     // -- Navigation ------------------------------------------------------------------
@@ -273,6 +285,44 @@ class MainActivity : AppCompatActivity() {
     // -- Player bar (transport cluster, scrub/volume, queue, like) -------------------------
     private fun bindPlayerBar() {
         val bar = findViewById<View>(R.id.player_bar) ?: return
+        // Swipe up opens the full-screen player sheet (Spotify parity).
+        // Taps still hit the bar's own controls (buttons/SeekBars consume
+        // their own streams first — this listener only sees background
+        // touches). Tracked MANUALLY, not via GestureDetector: the detector
+        // needs its own DOWN bookkeeping and silently drops streams whose
+        // DOWN it never saw, which made opens flaky. A 150px upward run —
+        // slow drag or fast fling alike — opens exactly once (500ms debounce
+        // covers the async fragment-commit window).
+        // TEMP-DIAG gestures.
+        var lastY = 0f
+        var accDy = 0f
+        var lastOpenMs = 0L
+        bar.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    lastY = e.y
+                    accDy = 0f
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dy = lastY - e.y
+                    lastY = e.y
+                    if (dy > 0) {
+                        accDy += dy
+                        if (accDy > 150) {
+                            accDy = 0f
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (now - lastOpenMs > 500) {
+                                lastOpenMs = now
+                                openPlayer()
+                            }
+                        }
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
         bar.findViewById<ImageButton>(R.id.btn_play)?.setOnClickListener {
             PlayerRepository.toggle()
         }

@@ -104,7 +104,7 @@ class HomeFragment : Fragment() {
         list.adapter = shelves
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
-        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
+        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Liked Songs") })
         likedList.adapter = liked
         likedList.swipeToQueue(liked)
         viewLifecycleOwner.lifecycleScope.launch {
@@ -144,7 +144,7 @@ class SearchFragment : Fragment() {
         val box: EditText = v.findViewById(R.id.search_box)
         val list: RecyclerView = v.findViewById(R.id.search_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Search") })
         list.adapter = adapter
         list.swipeToQueue(adapter)
         val albumList: RecyclerView = v.findViewById(R.id.search_albums)
@@ -260,7 +260,7 @@ class LibraryFragment : Fragment() {
                     act.openDetail("playlist", r.p.id, r.p.name)
                 is LibraryViewModel.LibraryRow.A ->
                     act.openDetail("album", r.a.id, r.a.name)
-                is LibraryViewModel.LibraryRow.T -> PlayerRepository.play(r.t)
+                is LibraryViewModel.LibraryRow.T -> PlayerRepository.play(r.t, "Liked Songs")
                 null -> {}
             }
         })
@@ -312,7 +312,7 @@ class LikedFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         val list: RecyclerView = v.findViewById(R.id.liked_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, "Liked Songs") })
         list.adapter = adapter
         list.swipeToQueue(adapter)
         // Incremental loading at the tail.
@@ -323,7 +323,7 @@ class LikedFragment : Fragment() {
             }
         })
         v.findViewById<Button>(R.id.liked_play)?.setOnClickListener {
-            adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it) }
+            adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it, "Liked Songs") }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
@@ -344,9 +344,10 @@ class QueueFragment : Fragment() {
         val now: TextView = v.findViewById(R.id.queue_now)
         val list: RecyclerView = v.findViewById(R.id.queue_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, "Queue") })
         list.adapter = adapter
         list.swipeToQueue(adapter)
+        list.queueDrag(adapter)
         v.findViewById<Button>(R.id.queue_clear)?.setOnClickListener {
             PlayerRepository.clearQueue()
         }
@@ -378,11 +379,12 @@ class DetailFragment : Fragment() {
         val subtitle: TextView = v.findViewById(R.id.detail_subtitle)
         val list: RecyclerView = v.findViewById(R.id.detail_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it) })
+        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, title.text.toString()) })
         list.adapter = adapter
         list.swipeToQueue(adapter)
         v.findViewById<Button>(R.id.detail_play)?.setOnClickListener {
-            adapter.currentList.firstOrNull()?.let { PlayerRepository.play(it) }
+            adapter.currentList.firstOrNull()
+                ?.let { PlayerRepository.play(it, title.text.toString()) }
         }
         // Playlist sort (Spotify parity): popup menu anchored to the sort
         // button; the button label always shows the active order. Albums and

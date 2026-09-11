@@ -207,6 +207,10 @@ Search / Library` nav.
 
 ## Credits & notes
 
+- Player architecture: the persistent overlay sheet (instead of a dialog),
+  `playing-from` header, and codec/format box placement are inspired by
+  [Echo Music](https://github.com/EchoMusicApp/Echo-Music) (GPL-3.0).
+  Patterns only — no code ported (Echo is Compose; this app is Views).
 - Blocklist: AdGuard DNS filter (`adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt`) + curated Spotify ad/analytics rules, loaded via the Brave `adblock` crate.
 - Spotify artwork is served from `i.scdn.co`, which is explicitly **never** blocked.
 - Spotify's own domains (`*.spotify.com`, `*.spotifycdn.com`, `*.scdn.co`) are **never**

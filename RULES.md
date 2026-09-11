@@ -1528,6 +1528,48 @@ dioxus-mobile Rust code is untouched and still builds.
   LIVE-VERIFY PENDING with real keys). Tidal stays parked (direct revival
   needs keys to verify); Deezer field reserved, gw_light flow deliberately
   unshipped. Tokens never logged.
+- **Lyrics (Phase 1, 2026-09-11):** `streaming/lyrics.rs` over LRCLIB —
+  exact `/api/get` (artist/title/album/duration) → 404 → `/api/search` +
+  duration match (±10s, synced preferred) → miss is `found:false`, never an
+  error. Cached in the core store (immutable data, SWR ideal) with
+  single-flight; bridge `fetchLyrics`, `MusicRepository.lyrics()` returns
+  null on miss/blank input. Store `resolve()` takes `self` by value —
+  call `Store::global().clone()`; loader closures must own (`'static`).
+  Wasm bypasses the store (Send-bound futures don't compile there —
+  `cargo check --features web` gates it). No UI yet (Phase 5).
+- **Player sheet state (Phase 2, 2026-09-11):** `PlayerRepository.State`
+  gains `source` (play origin, set at all 8 `play()` sites, preserved on
+  resume) + `audioTier` (display label from resolve `{format, provider,
+  quality}` — bridge now includes quality). Tier mapper is honest-only
+  (`format==flac→FLAC · Lossless`, saavn high→320 kbps, else codec name,
+  unknown→hidden; SDK path suppresses). Room v2 `Migration(1→2)` adds
+  `source` to `playback_state` (no destructive fallback anywhere —
+  version bumps REQUIRE a Migration). Trailing-lambda rule resurfaces:
+  added params go BEFORE the lambda param (`fetch` stays last).
+- **Player sheet shell (Phase 3, rewritten 2026-09-11):**
+  `PlayerSheetController` persistent overlay in `activity_main.xml`
+  (`player_sheet` container + `view_player_sheet` include) — Echo Music
+  architecture, deliberately NOT a `BottomSheetDialogFragment` (dialog
+  windows brought theme/token issues and rendered an empty container
+  with zero hierarchy). Slide up/down animations, chevron/back/
+  swipe-down minimize, Queue|Lyrics toggle tabs. Reference clone kept at
+  `/tmp/opencode/echo-music` (depth-1, for future design overhauls);
+  Echo Music is GPL-3.0, credited in README (patterns only, no code —
+  Compose vs Views). UNVERIFIED on device (phone in use during session).
+- **Queue reorder (Phase 4, 2026-09-11, compile-verified):**
+  `QueueDrag` (`ItemTouchHelper` UP/DOWN, separate helper coexisting with
+  swipe's fling gestures) on both queue lists (Queue screen + sheet);
+  long-press lifts (0.7 alpha), drop commits via `moveQueue()` (bounds +
+  no-op guarded) into state AND the existing debounced persist — order
+  survives restarts. Manual `notifyItemMoved` gives live feedback while
+  the StateFlow `submitList` reconciles after.
+- **Lyrics view (Phase 5, 2026-09-11, compile-verified):** `Lrc.kt` (pure
+  `[mm:ss.xx]` parse + binary-search `indexAt`), in-sheet container with
+  three mutually exclusive views (synced list / plain scroll / state
+  message). Fetch-per-track via `MusicRepository.lyrics()` with
+  fragment-scoped cache + stale-track guard; highlight updates surgically
+  (prev+new rows only) with auto-scroll on line change; states SYNCED /
+  PLAIN / INSTRUMENTAL / UNAVAILABLE / LOADING / IDLE.
 - **wasm breakage pattern (fixed 2026-09-10):** `reqwest::redirect` does not
   exist on wasm (browser owns redirects) — `bare_client` and redirect logic
   are `cfg(not(wasm))`; the wasm path uses `resp.url()` after following.

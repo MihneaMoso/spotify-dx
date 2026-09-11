@@ -182,6 +182,16 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <!-- Full-screen player sheet: same include as the narrow layout. -->
+    <FrameLayout
+        android:id="@+id/player_sheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <include layout="@layout/view_player_sheet" />
+    </FrameLayout>
+
     <TextView
         android:id="@+id/toast"
         android:layout_width="wrap_content"

@@ -1119,6 +1119,7 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
                     "url": r.url,
                     "format": format!("{:?}", r.format).to_lowercase(),
                     "provider": r.provider,
+                    "quality": format!("{:?}", r.quality).to_lowercase(),
                 })
                 .to_string(),
             ),
@@ -1262,6 +1263,46 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkParseState<'a>(
         match serde_json::to_value(&state) {
             Ok(json) => ok_data(&json.to_string()),
             Err(e) => err("NET", format!("state encode failed: {e}")),
+        }
+    })
+}
+
+/// `fetchLyrics(arg) -> envelope<LyricsResult>`.
+/// `{artist, title, album?, duration_ms?}`. Misses are normal (many tracks
+/// have no lyrics) and return `found: false`, never an error.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "C" fn Java_com_spotifydx_app_CoreBridge_fetchLyrics<'a>(
+    env: JNIEnv<'a>,
+    _cls: JClass<'a>,
+    arg: JString<'a>,
+) -> JString<'a> {
+    guarded(env, |env| {
+        let v = match sdk_json_arg(env, &arg) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let str_field = |key: &str| {
+            v.get(key).and_then(|s| s.as_str()).unwrap_or_default().to_string()
+        };
+        let artist = str_field("artist");
+        let title = str_field("title");
+        if artist.is_empty() || title.is_empty() {
+            return err("INVALID_ARGS", "arg.artist and arg.title are required");
+        }
+        let album = str_field("album");
+        let duration_ms = v.get("duration_ms").and_then(|n| n.as_u64()).unwrap_or(0);
+        match rt().block_on(crate::streaming::lyrics::fetch_lyrics(
+            &artist,
+            &title,
+            &album,
+            duration_ms,
+        )) {
+            Ok(lyrics) => match serde_json::to_value(&lyrics) {
+                Ok(json) => ok_data(&json.to_string()),
+                Err(e) => err("NET", format!("lyrics encode failed: {e}")),
+            },
+            Err(e) => map_data_err(e),
         }
     })
 }

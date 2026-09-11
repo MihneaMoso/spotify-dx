@@ -42,6 +42,8 @@ data class PlaybackStateRow(
     @ColumnInfo(name = "track_json") val trackJson: String?,
     @ColumnInfo(name = "position_ms") val positionMs: Long,
     @ColumnInfo(name = "updated_at_ms") val updatedAtMs: Long,
+    /** Play origin label ("Liked Songs", playlist name, "Queue"…). v2+. */
+    @ColumnInfo(name = "source", defaultValue = "") val source: String = "",
 )
 
 @Dao
@@ -97,7 +99,7 @@ interface PlaybackDao {
 
 @Database(
     entities = [SearchEntry::class, QueueItem::class, PlaybackStateRow::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDb : RoomDatabase() {
@@ -108,6 +110,13 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         const val HISTORY_KEEP = 20
 
+        /** v1 → v2: play-origin label on the last-played row. */
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE playback_state ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var inst: AppDb? = null
 
@@ -117,7 +126,7 @@ abstract class AppDb : RoomDatabase() {
                     ctx.applicationContext,
                     AppDb::class.java,
                     "spotifydx.db",
-                ).build().also { inst = it }
+                ).addMigrations(MIGRATION_1_2).build().also { inst = it }
             }
     }
 }

@@ -91,5 +91,8 @@ class CoreBridge private constructor() {
         @JvmStatic external fun sdkSeek(arg: String): String
         @JvmStatic external fun sdkVolume(arg: String): String
         @JvmStatic external fun sdkParseState(arg: String): String
+
+        // -- Lyrics (Phase 9): LRCLIB via the core (cached, single-flight).
+        @JvmStatic external fun fetchLyrics(arg: String): String
     }
 }

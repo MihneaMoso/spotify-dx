@@ -38,7 +38,23 @@ object PlayerRepository {
         /** True while the SDK device (not the platform player) owns audio. */
         val sdkActive: Boolean = false,
         val sdkDeviceId: String? = null,
+        /** Play origin label ("Liked Songs", playlist/album name, "Queue"…). */
+        val source: String = "",
+        /** Display tier ("FLAC · Lossless", "320 kbps", "AAC"); "" = hidden. */
+        val audioTier: String = "",
     )
+
+    /** Tier label from resolve fields (honest: only what providers state). */
+    fun audioTier(format: String, provider: String, quality: String): String = when {
+        format == "flac" -> "FLAC · Lossless"
+        provider == "saavn" && quality == "high" -> "320 kbps"
+        provider == "saavn" -> "160 kbps"
+        format == "mp3" -> "MP3"
+        format == "aac" -> "AAC"
+        format == "opus" -> "Opus"
+        format == "ogg" -> "Ogg"
+        else -> ""
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(State())
@@ -66,6 +82,16 @@ object PlayerRepository {
     fun removeAt(index: Int) {
         update { s -> s.copy(queue = s.queue.filterIndexed { i, _ -> i != index }) }
         PlaybackStore.saveQueueSoon(_state.value.queue)
+    }
+
+    /** Drag-reorder the queue (any music app semantics): move + persist. */
+    fun moveQueue(from: Int, to: Int) {
+        val q = _state.value.queue
+        if (from !in q.indices || to !in q.indices || from == to) return
+        val m = q.toMutableList()
+        m.add(to, m.removeAt(from))
+        update { s -> s.copy(queue = m) }
+        PlaybackStore.saveQueueSoon(m)
     }
 
     fun setShuffle(on: Boolean) = update { s ->
@@ -113,14 +139,22 @@ object PlayerRepository {
         else -> SessionRepository.snapshot().isPremium
     }
 
-    fun play(track: Track) {
-        update { s -> s.copy(track = track, isPlaying = true) }
+    fun play(track: Track, source: String = "") {
+        update { s ->
+            s.copy(
+                track = track,
+                isPlaying = true,
+                source = source.ifEmpty { s.source },
+                audioTier = "",
+            )
+        }
         dispatchPlay(track)
     }
 
     private fun dispatchPlay(track: Track) {
         // New track = new last-played (position resets; timestamp = now).
-        PlaybackStore.saveLastSoon(track, 0)
+        val s = _state.value
+        PlaybackStore.saveLastSoon(track, 0, s.source)
         if (useSdkEngine()) {
             update { s -> s.copy(sdkActive = true, sdkDeviceId = null) }
             playViaSdk(track)
@@ -133,9 +167,19 @@ object PlayerRepository {
     private fun playViaOpen(track: Track) {
         scope.launch {
             val res = withContext(Dispatchers.IO) { MusicRepository.resolveStream(track) }
-            val url = res.getOrNull()?.optString("url", "")
+            val json = res.getOrNull()
+            val url = json?.optString("url", "")
             val svc = PlaybackService.instance
             if (!url.isNullOrEmpty() && svc != null) {
+                update { s ->
+                    s.copy(
+                        audioTier = audioTier(
+                            json?.optString("format", "") ?: "",
+                            json?.optString("provider", "") ?: "",
+                            json?.optString("quality", "") ?: "",
+                        ),
+                    )
+                }
                 svc.setPlayerVolume(_state.value.volume)
                 svc.playUrl(url, track)
             } else {
@@ -202,21 +246,21 @@ object PlayerRepository {
             }
             publishSdkState()
             if (s.isPlaying) {
-                PlaybackStore.saveLastSoon(s.track, _state.value.positionMs)
+                PlaybackStore.saveLastSoon(s.track, _state.value.positionMs, s.source)
             }
             return
         }
         val svc = PlaybackService.instance
         if (s.isPlaying) {
             svc?.pausePlayback() ?: update { it.copy(isPlaying = false) }
-            PlaybackStore.saveLastSoon(s.track, _state.value.positionMs)
+            PlaybackStore.saveLastSoon(s.track, _state.value.positionMs, s.source)
         } else {
             // Resume in place when the service still holds the track;
-            // otherwise (re)resolve from the top.
+            // otherwise (re)resolve from the top (keeping the source).
             val resumed = svc?.resumePlayback() ?: false
             if (!resumed) {
                 val track = s.track
-                if (track != null) play(track)
+                if (track != null) play(track, s.source)
             }
         }
     }
@@ -230,7 +274,7 @@ object PlayerRepository {
     fun seekTo(ms: Long) {
         update { _state.value.copy(positionMs = ms) }
         val s = _state.value
-        PlaybackStore.saveLastSoon(s.track, ms)
+        PlaybackStore.saveLastSoon(s.track, ms, s.source)
         if (s.sdkActive) {
             val device = s.sdkDeviceId
             if (device != null) {
@@ -288,6 +332,7 @@ object PlayerRepository {
                     isPlaying = false,
                     positionMs = last?.positionMs ?: s.positionMs,
                     durationMs = track?.durationMs ?: s.durationMs,
+                    source = last?.source ?: s.source,
                 )
             }
             Log.i(TAG, "restored queue=${queue.size} last=${track?.name ?: "none"}")
@@ -329,7 +374,9 @@ object PlayerRepository {
                     sdkActive = true,
                 )
             }
-            PlaybackStore.saveLastSoon(track ?: _state.value.track, pos)
+            PlaybackStore.saveLastSoon(
+                track ?: _state.value.track, pos, _state.value.source,
+            )
             publishSdkState()
         }
     }
