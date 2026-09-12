@@ -283,7 +283,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // -- Player bar (transport cluster, scrub/volume, queue, like) -------------------------
+    // -- Player bar (Echo floating mini-player: transport + titles + scrub) -------------------------
     private fun bindPlayerBar() {
         val bar = findViewById<View>(R.id.player_bar) ?: return
         // Swipe up opens the full-screen player sheet (Spotify parity).
@@ -333,23 +333,10 @@ class MainActivity : AppCompatActivity() {
         bar.findViewById<ImageButton>(R.id.btn_prev)?.setOnClickListener {
             PlayerRepository.seekTo(0)
         }
-        bar.findViewById<ImageButton>(R.id.btn_queue)?.setOnClickListener {
-            go(Destination.QUEUE)
-        }
         bar.findViewById<SeekBar>(R.id.scrub)?.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar, v: Int, fromUser: Boolean) {
                     if (fromUser) PlayerRepository.seekTo(v.toLong())
-                }
-
-                override fun onStartTrackingTouch(s: SeekBar) {}
-                override fun onStopTrackingTouch(s: SeekBar) {}
-            },
-        )
-        bar.findViewById<SeekBar>(R.id.volume)?.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar, v: Int, fromUser: Boolean) {
-                    if (fromUser) PlayerRepository.setVolume(v / 100f)
                 }
 
                 override fun onStartTrackingTouch(s: SeekBar) {}
@@ -376,11 +363,9 @@ class MainActivity : AppCompatActivity() {
             if (!scrub.isPressed) scrub.progress = s.positionMs.toInt()
         }
         bar.findViewById<TextView>(R.id.player_pos)?.text =
-            TrackAdapter.formatDuration(s.positionMs) + " / " + TrackAdapter.formatDuration(s.durationMs)
-        // Optimistic like control (silent fallback until the endpoint lands).
-        bar.findViewById<ImageButton>(R.id.btn_like)?.apply {
-            alpha = if (s.transportReady) 1f else 0.4f
-        }
+            TrackAdapter.formatDuration(s.positionMs)
+        bar.findViewById<TextView>(R.id.player_duration)?.text =
+            TrackAdapter.formatDuration(s.durationMs)
     }
 
     // -- Toast (generation-guarded auto-dismiss) --------------------------------------------
