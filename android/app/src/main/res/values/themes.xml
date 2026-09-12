@@ -11,6 +11,9 @@
         <item name="colorOnSurface">@color/deep_text</item>
         <item name="colorSurfaceVariant">@color/deep_card</item>
         <item name="colorOnSurfaceVariant">@color/deep_muted</item>
+        <!-- Echo-port layers (additive only — see values/attrs.xml). -->
+        <item name="echoCardShelf">@color/deep_shelf</item>
+        <item name="echoSearchField">@color/deep_searchfield</item>
     </style>
 
     <style name="Theme.SpotifyDx.Onyx" parent="Theme.SpotifyDx">
@@ -19,5 +22,7 @@
         <item name="colorSurfaceVariant">@color/onyx_card</item>
         <item name="colorOnSurface">@color/onyx_text</item>
         <item name="colorOnSurfaceVariant">@color/onyx_muted</item>
+        <item name="echoCardShelf">@color/onyx_shelf</item>
+        <item name="echoSearchField">@color/onyx_searchfield</item>
     </style>
 </resources>

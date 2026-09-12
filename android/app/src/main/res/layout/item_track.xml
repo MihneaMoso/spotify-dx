@@ -11,7 +11,7 @@
         android:layout_width="30dp"
         android:layout_height="wrap_content"
         android:gravity="center"
-        android:textColor="?attr/colorOnSurfaceVariant" />
+        style="@style/EchoBodySubtitle" />
 
     <ImageView
         android:id="@+id/track_art"
@@ -30,15 +30,14 @@
             android:id="@+id/track_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="?attr/colorOnSurface"
+            style="@style/EchoBodyTitle"
             android:maxLines="1" />
 
         <TextView
             android:id="@+id/track_subtitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="?attr/colorOnSurfaceVariant"
-            android:textSize="12sp"
+            style="@style/EchoBodySubtitle"
             android:maxLines="1" />
     </LinearLayout>
 
@@ -46,6 +45,5 @@
         android:id="@+id/track_duration"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textColor="?attr/colorOnSurfaceVariant"
-        android:textSize="12sp" />
+        style="@style/EchoBodySubtitle" />
 </LinearLayout>

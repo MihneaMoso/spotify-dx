@@ -111,9 +111,10 @@ class MainActivity : AppCompatActivity() {
         // back-press on HOME/GATE would silently break every later
         // sub-screen back (permanent-exit bug).
         onBackPressedDispatcher.addCallback(this) {
-            // Open player sheet minimizes first (Echo parity).
+            // Open player sheet: expanded section collapses first (Echo
+            // parity), then the sheet minimizes.
             if (playerSheet.isOpen) {
-                playerSheet.close()
+                if (!playerSheet.backToMain()) playerSheet.close()
             } else if (current != Destination.HOME && current != Destination.GATE) {
                 go(Destination.HOME)
             } else {

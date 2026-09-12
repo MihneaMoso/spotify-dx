@@ -52,9 +52,19 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     private lateinit var source: TextView
     private lateinit var tier: TextView
     private lateinit var pos: TextView
+    private lateinit var duration: TextView
+    private lateinit var line: TextView
     private lateinit var scrub: SeekBar
-    private lateinit var volume: SeekBar
     private lateinit var play: ImageButton
+    private lateinit var tabs: View
+    private lateinit var spacer: View
+    private lateinit var queueBox: View
+    private lateinit var qThumb: ImageView
+    private lateinit var qTitle: TextView
+    private lateinit var qSub: TextView
+    private lateinit var qCount: TextView
+    private lateinit var tabQueue: Button
+    private lateinit var tabLyrics: Button
     private lateinit var queueAdapter: TrackAdapter
     private lateinit var lyricsAdapter: LyricsAdapter
 
@@ -69,7 +79,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     private var lyricsUi: LyricsUi = LyricsUi.IDLE
 
     val isOpen: Boolean get() = ::container.isInitialized &&
-        container.visibility == View.VISIBLE
+        container.visibility != View.GONE
 
     /** Bind once from MainActivity.onCreate (after setContentView). */
     fun bind(root: View) {
@@ -80,9 +90,17 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         source = root.findViewById(R.id.sheet_source)
         tier = root.findViewById(R.id.sheet_tier)
         pos = root.findViewById(R.id.sheet_pos)
+        duration = root.findViewById(R.id.sheet_duration)
+        line = root.findViewById(R.id.sheet_line)
+        queueBox = root.findViewById(R.id.sheet_queue_box)
+        qThumb = root.findViewById(R.id.sheet_queue_thumb)
+        qTitle = root.findViewById(R.id.sheet_queue_title)
+        qSub = root.findViewById(R.id.sheet_queue_sub)
+        qCount = root.findViewById(R.id.sheet_queue_count)
         scrub = root.findViewById(R.id.sheet_scrub)
-        volume = root.findViewById(R.id.sheet_volume)
         play = root.findViewById(R.id.sheet_play)
+        tabs = root.findViewById(R.id.sheet_tabs)
+        spacer = root.findViewById(R.id.sheet_spacer)
         main = root.findViewById(R.id.sheet_main)
         queueList = root.findViewById(R.id.sheet_queue)
         lyricsBox = root.findViewById(R.id.sheet_lyrics)
@@ -90,21 +108,25 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         lyricsPlainWrap = root.findViewById(R.id.sheet_lyrics_plain_wrap)
         lyricsPlain = root.findViewById(R.id.sheet_lyrics_plain)
         lyricsState = root.findViewById(R.id.sheet_lyrics_state)
-        val tabQueue: Button = root.findViewById(R.id.sheet_tab_queue)
-        val tabLyrics: Button = root.findViewById(R.id.sheet_tab_lyrics)
+        tabQueue = root.findViewById(R.id.sheet_tab_queue)
+        tabLyrics = root.findViewById(R.id.sheet_tab_lyrics)
 
         root.findViewById<ImageButton>(R.id.sheet_minimize)?.setOnClickListener {
             close()
         }
-        play.setOnClickListener { PlayerRepository.toggle() }
+        play.setOnClickListener { PlayerRepository.toggle(); punch(play) }
         root.findViewById<ImageButton>(R.id.sheet_next)?.setOnClickListener {
-            PlayerRepository.nextTrack()
+            PlayerRepository.nextTrack(); punch(it)
         }
         root.findViewById<ImageButton>(R.id.sheet_prev)?.setOnClickListener {
-            PlayerRepository.seekTo(0)
+            PlayerRepository.seekTo(0); punch(it)
         }
+        // Echo transport feel: press sinks to 0.88 with a springy release.
+        // Purely visual touch feedback — click behavior is untouched.
+        root.findViewById<ImageButton>(R.id.sheet_next)?.let(::pressScale)
+        root.findViewById<ImageButton>(R.id.sheet_prev)?.let(::pressScale)
+        pressScale(play)
         scrub.setOnSeekBarChangeListener(seekListener { PlayerRepository.seekTo(it) })
-        volume.setOnSeekBarChangeListener(seekListener { PlayerRepository.setVolume(it / 100f) })
 
         queueList.layoutManager = LinearLayoutManager(activity)
         queueAdapter = TrackAdapter(onPlay = { PlayerRepository.play(it, "Queue") })
@@ -143,7 +165,9 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                         accDy += dy
                         if (accDy > 150) {
                             accDy = 0f
-                            close()
+                            // Expanded Queue/Lyrics collapse first (Echo:
+                            // inner sheet consumes the drag), then the sheet.
+                            if (!backToMain()) close()
                         }
                     } else {
                         accDy = 0f
@@ -159,19 +183,23 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 val t = st.track
                 title.text = t?.name ?: "Not playing"
                 subtitle.text = t?.artistNames ?: ""
-                source.text = st.source.ifEmpty { "" }
-                source.visibility = if (st.source.isEmpty()) View.GONE else View.VISIBLE
+                // Echo "playing from": album context, provider only as fallback.
+                val from = t?.albumName?.ifEmpty { null } ?: st.source
+                source.text = from
+                source.visibility = if (from.isEmpty()) View.GONE else View.VISIBLE
                 tier.text = st.audioTier
                 tier.visibility = if (st.audioTier.isEmpty()) View.GONE else View.VISIBLE
                 if (t == null) {
                     art.setImageDrawable(null)
+                    line.visibility = View.GONE
                     lyricsTrackId = null
                     lyricsUi = LyricsUi.IDLE
                     renderLyrics()
                 } else {
-                    ArtworkLoader.load(art, t.coverUrl)
+                    ArtworkLoader.load(art, t.coverUrl, ArtworkLoader.Art.PLAYER)
                     if (lyricsTrackId != t.id) {
                         lyricsTrackId = t.id
+                        line.visibility = View.GONE
                         loadLyrics(t)
                     }
                     updateHighlight(st.positionMs)
@@ -184,12 +212,14 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     scrub.max = st.durationMs.toInt()
                     if (!scrub.isPressed) scrub.progress = st.positionMs.toInt()
                 }
-                pos.text = TrackAdapter.formatDuration(st.positionMs) +
-                    " / " + TrackAdapter.formatDuration(st.durationMs)
-                if (!volume.isPressed) {
-                    volume.progress = (st.volume * 100).toInt()
-                }
+                pos.text = TrackAdapter.formatDuration(st.positionMs)
+                duration.text = TrackAdapter.formatDuration(st.durationMs)
                 queueAdapter.submitList(st.queue)
+                // Echo queue header: current track + queue size.
+                qTitle.text = t?.name ?: "Not playing"
+                qSub.text = t?.artistNames ?: ""
+                qCount.text = "${st.queue.size} songs"
+                if (t != null) ArtworkLoader.load(qThumb, t.coverUrl)
             }
         }
     }
@@ -197,10 +227,20 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     /** Slide the sheet up into view (idempotent). */
     fun open() {
         if (isOpen) return
-        container.visibility = View.VISIBLE
+        // INVISIBLE (not GONE) first: the sheet measures and lays out with
+        // zero frames flashed at rest position. The posted block then parks
+        // it below the screen, flips it VISIBLE, and eases it up — one
+        // continuous motion, no content flash. 350ms Decelerate ≈ Echo's
+        // spring settle without new dependencies.
+        container.visibility = View.INVISIBLE
         container.post {
+            // A close() that landed in between wins — never re-show.
+            if (container.visibility == View.GONE) return@post
             container.translationY = container.height.toFloat()
-            container.animate().translationY(0f).setDuration(250).start()
+            container.visibility = View.VISIBLE
+            container.animate().translationY(0f).setDuration(350)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
         }
     }
 
@@ -208,19 +248,79 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     fun close() {
         if (!isOpen) return
         container.animate().translationY(container.height.toFloat())
-            .setDuration(200)
+            .setDuration(300)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
             .withEndAction {
                 container.visibility = View.GONE
                 container.translationY = 0f
             }.start()
     }
 
+    /** Echo back order: expanded Queue/Lyrics collapse to the player first.
+     *  Returns true when a section was collapsed (back press consumed). */
+    fun backToMain(): Boolean {
+        if (!isOpen || tab == Tab.MAIN) return false
+        showTab(tab)
+        return true
+    }
+
     private fun showTab(t: Tab) {
-        // Toggle tabs: tapping the active one returns to the player.
+        // Echo nested-sheet behavior: the Queue / Lyrics section expands over
+        // the main player content with a fade+rise; tapping the active one
+        // (or Back) returns to the player. Labels stay ours ("Queue").
         tab = if (t == tab) Tab.MAIN else t
-        main.visibility = if (tab == Tab.MAIN) View.VISIBLE else View.GONE
-        queueList.visibility = if (tab == Tab.QUEUE) View.VISIBLE else View.GONE
+        val showMain = tab == Tab.MAIN
+        main.visibility = if (showMain) View.VISIBLE else View.GONE
+        queueBox.visibility = if (tab == Tab.QUEUE) View.VISIBLE else View.GONE
         lyricsBox.visibility = if (tab == Tab.LYRICS) View.VISIBLE else View.GONE
+        // The bottom Queue | Lyrics row + spacer belong to the player view;
+        // the expanded section takes the whole sheet (Echo nested sheet).
+        tabs.visibility = if (showMain) View.VISIBLE else View.GONE
+        spacer.visibility = if (showMain) View.VISIBLE else View.GONE
+        val shown: View = when (tab) {
+            Tab.QUEUE -> queueBox
+            Tab.LYRICS -> lyricsBox
+            Tab.MAIN -> main
+        }
+        shown.alpha = 0f
+        shown.translationY = 48f
+        shown.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        // Echo split-button look: tab_bg/tab_text selectors react to selected.
+        tabQueue.isSelected = tab == Tab.QUEUE
+        tabLyrics.isSelected = tab == Tab.LYRICS
+    }
+
+    /**
+     * Echo transport feel, View edition. Echo presses its transport buttons
+     * to 0.9 scale on a spring and morphs play while playing (WavyShape —
+     * not expressible with framework drawables); the springy press + tap
+     * punch carry the same feel with zero new dependencies.
+     */
+    private fun pressScale(v: View) {
+        v.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.88f).scaleY(0.88f)
+                        .setDuration(100).start()
+                    // false: the click listener still fires on UP.
+                    false
+                }
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(150).start()
+                    false
+                }
+                else -> false
+            }
+        }
+    }
+
+    /** Tap punch: quick sink-and-release on activation. */
+    private fun punch(v: View) {
+        v.animate().scaleX(0.85f).scaleY(0.85f).setDuration(80)
+            .withEndAction {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }.start()
     }
 
     private fun seekListener(onSeek: (Long) -> Unit) =
@@ -240,6 +340,8 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         lyricsPlainWrap.visibility = if (showPlain) View.VISIBLE else View.GONE
         lyricsState.visibility =
             if (!showList && !showPlain) View.VISIBLE else View.GONE
+        // One-liner only exists for synced lyrics; sections own the rest.
+        if (!showList) line.visibility = View.GONE
         if (!showList && !showPlain) {
             lyricsState.text = when (lyricsUi) {
                 LyricsUi.LOADING -> "Loading lyrics…"
@@ -313,6 +415,11 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         if (prev >= 0) lyricsAdapter.notifyItemChanged(prev)
         lyricsAdapter.notifyItemChanged(idx)
         lyricsList.scrollToPosition(idx)
+        // Echo synced one-liner under the artwork.
+        if (idx in lyricsLines.indices) {
+            line.text = lyricsLines[idx].text
+            if (line.visibility != View.VISIBLE) line.visibility = View.VISIBLE
+        }
     }
 
     /**
@@ -352,8 +459,15 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             RecyclerView.ViewHolder(tv) {
             fun bind(text: String, current: Boolean) {
                 tv.text = text
+                // Theme-attr lyric colors (were hardcoded white/muted hexes,
+                // wrong whenever the palette shifts): active line reads on
+                // the surface, idle lines recede to muted.
                 tv.setTextColor(
-                    if (current) 0xFFFFFFFF.toInt() else 0xFF9AA6C3.toInt(),
+                    Design.resolveAttr(
+                        tv.context,
+                        if (current) com.google.android.material.R.attr.colorOnSurface
+                        else com.google.android.material.R.attr.colorOnSurfaceVariant,
+                    ),
                 )
                 tv.paint.isFakeBoldText = current
             }

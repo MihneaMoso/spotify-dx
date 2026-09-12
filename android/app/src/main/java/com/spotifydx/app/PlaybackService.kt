@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -17,7 +19,15 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Foreground playback service + media session (§9.6–9.7 migration).
@@ -63,6 +73,16 @@ class PlaybackService : Service(),
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
     private var ticker: Thread? = null
+
+    // System-media artwork (notification large icon + session album art,
+    // like Spotify/YT Music): per-track bitmap cache + one in-flight fetch.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var artJob: Job? = null
+    private var artKey: String = ""
+    private var artBitmap: Bitmap? = null
+    private var lastPlaying: Boolean = false
+    private var lastState: Int = PlaybackState.STATE_NONE
+    private var lastPos: Long = 0L
 
     inner class LocalBinder : Binder() {
         fun service(): PlaybackService = this@PlaybackService
@@ -334,6 +354,7 @@ class PlaybackService : Service(),
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
+        artBitmap?.let { builder.setLargeIcon(it) }
         return builder
             .setContentTitle(track.name.ifEmpty { "Spotify DX" })
             .setContentText(track.artistNames.ifEmpty { "Ready to play" })
@@ -351,11 +372,16 @@ class PlaybackService : Service(),
     }
 
     private fun updateNotification(track: Track, playing: Boolean) {
+        lastPlaying = playing
+        refreshArtwork(track)
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification(track, playing))
     }
 
     private fun updateSession(state: Int, pos: Long, track: Track) {
+        lastState = state
+        lastPos = pos
+        refreshArtwork(track)
         session?.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -366,15 +392,65 @@ class PlaybackService : Service(),
                 .setState(state, pos, 1f)
                 .build(),
         )
-        session?.setMetadata(
-            android.media.MediaMetadata.Builder()
-                .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, track.name)
-                .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, track.artistNames)
-                .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, track.albumName)
-                .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, track.durationMs)
-                .build(),
-        )
+        val meta = android.media.MediaMetadata.Builder()
+            .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, track.name)
+            .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, track.artistNames)
+            .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, track.albumName)
+            .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, track.durationMs)
+        // Single ALBUM_ART key at ~320px (≈400KB): the same bitmap under
+        // ART + DISPLAY_ICON too triple-parcels past the 1MB binder limit
+        // and setMetadata then fails silently (no-art session).
+        artBitmap?.let {
+            meta.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it)
+        }
+        session?.setMetadata(meta.build())
     }
+
+    /**
+     * Fetches + decodes the track's artwork once per track (same core gate
+     * the UI pipeline uses), then re-publishes notification + session with
+     * the bitmap attached. Stale-fetch guard: only the current track's art
+     * lands. Bitmaps are downscaled to ~512px (system art budgets).
+     */
+    private fun refreshArtwork(track: Track) {
+        // Keyed on the art URL (not the track id — ids can be empty on some
+        // sources, which collapsed the cache and never loaded art).
+        val url = track.coverUrl
+        if (url == artKey) return
+        artJob?.cancel()
+        artBitmap = null
+        artKey = url
+        if (url.isEmpty()) return
+        artJob = scope.launch {
+            val bmp = withContext(Dispatchers.IO) { decodeArt(url) }
+            if (url != artKey || bmp == null) {
+                bmp?.recycle()
+                return@launch
+            }
+            artBitmap = bmp
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIFICATION_ID, buildNotification(track, lastPlaying))
+            updateSession(lastState, lastPos, track)
+        }
+    }
+
+    private suspend fun decodeArt(url: String): Bitmap? = runCatching {
+        val bytes = Base64.decode(
+            MusicRepository.artwork(url).getOrNull() ?: return null,
+            Base64.DEFAULT,
+        )
+        if (bytes.isEmpty()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 320 &&
+            bounds.outHeight / (sample * 2) >= 320
+        ) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    }.getOrNull()
 
     private fun releasePlayer() {
         stopTicker()
@@ -383,6 +459,8 @@ class PlaybackService : Service(),
     }
 
     override fun onDestroy() {
+        artJob?.cancel()
+        scope.cancel()
         stopTicker()
         releasePlayer()
         session?.release()

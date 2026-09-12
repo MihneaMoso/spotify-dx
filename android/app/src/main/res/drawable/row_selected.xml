@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Echo-port row states (Phase 1). Applied as item backgrounds in later
+     phases; adapters already track selected/playing, only visuals change. -->
+<!-- Selected row (Echo Items.kt: primary @ 40%). Primary is identical in
+     both themes, so the alpha is baked in — no per-theme token needed. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#663B82F6" />
+    <corners android:radius="@dimen/echo_radius_row" />
+</shape>

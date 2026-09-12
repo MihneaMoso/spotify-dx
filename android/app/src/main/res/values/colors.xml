@@ -25,4 +25,13 @@
          assets/main.css): swipe-to-queue reveal. Not a theme token —
          identical in both themes. -->
     <color name="spotify_green">#1DB954</color>
+
+    <!-- Echo-port translucent layers (Phase 1). ?attr/ colors cannot carry
+         alpha in XML drawables, so translucency is baked per palette here
+         and exposed via the echoCardShelf / echoSearchField theme attrs
+         (values/attrs.xml). 0x4D = 30%, 0x80 = 50%. -->
+    <color name="deep_shelf">#4D1A2136</color>
+    <color name="deep_searchfield">#801A2136</color>
+    <color name="onyx_shelf">#4D0E1322</color>
+    <color name="onyx_searchfield">#800E1322</color>
 </resources>

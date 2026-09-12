@@ -17,8 +17,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/nav_queue"
-            android:textSize="20sp"
-            android:textColor="?attr/colorOnSurface" />
+            style="@style/EchoHeadline" />
 
         <Button
             android:id="@+id/queue_clear"
@@ -32,7 +31,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
-        android:textColor="?attr/colorOnSurfaceVariant"
+        style="@style/EchoBodySubtitle"
         android:visibility="gone" />
 
     <Button

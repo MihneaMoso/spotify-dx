@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Echo-port text appearances (Phase 1). Material3 type scale as used by
+     Echo (Type.kt + call sites): Default font family, Bold/Medium weights
+     via sans-serif-medium, theme-attr colors so both palettes adapt. -->
+<resources>
+    <!-- Player sheet title (Echo: titleLarge Bold 22sp). -->
+    <style name="EchoTitleLarge" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textSize">22sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+    </style>
+
+    <!-- Player sheet artist (Echo: titleMedium 16sp, alpha 0.8 -> muted). -->
+    <style name="EchoTitleMedium" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:textSize">16sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <!-- Row / grid titles (Echo Items.kt: bodyMedium Bold / bodyLarge Bold). -->
+    <style name="EchoBodyTitle" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+    </style>
+
+    <!-- Row subtitles (Echo: bodySmall/bodyMedium, secondary). -->
+    <style name="EchoBodySubtitle" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <!-- Captions: time labels, source/tier, errors (Echo: bodySmall/labelSmall). -->
+    <style name="EchoCaption" parent="TextAppearance.Material3.LabelSmall">
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <!-- Mini-player bar title/artist (Echo MiniPlayer: 14sp Medium / 12sp 0.7). -->
+    <style name="EchoMiniTitle" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+    </style>
+    <style name="EchoMiniArtist" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <!-- Section headers (Echo: headlineSmall Bold; greeting/title rows). -->
+    <style name="EchoHeadline" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+    </style>
+
+    <!-- History/suggestion chips (Echo ChoiceChipsRow: FilterChip look,
+         container surfaceContainer, 8dp rest radius, labelLarge text). -->
+    <style name="EchoFilterChip" parent="Widget.Material3.Chip.Filter">
+        <item name="chipBackgroundColor">@color/chip_bg</item>
+        <item name="android:textColor">@color/chip_text</item>
+        <item name="chipCornerRadius">8dp</item>
+        <item name="chipStrokeWidth">0dp</item>
+        <item name="android:textAppearance">@style/EchoCaption</item>
+    </style>
+</resources>

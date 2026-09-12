@@ -48,14 +48,36 @@ object ArtworkLoader {
                 .also { loader = it }
         }
 
-    fun load(view: ImageView, url: String) {
+    /** Echo artwork treatment per surface: list rows/cards 6dp, player 12dp. */
+    enum class Art { LIST, PLAYER }
+
+    fun load(view: ImageView, url: String, art: Art = Art.LIST) {
+        val ctx = view.context
+        val radiusPx = ctx.resources.getDimension(
+            if (art == Art.PLAYER) R.dimen.echo_radius_art_player
+            else R.dimen.echo_radius_art_list,
+        )
+        // Outline clip rounds placeholder, crossfade and bitmap alike
+        // with zero layout changes (Design.clipRounded).
+        Design.clipRounded(view, radiusPx)
+        // Drop any stale background tint from earlier binds (e.g. the old
+        // hardcoded deep_card fill) so transparent art never shows it.
+        view.background = null
         if (url.isEmpty()) {
             view.dispose()
-            view.setImageDrawable(null)
-            view.setBackgroundColor(0xFF1A2136.toInt())
+            // Theme-aware empty-art fill (was hardcoded deep_card 0xFF1A2136,
+            // wrong in Onyx): surfaceVariant of the active theme.
+            view.setImageDrawable(
+                android.graphics.drawable.ColorDrawable(
+                    Design.resolveAttr(
+                        ctx,
+                        com.google.android.material.R.attr.colorSurfaceVariant,
+                    ),
+                ),
+            )
             return
         }
-        view.load(url, loader(view.context)) {
+        view.load(url, loader(ctx)) {
             placeholder(ColorDrawable(seedColor(url)))
             error(ColorDrawable(seedColor(url)))
             crossfade(true)

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bottom-nav icon states (Echo floating nav: selected primary,
+     unselected onSurfaceVariant). Applied in Phase 5. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true" android:color="?attr/colorPrimary" />
+    <item android:color="?attr/colorOnSurfaceVariant" />
+</selector>

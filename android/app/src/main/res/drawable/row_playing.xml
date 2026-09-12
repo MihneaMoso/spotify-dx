@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Now-playing row (Echo Items.kt: secondaryContainer role -> our
+     colorSecondary cyan at low alpha; identical in both themes). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#3322D3EE" />
+    <corners android:radius="@dimen/echo_radius_row" />
+</shape>

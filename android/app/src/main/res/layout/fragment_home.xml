@@ -9,8 +9,7 @@
         android:id="@+id/home_greeting"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="24sp"
-        android:textColor="?attr/colorOnSurface" />
+        style="@style/EchoHeadline" />
 
     <TextView
         android:id="@+id/home_banner"
@@ -27,7 +26,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
-        android:textColor="?attr/colorOnSurfaceVariant"
+        style="@style/EchoBodySubtitle"
         android:visibility="gone" />
 
     <Button
@@ -48,9 +47,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/pad_half"
             android:text="@string/home_playlists"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="19sp"
-            android:textStyle="bold" />
+            style="@style/EchoTitleLarge" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/home_list"

@@ -11,6 +11,7 @@
         android:layout_height="wrap_content"
         android:text="@string/gate_title"
         android:textSize="28sp"
+        android:textStyle="bold"
         android:textColor="?attr/colorPrimary" />
 
     <TextView
@@ -19,13 +20,14 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
         android:text="@string/gate_sign_in"
-        android:textColor="?attr/colorOnSurfaceVariant" />
+        style="@style/EchoBodySubtitle" />
 
     <ProgressBar
         android:id="@+id/gate_progress"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
+        android:indeterminateTint="?attr/colorPrimary"
         android:visibility="gone" />
 
     <Button

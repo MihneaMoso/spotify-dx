@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search field background (Echo TopSearch: surfaceContainerLow, 48dp
+     field; our role: surfaceVariant @ 50% via theme attr, 24dp radius). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/echoSearchField" />
+    <corners android:radius="@dimen/echo_radius_card" />
+</shape>

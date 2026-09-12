@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Echo-port custom theme attributes (Phase 1). Translucent layer colors
+     that ?attr/ stock roles cannot express (XML drawables cannot apply
+     alpha to a theme reference). Both themes MUST define every attr. -->
+<resources>
+    <!-- surfaceVariant @ 30%: shelf cards, sort headers (Echo: surfaceVariant 0.3). -->
+    <attr name="echoCardShelf" format="color" />
+    <!-- surfaceVariant @ 50%: search fields, split buttons (Echo: surfaceVariant 0.5). -->
+    <attr name="echoSearchField" format="color" />
+</resources>

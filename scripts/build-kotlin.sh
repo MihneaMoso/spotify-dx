@@ -59,6 +59,12 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_CC="$workdir/$TARGET-clang"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$workdir/$TARGET-ar"
 export AR_aarch64_linux_android="$workdir/$TARGET-ar"
 export CC_aarch64_linux_android="$workdir/$TARGET-clang"
+# Resource caps: bound codegen units + link jobs so rebuilds don't hog the
+# machine (Gradle side is capped in android/gradle.properties). Incremental
+# compilation stays on (default for debug); the shared target/ dir is the
+# cache — never clean it for an incremental build.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
+export CARGO_INCREMENTAL=1
 
 # --- Native core (headless lib; the Kotlin app links it, not the binary) ---
 PROFILE_FLAG=""

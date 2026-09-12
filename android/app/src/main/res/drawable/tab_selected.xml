@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sheet tab selected pill (Echo SortHeader split-button selected side).
+     Applied programmatically in showTab (Phase 4); unselected = tab_idle. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#663B82F6" />
+    <corners android:radius="20dp" />
+</shape>

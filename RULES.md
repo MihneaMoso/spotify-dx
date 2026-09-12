@@ -1556,6 +1556,17 @@ dioxus-mobile Rust code is untouched and still builds.
   `/tmp/opencode/echo-music` (depth-1, for future design overhauls);
   Echo Music is GPL-3.0, credited in README (patterns only, no code —
   Compose vs Views). UNVERIFIED on device (phone in use during session).
+- **System media artwork (2026-09-12, verified via dumpsys):**
+  `PlaybackService` attaches the track bitmap to the notification
+  (`setLargeIcon`) + session (`METADATA_KEY_ALBUM_ART`). Two rules: (1)
+  key the art cache on `coverUrl`, NOT track id (ids can be empty per
+  source — the cache collapsed and art never loaded); (2) ONE bitmap key
+  at ~320px — the same bitmap under 3 keys triple-parcels toward the 1MB
+  binder limit. `dumpsys media_session` "size" counts bundle entries:
+  base 4 (title/artist/album/duration) + 1 per bitmap key (size=5 means
+  art attached, NOT missing). Art comes from the same core gate as the UI
+  (`MusicRepository.artwork` base64 → downsampled decode), one in-flight
+  fetch with stale-track guard, re-publishing both surfaces on landing.
 - **Queue reorder (Phase 4, 2026-09-11, compile-verified):**
   `QueueDrag` (`ItemTouchHelper` UP/DOWN, separate helper coexisting with
   swipe's fling gestures) on both queue lists (Queue screen + sheet);

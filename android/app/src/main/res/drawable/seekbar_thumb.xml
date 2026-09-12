@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Echo-port SeekBar thumb: solid dot in the primary accent. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorPrimary" />
+    <size
+        android:width="14dp"
+        android:height="14dp" />
+</shape>

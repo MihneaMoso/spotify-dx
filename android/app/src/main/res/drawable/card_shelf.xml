@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shelf/grouped card (Echo: grouped-list cards surfaceContainer, house
+     24dp radius; our role: surfaceVariant @ 30% via theme attr). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/echoCardShelf" />
+    <corners android:radius="@dimen/echo_radius_card" />
+</shape>

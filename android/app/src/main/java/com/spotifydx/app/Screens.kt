@@ -183,7 +183,12 @@ class SearchFragment : Fragment() {
             history.removeAllViews()
             recentCache.forEach { q ->
                 history.addView(
-                    com.google.android.material.chip.Chip(context).apply {
+                    com.google.android.material.chip.Chip(
+                        android.view.ContextThemeWrapper(
+                            context,
+                            R.style.EchoFilterChip,
+                        ),
+                    ).apply {
                         text = q
                         setOnClickListener {
                             box.setText(q)
@@ -265,13 +270,30 @@ class LibraryFragment : Fragment() {
             }
         })
         list.adapter = rows
+        // Echo split-button look (tab_bg/tab_text selectors react to
+        // selected; PLAYLISTS starts selected in XML to match the default).
+        val libTabIds = listOf(R.id.tab_playlists, R.id.tab_albums, R.id.tab_liked)
+        fun markLibTab(id: Int) {
+            libTabIds.forEach { v.findViewById<Button>(it)?.isSelected = it == id }
+        }
+        // One-shot sync with the live tab (visual only — no new collector).
+        markLibTab(
+            when (vm.tab.value) {
+                LibraryViewModel.Tab.ALBUMS -> R.id.tab_albums
+                LibraryViewModel.Tab.LIKED -> R.id.tab_liked
+                else -> R.id.tab_playlists
+            },
+        )
         v.findViewById<Button>(R.id.tab_playlists)?.setOnClickListener {
+            markLibTab(R.id.tab_playlists)
             vm.selectTab(LibraryViewModel.Tab.PLAYLISTS)
         }
         v.findViewById<Button>(R.id.tab_albums)?.setOnClickListener {
+            markLibTab(R.id.tab_albums)
             vm.selectTab(LibraryViewModel.Tab.ALBUMS)
         }
         v.findViewById<Button>(R.id.tab_liked)?.setOnClickListener {
+            markLibTab(R.id.tab_liked)
             vm.selectTab(LibraryViewModel.Tab.LIKED)
         }
         viewLifecycleOwner.lifecycleScope.launch {

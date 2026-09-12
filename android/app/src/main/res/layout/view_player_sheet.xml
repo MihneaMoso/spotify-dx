@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Full-screen player sheet (Phase 3): drag handle, minimize + source
-     header, artwork, title, transport, scrub/volume, format tier, and the
-     Queue | Lyrics tab row above a content switcher. -->
+<!-- Full-screen player sheet: Echo Music player-view port (sanctioned
+     layout revamp, revised to the Echo reference screenshot). Order mirrors
+     Echo: minimize + Playing-From header, large artwork, lyric one-liner,
+     title block, slider + times, bare (circle-free) transport, centered
+     codec line, spacer pinning the Queue | Lyrics text row to the bottom,
+     and the queue / lyrics sections expanding over everything. No volume
+     slider (hardware keys own volume); labels stay ours ("Queue"). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -10,8 +14,8 @@
     android:padding="@dimen/pad">
 
     <View
-        android:layout_width="36dp"
-        android:layout_height="4dp"
+        android:layout_width="@dimen/echo_handle_width"
+        android:layout_height="@dimen/echo_handle_height"
         android:layout_gravity="center_horizontal"
         android:layout_marginBottom="@dimen/pad_half"
         android:background="@drawable/drag_handle"
@@ -31,15 +35,35 @@
             android:contentDescription="Minimize player"
             android:src="@android:drawable/arrow_down_float" />
 
-        <TextView
-            android:id="@+id/sheet_source"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:gravity="center"
-            android:maxLines="1"
-            android:textColor="?attr/colorOnSurfaceVariant"
-            android:textSize="12sp" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:text="Playing From"
+                style="@style/EchoCaption" />
+
+            <TextView
+                android:id="@+id/sheet_source"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:ellipsize="marquee"
+                android:marqueeRepeatLimit="marquee_forever"
+                android:maxLines="1"
+                android:scrollHorizontally="true"
+                android:singleLine="true"
+                style="@style/EchoTitleMedium" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="48dp"
+            android:layout_height="48dp" />
     </LinearLayout>
 
     <LinearLayout
@@ -52,9 +76,23 @@
             android:id="@+id/sheet_art"
             android:layout_width="match_parent"
             android:layout_height="300dp"
+            android:layout_marginHorizontal="32dp"
             android:layout_marginTop="@dimen/pad_half"
             android:contentDescription="Artwork"
             android:scaleType="centerCrop" />
+
+        <TextView
+            android:id="@+id/sheet_line"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/pad_half"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="?attr/colorOnSurface"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/sheet_title"
@@ -63,17 +101,44 @@
             android:layout_marginTop="@dimen/pad_half"
             android:maxLines="1"
             android:text="Not playing"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+            style="@style/EchoTitleLarge" />
 
         <TextView
             android:id="@+id/sheet_subtitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:maxLines="1"
-            android:textColor="?attr/colorOnSurfaceVariant"
-            android:textSize="14sp" />
+            style="@style/EchoTitleMedium" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/pad_half"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/sheet_pos"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                style="@style/EchoCaption" />
+
+            <SeekBar
+                android:id="@+id/sheet_scrub"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:progressDrawable="@drawable/seekbar_progress"
+                android:thumb="@drawable/seekbar_thumb" />
+
+            <TextView
+                android:id="@+id/sheet_duration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                style="@style/EchoCaption" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -83,103 +148,127 @@
 
             <ImageButton
                 android:id="@+id/sheet_prev"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Previous"
-                android:src="@android:drawable/ic_media_previous" />
+                android:src="@android:drawable/ic_media_previous"
+                android:tint="@android:color/white" />
 
             <ImageButton
                 android:id="@+id/sheet_play"
-                android:layout_width="72dp"
-                android:layout_height="72dp"
+                android:layout_width="84dp"
+                android:layout_height="84dp"
+                android:layout_marginHorizontal="@dimen/pad"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Play or pause"
-                android:src="@android:drawable/ic_media_play" />
+                android:src="@android:drawable/ic_media_play"
+                android:tint="@android:color/white" />
 
             <ImageButton
                 android:id="@+id/sheet_next"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Next"
-                android:src="@android:drawable/ic_media_next" />
+                android:src="@android:drawable/ic_media_next"
+                android:tint="@android:color/white" />
         </LinearLayout>
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/sheet_tier"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/sheet_pos"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="0:00 / 0:00"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:textSize="11sp" />
-
-            <SeekBar
-                android:id="@+id/sheet_scrub"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/sheet_tier"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:textSize="12sp" />
-
-            <SeekBar
-                android:id="@+id/sheet_volume"
-                android:layout_width="140dp"
-                android:layout_height="wrap_content"
-                android:max="100" />
-        </LinearLayout>
+            android:gravity="center"
+            style="@style/EchoCaption" />
     </LinearLayout>
+
+    <Space
+        android:id="@+id/sheet_spacer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 
     <LinearLayout
         android:id="@+id/sheet_tabs"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="@dimen/pad_half"
         android:orientation="horizontal">
 
         <Button
             android:id="@+id/sheet_tab_queue"
-            style="?attr/materialButtonOutlinedStyle"
+            style="?attr/borderlessButtonStyle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Queue" />
+            android:text="Queue"
+            android:textColor="@color/tab_text" />
 
         <Button
             android:id="@+id/sheet_tab_lyrics"
-            style="?attr/materialButtonOutlinedStyle"
+            style="?attr/borderlessButtonStyle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="@dimen/pad_half"
             android:layout_weight="1"
-            android:text="Lyrics" />
+            android:text="Lyrics"
+            android:textColor="@color/tab_text" />
     </LinearLayout>
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/sheet_queue"
+    <LinearLayout
+        android:id="@+id/sheet_queue_box"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/sheet_queue_thumb"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:contentDescription="Now playing artwork" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:paddingStart="@dimen/pad_half">
+
+                <TextView
+                    android:id="@+id/sheet_queue_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:maxLines="1"
+                    style="@style/EchoBodyTitle" />
+
+                <TextView
+                    android:id="@+id/sheet_queue_sub"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:maxLines="1"
+                    style="@style/EchoBodySubtitle" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/sheet_queue_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                style="@style/EchoCaption" />
+        </LinearLayout>
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/sheet_queue"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+    </LinearLayout>
 
     <FrameLayout
         android:id="@+id/sheet_lyrics"

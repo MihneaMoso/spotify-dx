@@ -78,24 +78,25 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Not playing"
-                        android:textColor="?attr/colorOnSurface"
+                        style="@style/EchoMiniTitle"
                         android:maxLines="1" />
 
-                    <TextView
-                        android:id="@+id/player_subtitle"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text=""
-                        android:textColor="?attr/colorOnSurfaceVariant"
-                        android:textSize="12sp"
-                        android:maxLines="1" />
+                        <TextView
+                            android:id="@+id/player_subtitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            style="@style/EchoMiniArtist"
+                            android:maxLines="1" />
                 </LinearLayout>
 
                 <ImageButton
                     android:id="@+id/btn_prev"
                     android:layout_width="40dp"
                     android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/transport_circle"
+                    android:foreground="?attr/selectableItemBackgroundBorderless"
+                    android:tint="@android:color/white"
                     android:src="@android:drawable/ic_media_previous"
                     android:contentDescription="Previous" />
 
@@ -103,7 +104,9 @@
                     android:id="@+id/btn_play"
                     android:layout_width="48dp"
                     android:layout_height="48dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/transport_circle"
+                    android:foreground="?attr/selectableItemBackgroundBorderless"
+                    android:tint="@android:color/white"
                     android:src="@android:drawable/ic_media_play"
                     android:contentDescription="Play or pause" />
 
@@ -111,7 +114,9 @@
                     android:id="@+id/btn_next"
                     android:layout_width="40dp"
                     android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/transport_circle"
+                    android:foreground="?attr/selectableItemBackgroundBorderless"
+                    android:tint="@android:color/white"
                     android:src="@android:drawable/ic_media_next"
                     android:contentDescription="Next" />
 
@@ -119,7 +124,9 @@
                     android:id="@+id/btn_like"
                     android:layout_width="40dp"
                     android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/transport_circle"
+                    android:foreground="?attr/selectableItemBackgroundBorderless"
+                    android:tint="@android:color/white"
                     android:src="@android:drawable/btn_star_big_off"
                     android:contentDescription="Like" />
 
@@ -127,7 +134,9 @@
                     android:id="@+id/btn_queue"
                     android:layout_width="40dp"
                     android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/transport_circle"
+                    android:foreground="?attr/selectableItemBackgroundBorderless"
+                    android:tint="@android:color/white"
                     android:src="@android:drawable/ic_menu_recent_history"
                     android:contentDescription="Queue" />
             </LinearLayout>
@@ -143,21 +152,24 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="0:00 / 0:00"
-                    android:textSize="11sp"
-                    android:textColor="?attr/colorOnSurfaceVariant" />
+                    style="@style/EchoCaption" />
 
                 <SeekBar
                     android:id="@+id/scrub"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1" />
+                    android:layout_weight="1"
+                    android:progressDrawable="@drawable/seekbar_progress"
+                    android:thumb="@drawable/seekbar_thumb" />
 
                 <SeekBar
                     android:id="@+id/volume"
                     android:layout_width="90dp"
                     android:layout_height="wrap_content"
                     android:max="100"
-                    android:progress="80" />
+                    android:progress="80"
+                    android:progressDrawable="@drawable/seekbar_progress"
+                    android:thumb="@drawable/seekbar_thumb" />
             </LinearLayout>
         </LinearLayout>
 
@@ -167,6 +179,8 @@
             android:layout_height="wrap_content"
             android:background="?attr/colorSurface"
             app:menu="@menu/bottom_nav"
+            app:itemIconTint="@color/nav_icon_tint"
+            app:itemTextColor="@color/nav_text_tint"
             xmlns:app="http://schemas.android.com/apk/res-auto" />
     </LinearLayout>
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dialog/sheet container (Echo: modal radius 30dp, tonal surface).
+     Window background is set in code (Phase 5); this is the drawable. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/colorSurface" />
+    <corners android:radius="@dimen/echo_radius_dialog" />
+</shape>

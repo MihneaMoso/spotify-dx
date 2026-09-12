@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sheet tab background states (Echo split-button: selected primary-tint
+     pill, idle surfaceVariant pill). Wired via isSelected in showTab. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_selected="true" android:drawable="@drawable/tab_selected" />
+    <item android:drawable="@drawable/tab_idle" />
+</selector>

@@ -9,10 +9,14 @@
         android:id="@+id/library_filter"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="@drawable/search_field_bg"
         android:hint="@string/library_filter_hint"
         android:imeOptions="actionDone"
         android:inputType="text"
-        android:singleLine="true" />
+        android:padding="12dp"
+        android:singleLine="true"
+        android:textColor="?attr/colorOnSurface"
+        android:textColorHint="?attr/colorOnSurfaceVariant" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -26,7 +30,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/tab_playlists" />
+            android:background="@drawable/tab_bg"
+            android:text="@string/tab_playlists"
+            android:textColor="@color/tab_text" />
 
         <Button
             android:id="@+id/tab_albums"
@@ -34,7 +40,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/tab_albums" />
+            android:background="@drawable/tab_bg"
+            android:text="@string/tab_albums"
+            android:textColor="@color/tab_text" />
 
         <Button
             android:id="@+id/tab_liked"
@@ -42,7 +50,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/tab_liked" />
+            android:background="@drawable/tab_bg"
+            android:text="@string/tab_liked"
+            android:textColor="@color/tab_text" />
     </LinearLayout>
 
     <TextView
@@ -50,7 +60,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
-        android:textColor="?attr/colorOnSurfaceVariant"
+        style="@style/EchoBodySubtitle"
         android:visibility="gone" />
 
     <Button

@@ -9,10 +9,14 @@
         android:id="@+id/search_box"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="@drawable/search_field_bg"
         android:hint="@string/search_hint"
         android:imeOptions="actionSearch"
         android:inputType="text"
-        android:singleLine="true" />
+        android:padding="12dp"
+        android:singleLine="true"
+        android:textColor="?attr/colorOnSurface"
+        android:textColorHint="?attr/colorOnSurfaceVariant" />
 
     <LinearLayout
         android:id="@+id/history_row"
@@ -28,8 +32,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/search_recent"
-            android:textColor="?attr/colorOnSurfaceVariant"
-            android:textSize="13sp" />
+            style="@style/EchoBodySubtitle" />
 
         <Button
             android:id="@+id/history_clear"
@@ -50,7 +53,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/pad"
-        android:textColor="?attr/colorOnSurfaceVariant"
+        style="@style/EchoBodySubtitle"
         android:visibility="gone" />
 
     <Button

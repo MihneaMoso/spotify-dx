@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sheet tab idle pill (Echo split-button rest: surfaceVariant @ 50%). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/echoSearchField" />
+    <corners android:radius="20dp" />
+</shape>

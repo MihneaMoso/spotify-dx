@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Filter-chip text states: selected reads on the primary tint. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true" android:color="@android:color/white" />
+    <item android:color="?attr/colorOnSurfaceVariant" />
+</selector>
