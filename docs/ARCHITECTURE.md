@@ -793,3 +793,149 @@ the thread that owns the window.
 - **Wishlist (designed, not scheduled):** route-hover prefetching, like/unlike
   endpoints, audio-ad substitution scaffolding (kept off), deep playback
   measurements to revisit engine defaults.
+
+---
+
+## 19. Session implementation log (2026-09-11/12 — Echo design port, queue rewrite, disk cache)
+
+Reference clone for all Echo work: `/tmp/opencode/echo-music` (depth-1,
+patterns only — Echo is GPL-3.0, credited in README; no Echo code ships).
+Rule of the session: no layout/functionality/theme changes except where
+explicitly sanctioned below; everything new resolves through the existing
+`?attr/` roles (`deep-blue`/`onyx` switching untouched).
+
+### 19.1 Full player sheet (the one sanctioned layout)
+
+`PlayerSheetController` persistent overlay in `activity_main.xml`
+(`player_sheet` + `view_player_sheet` include) — deliberately NOT a
+DialogFragment (dialog windows brought theme/token issues and rendered
+empty). Echo `BottomSheetPlayer` port, revised against an Echo reference
+screenshot: minimize + centered Playing-From header (album, provider
+fallback), 300dp artwork (32dp side margins, 12dp clip), synced lyric
+one-liner (18sp bold, synced-only), 22sp-bold title / 16sp artist, slider
+with split elapsed/duration labels, 68/84/68 bare transport (white icons,
+press-to-0.88 spring + tap punch — the View approximation of Echo's button
+physics), centered codec/tier line, spacer-pinned Queue | Lyrics text row,
+queue/lyrics sections expanding over the player with fade+rise.
+Echo back order: expanded section collapses first (Back, chevron,
+swipe-down all funnel through `backToMain()`), then the sheet minimizes.
+Sheet open is flash-free (invisible-first layout, 350ms decelerate) with
+a close-wins race guard. Queue section header: 48dp thumb + title/artist
++ "N songs". No volume slider (hardware keys own volume), no like/menu —
+no backend functionality exists to wire them to.
+
+### 19.2 Echo design port, Phases 1–6 (design only)
+
+- **P1 tokens** (new files only + additive theme items): `attrs.xml`
+  (`echoCardShelf`/`echoSearchField` — XML drawables can't alpha `?attr/`),
+  `styles.xml` (8 `Echo*` text appearances + `EchoFilterChip`), `design.xml`
+  (house radii 24/28/12/30dp, art 6/12dp, handle 40×4), 9 drawables
+  (`row_selected/playing`, `transport_circle`, `card_shelf`,
+  `search_field_bg`, `seekbar_progress/thumb`, `tab_selected/idle`,
+  `dialog_bg`), 5 color selectors (chip/nav/tab states), `Design.kt`
+  (`withAlpha`/`resolveAttr`/`layer`, `clipRounded`/`clipCircle`).
+- **P2 artwork**: outline-clip rounding in code (6dp rows/cards, 12dp
+  sheet, circle helper ready) — zero layout edits; empty-art fill fixed
+  from hardcoded `0xFF1A2136` to theme `colorSurfaceVariant`.
+- **P3 rows/cards**: `EchoBodyTitle` (14sp bold) / `EchoBodySubtitle`
+  (12sp muted) across `item_track`/`item_title`/`item_card`; shelf cards
+  get the 24dp `card_shelf` panel. (Selected/playing row states exist as
+  drawables; adapters don't track selection — states unwired.)
+- **P4 bar+sheet**: 14sp-Medium/12sp mini type, circle transport
+  backgrounds with foreground ripples, white-slider drawables, 22sp sheet
+  title, 40×4 handle, split-button tabs via `isSelected`, lyric colors
+  moved to theme attrs.
+- **P5 chrome**: nav selected (primary) vs unselected (muted) tints both
+  shells; search/library pill fields; `EchoFilterChip` history chips;
+  library tabs reuse the split-button selectors with ViewModel-synced
+  selection; all headers to headline/title appearances; gate title bold +
+  primary-tinted progress.
+- **P6 audit**: no hardcoded colors remain except the intentional toast
+  scrim; sliders recolored to `colorPrimary` per the Echo reference.
+
+### 19.3 Mini player (sanctioned redesign)
+
+Floating pill (`mini_player_bg`, 28dp radius, 12dp side / 8dp bottom
+margins, wrap height) in both shells. Echo order: titles far left
+(14sp Medium / 12sp muted, ellipsized), prev/play/next far right (bare
+icons, no circles); full-width 12dp scrub underneath with transparent
+gap-free track (`splitTrack="false"`, thumb flush 12dp primary dot) and
+an elapsed-left / duration-right caption row. Removed from the bar:
+volume slider, time combo label, star, queue button (queue lives in the
+bottom nav + sheet; all removed bindings were safe-calls). Swipe-up to
+open the sheet is attached to the whole bar and unaffected.
+
+### 19.4 Queue rewrite (Echo-modeled, from scratch)
+
+- **Unified timeline**: past + NOW + upcoming in ONE list (`RowKind`/
+  `QueueEntry` in `Models.kt`, `PlayerRepository.timeline()`), shown in
+  the Queue screen and the sheet's expanded queue — never a pop-queue
+  plus a detached history.
+- **`QueueTimelineAdapter`** owns its windows as one mutable list
+  (Echo's `mutableQueueWindows`): data and views move in the same
+  main-thread call, single commit on drop — no differ, no parallel
+  structures, nothing to desync or snap back. Mid-drag repo emits stash
+  with kinds intact and always drain on drop (even zero-move drops).
+  Rows reuse `item_track.xml`; NOW is highlighted (`row_playing`),
+  tap-current toggles, tap past/upcoming seeks (below).
+- **Drag**: instant start from an explicit six-dot handle
+  (`ic_drag_handle`, handle touch → `startDrag`, long-press drag OFF);
+  `QueueDrag` swaps windows synchronously, commits once via
+  `commitTimeline`, which re-splits past/upcoming around the current
+  track's id. Every row incl. NOW drags; the playing object is never
+  touched, so Echo's rapid song-switching on cross-current moves cannot
+  happen (reorder never calls play/seek).
+- **Tap-seek** (`seekTimelinePosition`, dupe-safe by position):
+  tapping upcoming folds skipped rows into past; tapping past unfolds
+  rows after it back into upcoming — Echo `seekToDefaultPosition`
+  semantics preserving the full timeline both ways.
+- **Swipe-remove + Undo** (Echo dismiss): either direction removes PAST/
+  NEXT rows (NOW exempt), Snackbar Undo splices back via
+  `insertTimelineEntry`; auto-scroll lands on NOW when opening.
+- **History**: Room v3 `history_items` (cap 50, debounced persist,
+  restored on boot); pushed on advance/play, jump-back truncates.
+- **Screens removed**: Liked (lives in Library's Liked tab) and Queue
+  (lives in the sheet) screens, fragments, layouts, nav items,
+  destinations — zero dangling references; `LikedViewModel` remains
+  (unused).
+
+### 19.5 Disk audio cache (Echo two-tier player cache, adapted)
+
+`MediaPlayer` has no ExoPlayer-style cache hook, so `AudioCache` is a
+local Range-proxy + LRU file store (no new dependencies): the player
+streams via `127.0.0.1:<port>/<key>` while bytes tee to
+`filesDir/audiocache`; replays of complete files play straight from disk
+(instant, fully offline, no resolve); partials resume from their byte
+offset (track-id keys + quality sidecars, since stream URLs expire).
+Confirmed hybrid: **1 GB LRU, cache-all, ≥3 plays pinned** (stats in the
+Room v4 `cache_entries` table + `MIGRATION_3_4`; `HIT`/`MISS`/`complete`/
+`evict` logcat lines). `PlaybackService.playUrl` routes open-engine
+playback through it (SDK path keeps its own transport); manifest carries
+a localhost-only cleartext exception. Settings shows live usage
+("N MB / 1024 MB, pinned") + Clear button.
+
+### 19.6 Playback correctness fixes
+
+- **System media art**: notification large icon + session `ALBUM_ART`
+  from the core art gate (~320px, single key — triple-key parcels past
+  the 1MB binder limit and fail silently); cache keyed on `coverUrl`
+  (track ids can be empty).
+- **Resume-from-position** (both engines): restored position seeks on
+  prepare with no from-the-top blip; fresh tracks/advances/seeks reset
+  to 0 (previously inherited stale positions); track-swap-mid-resolve
+  guard included.
+- **Login gate**: `begin()` now drops the spinner once the login page
+  takes over, so a cycling web flow can never wedge the gate on
+  "Opening login…" with retry hidden.
+
+### 19.7 Build + icons
+
+- Resource caps without touching the fragile release workflow:
+  `gradle.properties` (configuration + build cache, parallel, 6 workers),
+  `CARGO_BUILD_JOBS=6`/`CARGO_INCREMENTAL=1` in `build-kotlin.sh`.
+- Launcher icons from `logo-cropped.png` (verified zero-alpha):
+  center-squared, all densities + round + 432px adaptive foreground on a
+  navy field, brightness-derived monochrome glyph for themed-icon mode
+  (Echo's mostly-transparent glyph pattern — a full-bleed monochrome
+  renders as a solid tinted disc); desktop `assets/icon.ico` enabled in
+  `Dioxus.toml`. Release builds inherit everything from source.
