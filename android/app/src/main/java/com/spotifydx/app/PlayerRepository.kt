@@ -224,7 +224,7 @@ object PlayerRepository {
     fun advance(): Track? {
         val head = _state.value.queue.firstOrNull() ?: return null
         pushHistory(_state.value.track)
-        update { s -> s.copy(track = head, queue = s.queue.drop(1), isPlaying = true) }
+        update { s -> s.copy(track = head, queue = s.queue.drop(1), isPlaying = true, positionMs = 0) }
         PlaybackStore.saveQueueSoon(_state.value.queue)
         return head
     }
@@ -265,6 +265,9 @@ object PlayerRepository {
                 isPlaying = true,
                 source = source.ifEmpty { s.source },
                 audioTier = "",
+                // Fresh track = fresh position; same track (replay after a
+                // dead service) keeps the restored position for resume.
+                positionMs = if (s.track?.id != track.id) 0 else s.positionMs,
             )
         }
         dispatchPlay(track)
@@ -302,7 +305,7 @@ object PlayerRepository {
         val rest = q.subList(idx + 1, q.size).toList()
         val hist = (s.history + listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + skipped)
             .takeLast(HISTORY_CAP)
-        update { it.copy(track = track, queue = rest, history = hist) }
+        update { it.copy(track = track, queue = rest, history = hist, positionMs = 0) }
         PlaybackStore.saveHistorySoon(hist)
         PlaybackStore.saveQueueSoon(rest)
         startTrack(track, s.source)
@@ -317,7 +320,7 @@ object PlayerRepository {
         val upcoming = h.subList(idx + 1, h.size).toList() +
             listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + s.queue
         val hist = h.subList(0, idx).toList()
-        update { it.copy(track = track, queue = upcoming, history = hist) }
+        update { it.copy(track = track, queue = upcoming, history = hist, positionMs = 0) }
         PlaybackStore.saveHistorySoon(hist)
         PlaybackStore.saveQueueSoon(upcoming)
         startTrack(track, "History")
@@ -353,7 +356,13 @@ object PlayerRepository {
                     )
                 }
                 svc.setPlayerVolume(_state.value.volume)
-                svc.playUrl(url, track)
+                // Resume: the restored position belongs to THIS track only;
+                // anything else (tap-while-resolving swapped tracks) starts
+                // from the top.
+                val cur = _state.value
+                val startMs =
+                    if (cur.track?.id == track.id) cur.positionMs else 0
+                svc.playUrl(url, track, startMs)
             } else {
                 update { s -> s.copy(isPlaying = false) }
                 Log.w(TAG, "play dropped: urlEmpty=${url.isNullOrEmpty()} svc=${svc != null}")
@@ -387,6 +396,9 @@ object PlayerRepository {
             }
             update { s -> s.copy(sdkDeviceId = device) }
             val uri = track.uri.ifEmpty { "spotify:track:${track.id}" }
+            // Resume position belongs to THIS track only (same guard as open).
+            val cur = _state.value
+            val startMs = if (cur.track?.id == track.id) cur.positionMs else 0
             val res = withContext(Dispatchers.IO) { BridgeClient.sdkPlay(device, uri) }
             if (res.isFailure) {
                 val code =
@@ -400,6 +412,8 @@ object PlayerRepository {
                     update { s -> s.copy(isPlaying = false) }
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("SDK play failed"))
                 }
+            } else if (startMs > 0) {
+                withContext(Dispatchers.IO) { BridgeClient.sdkSeek(device, startMs) }
             }
         }
     }

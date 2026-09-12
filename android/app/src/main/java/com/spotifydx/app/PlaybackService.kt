@@ -69,6 +69,7 @@ class PlaybackService : Service(),
 
     private val binder = LocalBinder()
     private var player: MediaPlayer? = null
+    private var pendingStartMs: Long = 0
     private var session: MediaSession? = null
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -119,13 +120,14 @@ class PlaybackService : Service(),
     }
 
     /** Play a resolved stream URL (Phase 4 hands these over per track). */
-    fun playUrl(url: String, track: Track) {
+    fun playUrl(url: String, track: Track, startMs: Long = 0) {
         if (!requestFocus()) {
             Log.w(TAG, "audio focus denied; reconciling to paused")
             PlayerRepository.onServiceState(false)
             return
         }
         releasePlayer()
+        pendingStartMs = startMs
         val mp = MediaPlayer().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
@@ -206,11 +208,16 @@ class PlaybackService : Service(),
     override fun onPrepared(mp: MediaPlayer) {
         mp.start()
         PlayerRepository.onServiceState(true)
-        PlayerRepository.onPosition(0, mp.duration.toLong())
+        // Resume: jump straight to the restored position (no audible
+        // from-the-top blip); fresh tracks carry startMs = 0.
+        val start = pendingStartMs.coerceIn(0, mp.duration.toLong())
+        pendingStartMs = 0
+        if (start > 0) runCatching { mp.seekTo(start.toInt()) }
+        PlayerRepository.onPosition(start, mp.duration.toLong())
         startTicker()
         PlayerRepository.state.value.track?.let {
             updateNotification(it, playing = true)
-            updateSession(PlaybackState.STATE_PLAYING, 0, it)
+            updateSession(PlaybackState.STATE_PLAYING, start, it)
         }
     }
 
