@@ -46,4 +46,14 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         style="@style/EchoBodySubtitle" />
+
+    <ImageView
+        android:id="@+id/track_handle"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:contentDescription="Drag to reorder"
+        android:padding="12dp"
+        android:src="@drawable/ic_drag_handle"
+        android:tint="?attr/colorOnSurfaceVariant"
+        android:visibility="gone" />
 </LinearLayout>

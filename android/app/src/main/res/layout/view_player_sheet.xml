@@ -53,11 +53,8 @@
                 android:id="@+id/sheet_source"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:ellipsize="marquee"
-                android:marqueeRepeatLimit="marquee_forever"
+                android:ellipsize="end"
                 android:maxLines="1"
-                android:scrollHorizontally="true"
-                android:singleLine="true"
                 style="@style/EchoTitleMedium" />
         </LinearLayout>
 

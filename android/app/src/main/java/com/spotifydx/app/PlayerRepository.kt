@@ -28,6 +28,12 @@ object PlayerRepository {
         val track: Track? = null,
         val queue: List<Track> = emptyList(),
         val queueOriginal: List<String> = emptyList(),
+        /**
+         * Played history, oldest→newest (Echo-style past songs; the queue
+         * itself holds UPCOMING only). Jump-back truncates at the tapped
+         * item — never duplicates, never disturbs the current track.
+         */
+        val history: List<Track> = emptyList(),
         val isPlaying: Boolean = false,
         val positionMs: Long = 0,
         val durationMs: Long = 0,
@@ -84,7 +90,7 @@ object PlayerRepository {
         PlaybackStore.saveQueueSoon(_state.value.queue)
     }
 
-    /** Drag-reorder the queue (any music app semantics): move + persist. */
+    /** Drag-reorder the queue (single adjacent move + persist). */
     fun moveQueue(from: Int, to: Int) {
         val q = _state.value.queue
         if (from !in q.indices || to !in q.indices || from == to) return
@@ -92,6 +98,111 @@ object PlayerRepository {
         m.add(to, m.removeAt(from))
         update { s -> s.copy(queue = m) }
         PlaybackStore.saveQueueSoon(m)
+    }
+
+    /**
+     * Wholesale queue reorder (Echo commit-on-drop): the drag session owns
+     * a visual index permutation and lands the fully-reordered list once.
+     * Single emit + single persist — no mid-drag traffic, so the list can
+     * never fight the gesture or snap back.
+     */
+    fun setQueueOrder(tracks: List<Track>) {
+        update { s -> s.copy(queue = tracks.toList()) }
+        PlaybackStore.saveQueueSoon(_state.value.queue)
+    }
+
+    /** Played-history cap (oldest trimmed, persisted debounced). */
+    private const val HISTORY_CAP = 50
+
+    /** Records [track] as played (consecutive dupes skipped, oldest trimmed). */
+    private fun pushHistory(track: Track?) {
+        if (track == null || track.id.isEmpty()) return
+        val h = _state.value.history
+        if (h.lastOrNull()?.id == track.id) return
+        val next = (h + track).takeLast(HISTORY_CAP)
+        update { s -> s.copy(history = next) }
+        PlaybackStore.saveHistorySoon(next)
+    }
+
+    fun clearHistory() {
+        update { s -> s.copy(history = emptyList()) }
+        PlaybackStore.saveHistorySoon(emptyList())
+    }
+
+    /**
+     * Unified queue timeline (Echo single-list queue): past played + NOW
+     * current + upcoming, in display order. One list to show, one list to
+     * drag — never a pop-queue plus a detached history.
+     */
+    fun timeline(): List<QueueEntry> {
+        val s = _state.value
+        val rows = ArrayList<QueueEntry>(s.history.size + s.queue.size + 1)
+        s.history.forEach { rows.add(QueueEntry(it, RowKind.PAST)) }
+        s.track?.takeIf { it.playable }?.let { rows.add(QueueEntry(it, RowKind.NOW)) }
+        s.queue.forEach { rows.add(QueueEntry(it, RowKind.NEXT)) }
+        return rows
+    }
+
+    /**
+     * Lands a drag-session timeline (Echo commit-on-drop). Past/upcoming
+     * membership re-splits around the CURRENT track's id wherever it
+     * landed — every row (including NOW) drags freely, yet the playing
+     * track object itself is never touched: reorder only re-files tracks
+     * around a stationary current, so Echo's rapid song-switching on
+     * cross-current moves cannot happen (reorder never calls play/seek).
+     * Single emit + persists.
+     */
+    fun commitTimeline(entries: List<QueueEntry>) {
+        val tracks = entries.map { it.track }
+        val curId = _state.value.track?.id.orEmpty()
+        val idx = if (curId.isEmpty()) -1 else tracks.indexOfFirst { it.id == curId }
+        if (idx < 0) {
+            // Current absent from the landed order (shouldn't happen — NOW
+            // can't be swiped away): fall back to kind membership.
+            val history = entries.filter { it.kind == RowKind.PAST }.map { it.track }
+                .takeLast(HISTORY_CAP)
+            val queue = entries.filter { it.kind == RowKind.NEXT }.map { it.track }
+            update { s -> s.copy(history = history, queue = queue) }
+            PlaybackStore.saveHistorySoon(history)
+            PlaybackStore.saveQueueSoon(queue)
+            return
+        }
+        val history = tracks.subList(0, idx).takeLast(HISTORY_CAP)
+        val queue = tracks.subList(idx + 1, tracks.size).toList()
+        update { s -> s.copy(history = history, queue = queue) }
+        PlaybackStore.saveHistorySoon(history)
+        PlaybackStore.saveQueueSoon(queue)
+    }
+
+    /** Swipe-remove support (Echo dismiss): excises one timeline entry. */
+    fun deleteTimelineEntry(entry: QueueEntry) {
+        val s = _state.value
+        when (entry.kind) {
+            RowKind.PAST -> {
+                val h = s.history.toMutableList()
+                val i = h.indexOfFirst { it.id == entry.track.id }
+                if (i < 0) return
+                h.removeAt(i)
+                update { it.copy(history = h) }
+                PlaybackStore.saveHistorySoon(h)
+            }
+            RowKind.NEXT -> {
+                val q = s.queue.toMutableList()
+                val i = q.indexOfFirst { it.id == entry.track.id }
+                if (i < 0) return
+                q.removeAt(i)
+                update { it.copy(queue = q) }
+                PlaybackStore.saveQueueSoon(q)
+            }
+            RowKind.NOW -> return
+        }
+    }
+
+    /** Undo support: splices an entry back at its timeline slot. */
+    fun insertTimelineEntry(entry: QueueEntry, globalPos: Int) {
+        val tl = timeline().toMutableList()
+        tl.add(globalPos.coerceIn(0, tl.size), entry)
+        commitTimeline(tl)
     }
 
     fun setShuffle(on: Boolean) = update { s ->
@@ -112,6 +223,7 @@ object PlayerRepository {
     /** Queue-first next-track (prefers the queue head over device skip). */
     fun advance(): Track? {
         val head = _state.value.queue.firstOrNull() ?: return null
+        pushHistory(_state.value.track)
         update { s -> s.copy(track = head, queue = s.queue.drop(1), isPlaying = true) }
         PlaybackStore.saveQueueSoon(_state.value.queue)
         return head
@@ -140,6 +252,13 @@ object PlayerRepository {
     }
 
     fun play(track: Track, source: String = "") {
+        val prev = _state.value.track
+        if (prev != null && prev.id != track.id) pushHistory(prev)
+        startTrack(track, source)
+    }
+
+    /** Shared track-launch tail (state flip + engine dispatch). */
+    private fun startTrack(track: Track, source: String) {
         update { s ->
             s.copy(
                 track = track,
@@ -149,6 +268,59 @@ object PlayerRepository {
             )
         }
         dispatchPlay(track)
+    }
+
+    /**
+     * Echo `seekToDefaultPosition` semantics on our model: tapping any
+     * timeline row makes it current while PRESERVING the full timeline on
+     * both sides (windows behind become past, ahead stay upcoming) — never
+     * a pop, never a jump. Position is dupe-safe (counted, not id-matched).
+     */
+    fun seekTimelinePosition(pos: Int) {
+        val tl = timeline()
+        val e = tl.getOrNull(pos) ?: return
+        when (e.kind) {
+            RowKind.NOW -> toggle()
+            RowKind.NEXT -> {
+                val idx = tl.subList(0, pos).count { it.kind == RowKind.NEXT }
+                seekUpcoming(idx)
+            }
+            RowKind.PAST -> {
+                val idx = tl.subList(0, pos).count { it.kind == RowKind.PAST }
+                seekHistory(idx)
+            }
+        }
+    }
+
+    /** Tap an upcoming row: skipped rows (and the outgoing current) become past. */
+    private fun seekUpcoming(idx: Int) {
+        val s = _state.value
+        val q = s.queue
+        if (idx !in q.indices) return
+        val skipped = q.subList(0, idx).toList()
+        val track = q[idx]
+        val rest = q.subList(idx + 1, q.size).toList()
+        val hist = (s.history + listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + skipped)
+            .takeLast(HISTORY_CAP)
+        update { it.copy(track = track, queue = rest, history = hist) }
+        PlaybackStore.saveHistorySoon(hist)
+        PlaybackStore.saveQueueSoon(rest)
+        startTrack(track, s.source)
+    }
+
+    /** Tap a past row: rows after it (and the outgoing current) return to upcoming. */
+    private fun seekHistory(idx: Int) {
+        val s = _state.value
+        val h = s.history
+        if (idx !in h.indices) return
+        val track = h[idx]
+        val upcoming = h.subList(idx + 1, h.size).toList() +
+            listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + s.queue
+        val hist = h.subList(0, idx).toList()
+        update { it.copy(track = track, queue = upcoming, history = hist) }
+        PlaybackStore.saveHistorySoon(hist)
+        PlaybackStore.saveQueueSoon(upcoming)
+        startTrack(track, "History")
     }
 
     private fun dispatchPlay(track: Track) {
@@ -319,6 +491,7 @@ object PlayerRepository {
     fun restore() {
         scope.launch {
             val queue = PlaybackStore.loadQueue()
+            val history = PlaybackStore.loadHistory()
             val last = PlaybackStore.loadLast()
             val track = last?.trackJson?.let { raw ->
                 runCatching {
@@ -329,13 +502,14 @@ object PlayerRepository {
                 s.copy(
                     track = track ?: s.track,
                     queue = queue,
+                    history = history,
                     isPlaying = false,
                     positionMs = last?.positionMs ?: s.positionMs,
                     durationMs = track?.durationMs ?: s.durationMs,
                     source = last?.source ?: s.source,
                 )
             }
-            Log.i(TAG, "restored queue=${queue.size} last=${track?.name ?: "none"}")
+            Log.i(TAG, "restored queue=${queue.size} history=${history.size} last=${track?.name ?: "none"}")
         }
     }
 

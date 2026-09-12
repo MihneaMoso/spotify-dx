@@ -60,7 +60,13 @@ class LoginViewModel : ScopedViewModel() {
                     _starting.value = false
                     ToastBus.error("Sign-in unavailable — please retry.")
                 } else {
+                    // The overlay page now owns the UX: drop the gate
+                    // spinner so a stalled/cycled web flow can never wedge
+                    // the gate on "Opening login…" with retry hidden (the
+                    // overlay sits fullscreen above; the gate behind shows
+                    // retry, not a dead spinner).
                     _loginUrl.value = url
+                    _starting.value = false
                 }
             } else {
                 _starting.value = false

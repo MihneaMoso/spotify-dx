@@ -19,6 +19,8 @@ import androidx.room.Transaction
  *
  * - `search_history`: recent queries (LRU-capped) for instant repeat search.
  * - `queue_items`: ordered track snapshots — the queue survives restarts.
+ * - `history_items`: played-track snapshots, oldest→newest — Echo-style past
+ *   songs so users can jump back (capped, survives restarts).
  * - `playback_state`: single row — last-played track + position + wall-clock
  *   timestamp, restored paused (never autoplay).
  */
@@ -31,6 +33,13 @@ data class SearchEntry(
 
 @Entity(tableName = "queue_items")
 data class QueueItem(
+    @PrimaryKey val pos: Int,
+    @ColumnInfo(name = "track_id") val trackId: String,
+    @ColumnInfo(name = "track_json") val trackJson: String,
+)
+
+@Entity(tableName = "history_items")
+data class HistoryItem(
     @PrimaryKey val pos: Int,
     @ColumnInfo(name = "track_id") val trackId: String,
     @ColumnInfo(name = "track_json") val trackJson: String,
@@ -86,6 +95,24 @@ interface QueueDao {
 }
 
 @Dao
+interface HistoryDao {
+    @Query("SELECT * FROM history_items ORDER BY pos")
+    suspend fun all(): List<HistoryItem>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putAll(items: List<HistoryItem>)
+
+    @Query("DELETE FROM history_items")
+    suspend fun clear()
+
+    @Transaction
+    suspend fun replace(items: List<HistoryItem>) {
+        clear()
+        putAll(items)
+    }
+}
+
+@Dao
 interface PlaybackDao {
     @Query("SELECT * FROM playback_state WHERE id = 0")
     suspend fun get(): PlaybackStateRow?
@@ -98,13 +125,14 @@ interface PlaybackDao {
 }
 
 @Database(
-    entities = [SearchEntry::class, QueueItem::class, PlaybackStateRow::class],
-    version = 2,
+    entities = [SearchEntry::class, QueueItem::class, HistoryItem::class, PlaybackStateRow::class],
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun search(): SearchDao
     abstract fun queue(): QueueDao
+    abstract fun history(): HistoryDao
     abstract fun playback(): PlaybackDao
 
     companion object {
@@ -117,6 +145,18 @@ abstract class AppDb : RoomDatabase() {
             }
         }
 
+        /** v2 → v3: played-history table (Echo-style past songs). */
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS history_items (" +
+                        "pos INTEGER NOT NULL PRIMARY KEY, " +
+                        "track_id TEXT NOT NULL, " +
+                        "track_json TEXT NOT NULL)",
+                )
+            }
+        }
+
         @Volatile
         private var inst: AppDb? = null
 
@@ -126,7 +166,7 @@ abstract class AppDb : RoomDatabase() {
                     ctx.applicationContext,
                     AppDb::class.java,
                     "spotifydx.db",
-                ).addMigrations(MIGRATION_1_2).build().also { inst = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { inst = it }
             }
     }
 }

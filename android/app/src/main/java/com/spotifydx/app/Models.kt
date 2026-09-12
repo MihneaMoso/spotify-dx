@@ -47,6 +47,19 @@ data class Artist(
     val imageUrl: String = "",
 )
 
+/**
+ * One row of the unified queue timeline (Echo's single past+current+
+ * upcoming list): the queue is presented — and reordered — as one list,
+ * not as a pop-queue plus a detached history. NOW is the pinned anchor:
+ * it never moves, so cross-current drags cannot disturb playback.
+ */
+enum class RowKind { PAST, NOW, NEXT }
+
+data class QueueEntry(
+    val track: Track,
+    val kind: RowKind,
+)
+
 data class Playlist(
     val id: String = "",
     val name: String = "",

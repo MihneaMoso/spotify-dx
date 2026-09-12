@@ -1574,6 +1574,32 @@ dioxus-mobile Rust code is untouched and still builds.
   no-op guarded) into state AND the existing debounced persist — order
   survives restarts. Manual `notifyItemMoved` gives live feedback while
   the StateFlow `submitList` reconciles after.
+  (SUPERSEDED 2026-09-12 by the unified timeline below — kept for history.)
+- **Unified queue timeline + session drag (Echo-modeled, 2026-09-12,
+  verified on-device with adb draganddrop + dumps + restart):**
+  one list (PAST played + NOW current + NEXT upcoming, `RowKind`/
+  `QueueEntry` in Models.kt, `PlayerRepository.timeline()`), shown in the
+  Queue screen AND the sheet's expanded queue. Drag rules, all learned the
+  hard way: (1) move DATA synchronously with the views during the drag
+  (`TrackAdapter` session-local entries + `moveVisual`, Echo's
+  `mutableQueueWindows` — mirroring bare `notifyItemMoved` against static
+  data goes stale mid-drag and lands scrambled/inverse orders); (2) commit
+  ONCE on drop (`commitTimeline` splits by kind, single emit+persist);
+  (3) mid-drag state emits (250ms ticker!) stash WITH kinds
+  (`pendingEntries`) and ALWAYS drain on drop — even zero-move drops —
+  or the stash poisons the next drag's session base (the snap-back +
+  history-drains-into-queue bug); (4) NOW is a pinned anchor (no handle,
+  cannot displace, tap toggles) so cross-current moves can't disturb
+  playback — Echo's rapid song-switching on such moves is structurally
+  impossible (`track` lives outside the reorderable list). Drags start
+  instantly from an explicit handle (`ic_drag_handle`, handle touch →
+  `startDrag`, long-press drag OFF). Handles show only on armed lists.
+  History (Room v3 `history_items` + `MIGRATION_2_3`, cap 50, debounced
+  persist): pushed on advance/play, jump-back truncates, survives
+  restarts. Test harness notes: `adb shell input draganddrop` drives real
+  ItemTouchHelper drags; uiautomator dumps FAIL during playback (ticker
+  invalidates idle — pause first) and with infinite marquee (never use
+  marquee on always-resident views).
 - **Lyrics view (Phase 5, 2026-09-11, compile-verified):** `Lrc.kt` (pure
   `[mm:ss.xx]` parse + binary-search `indexAt`), in-sheet container with
   three mutually exclusive views (synced list / plain scroll / state

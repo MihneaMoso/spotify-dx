@@ -58,6 +58,7 @@ object SearchHistory {
 object PlaybackStore {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var queueJob: Job? = null
+    private var historyJob: Job? = null
 
     fun saveQueueSoon(tracks: List<Track>) {
         queueJob?.cancel()
@@ -74,9 +75,34 @@ object PlaybackStore {
         }
     }
 
+    /** Debounced played-history persist (mirrors the queue path). */
+    fun saveHistorySoon(tracks: List<Track>) {
+        historyJob?.cancel()
+        historyJob = scope.launch {
+            delay(400)
+            withContext(Dispatchers.IO) {
+                val dao = AppDb.get(AppState.ctx()).history()
+                dao.replace(
+                    tracks.mapIndexed { i, t ->
+                        HistoryItem(i, t.id, Models.trackToJson(t).toString())
+                    },
+                )
+            }
+        }
+    }
+
     suspend fun loadQueue(): List<Track> =
         withContext(Dispatchers.IO) {
             AppDb.get(AppState.ctx()).queue().all().mapNotNull { item ->
+                runCatching {
+                    Models.track(org.json.JSONObject(item.trackJson)).takeIf { it.playable }
+                }.getOrNull()
+            }
+        }
+
+    suspend fun loadHistory(): List<Track> =
+        withContext(Dispatchers.IO) {
+            AppDb.get(AppState.ctx()).history().all().mapNotNull { item ->
                 runCatching {
                     Models.track(org.json.JSONObject(item.trackJson)).takeIf { it.playable }
                 }.getOrNull()
@@ -103,9 +129,11 @@ object PlaybackStore {
 
     suspend fun clearAll() {
         queueJob?.cancel()
+        historyJob?.cancel()
         withContext(Dispatchers.IO) {
             val db = AppDb.get(AppState.ctx())
             db.queue().clear()
+            db.history().clear()
             db.playback().clear()
         }
     }

@@ -4,21 +4,34 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 
 /**
- * Drag-to-reorder for queue lists (any-music-app semantics): long-press a
- * row to lift it (dimmed while held), drop to commit. Commits through
- * [PlayerRepository.moveQueue], which reorders state AND persists (the
- * existing debounced replace) — order survives restarts.
+ * Drag-to-reorder for the unified queue timeline, Echo Music's queue
+ * (`ui/player/Queue.kt`) ported to Views:
  *
- * Coexists with [SwipeToQueue] on the same list (separate helpers: drag
- * uses long-press, swipe uses fling). The manual `notifyItemMoved` gives
- * live drag feedback; the StateFlow `submitList` reconciles after.
+ * - Drags start INSTANTLY from the row's drag handle (Echo's
+ *   `draggableHandle()` — no long-press wait). Long-press drag is off.
+ * - The ADAPTER owns its windows as one mutable list (Echo's
+ *   `mutableQueueWindows`): [QueueTimelineAdapter.swapWindows] swaps data
+ *   and notifies in the same main-thread call, so positions are exact at
+ *   every instant — no differ, no parallel kind arrays, no deferred
+ *   submits, nothing to desync or snap back.
+ * - On drop ([clearView]) the landed timeline commits once via
+ *   [PlayerRepository.commitTimeline] — Echo's commit-on-drop
+ *   (`moveMediaItem` once, never mid-drag). The commit re-splits past /
+ *   upcoming around the current track's id, so even moves across the NOW
+ *   row leave the playing track object untouched: Echo's rapid
+ *   song-switching on such moves cannot happen here (reorder never calls
+ *   play/seek — it only re-files tracks around a stationary current).
+ *
+ * Coexists with swipe-remove ([swipeToRemove], separate helper).
  */
 class QueueDrag(
-    private val adapter: TrackAdapter,
+    private val adapter: QueueTimelineAdapter,
 ) : ItemTouchHelper.SimpleCallback(
     ItemTouchHelper.UP or ItemTouchHelper.DOWN,
     0,
 ) {
+    override fun isLongPressDragEnabled(): Boolean = false
+
     override fun onMove(
         rv: RecyclerView,
         holder: RecyclerView.ViewHolder,
@@ -29,9 +42,8 @@ class QueueDrag(
         if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) {
             return false
         }
-        PlayerRepository.moveQueue(from, to)
-        adapter.notifyItemMoved(from, to)
-        return true
+        adapter.beginDrag()
+        return adapter.swapWindows(from, to)
     }
 
     override fun onSwiped(holder: RecyclerView.ViewHolder, direction: Int) {}
@@ -42,6 +54,7 @@ class QueueDrag(
     ) {
         super.onSelectedChanged(holder, actionState)
         if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+            adapter.beginDrag()
             holder?.itemView?.alpha = 0.7f
         }
     }
@@ -49,10 +62,16 @@ class QueueDrag(
     override fun clearView(rv: RecyclerView, holder: RecyclerView.ViewHolder) {
         super.clearView(rv, holder)
         holder.itemView.alpha = 1f
+        adapter.endDrag()?.let { PlayerRepository.commitTimeline(it) }
     }
 }
 
-/** Attach drag-reorder to a queue list. */
-fun RecyclerView.queueDrag(adapter: TrackAdapter) {
-    ItemTouchHelper(QueueDrag(adapter)).attachToRecyclerView(this)
+/**
+ * Attach drag-reorder to a queue timeline list and arm its rows' drag
+ * handles: touching a handle starts the drag instantly on that holder.
+ */
+fun RecyclerView.queueDrag(adapter: QueueTimelineAdapter) {
+    val helper = ItemTouchHelper(QueueDrag(adapter))
+    adapter.onHandleTouch = { holder -> helper.startDrag(holder) }
+    helper.attachToRecyclerView(this)
 }

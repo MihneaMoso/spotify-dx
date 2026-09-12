@@ -1,5 +1,6 @@
 package com.spotifydx.app
 
+import android.annotation.SuppressLint
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +18,10 @@ import androidx.recyclerview.widget.RecyclerView
  *
  * Queueing is a swipe gesture ([swipeToQueue], Spotify parity), not a
  * long-press — attach it wherever a TrackAdapter is bound.
+ *
+ * Drag handles: [onHandleTouch], armed by [queueDrag] — rows show the
+ * handle only on reorderable (queue timeline) lists. The timeline itself
+ * lives in [QueueTimelineAdapter]; this adapter stays a plain track list.
  */
 class TrackAdapter(
     private val showIndex: Boolean = true,
@@ -36,13 +41,22 @@ class TrackAdapter(
         }
     }
 
+    /**
+     * Drag starter, armed by [queueDrag]: when non-null the row's drag
+     * handle shows and touching it begins an instant drag (Echo's
+     * `draggableHandle()`). Plain lists leave this null and show no handle.
+     */
+    var onHandleTouch: ((RecyclerView.ViewHolder) -> Unit)? = null
+
     inner class Holder(v: View) : RecyclerView.ViewHolder(v) {
         private val index: TextView = v.findViewById(R.id.track_index)
         private val art: android.widget.ImageView = v.findViewById(R.id.track_art)
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val handle: android.widget.ImageView = v.findViewById(R.id.track_handle)
 
+        @SuppressLint("ClickableViewAccessibility")
         fun bind(t: Track, pos: Int) {
             if (showIndex) {
                 index.visibility = View.VISIBLE
@@ -56,6 +70,23 @@ class TrackAdapter(
             val sub = listOf(t.artistNames, t.albumName).filter { it.isNotEmpty() }
             subtitle.text = sub.joinToString(" · ")
             duration.text = formatDuration(t.durationMs)
+            // Echo drag handle: visible only on reorderable lists; touching
+            // it starts the drag instantly (consumed, so no tap-through play).
+            val starter = onHandleTouch
+            if (starter == null) {
+                handle.visibility = View.GONE
+                handle.setOnTouchListener(null)
+            } else {
+                handle.visibility = View.VISIBLE
+                handle.setOnTouchListener { _, e ->
+                    if (e.action == android.view.MotionEvent.ACTION_DOWN) {
+                        starter(this)
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
             itemView.setOnClickListener { onPlay(t) }
         }
     }

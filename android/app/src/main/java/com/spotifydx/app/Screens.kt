@@ -366,21 +366,51 @@ class QueueFragment : Fragment() {
         val now: TextView = v.findViewById(R.id.queue_now)
         val list: RecyclerView = v.findViewById(R.id.queue_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, "Queue") })
+        // Unified timeline (Echo single-list queue): past + NOW + upcoming
+        // in one draggable list; NOW is pinned (no handle) and tap-toggles.
+        // Swipe removes with Undo (Echo dismiss); the clears empty each side.
+        val adapter = QueueTimelineAdapter(
+            onTapNext = { PlayerRepository.seekTimelinePosition(it) },
+            onTapPast = { PlayerRepository.seekTimelinePosition(it) },
+            onTapNow = { PlayerRepository.toggle() },
+        )
         list.adapter = adapter
-        list.swipeToQueue(adapter)
         list.queueDrag(adapter)
+        list.swipeToRemove(adapter) { entry, pos ->
+            PlayerRepository.deleteTimelineEntry(entry)
+            com.google.android.material.snackbar.Snackbar.make(
+                v,
+                R.string.removed_from_queue,
+                com.google.android.material.snackbar.Snackbar.LENGTH_LONG,
+            ).setAction(R.string.action_undo) {
+                PlayerRepository.insertTimelineEntry(entry, pos)
+            }.show()
+        }
         v.findViewById<Button>(R.id.queue_clear)?.setOnClickListener {
             PlayerRepository.clearQueue()
         }
+        v.findViewById<Button>(R.id.history_clear)?.setOnClickListener {
+            PlayerRepository.clearHistory()
+        }
+        var scrolledToNow = false
         viewLifecycleOwner.lifecycleScope.launch {
             PlayerRepository.state.collect { s ->
                 now.text = s.track?.let { "Now playing: ${it.name} — ${it.artistNames}" }
                     ?: "Queue is empty"
-                adapter.submitList(s.queue)
+                adapter.setTimeline(PlayerRepository.timeline())
+                // Echo auto-scroll: land on the current row on open.
+                if (!scrolledToNow) {
+                    val nowPos = adapter.nowPosition()
+                    if (nowPos >= 0) {
+                        scrolledToNow = true
+                        list.scrollToPosition(nowPos)
+                    }
+                }
                 bindState(
                     v,
-                    ScreenState.Content(empty = s.queue.isEmpty() && s.track == null),
+                    ScreenState.Content(
+                        empty = s.queue.isEmpty() && s.track == null && s.history.isEmpty(),
+                    ),
                 )
             }
         }

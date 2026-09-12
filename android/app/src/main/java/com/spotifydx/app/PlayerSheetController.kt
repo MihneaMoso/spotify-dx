@@ -65,7 +65,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     private lateinit var qCount: TextView
     private lateinit var tabQueue: Button
     private lateinit var tabLyrics: Button
-    private lateinit var queueAdapter: TrackAdapter
+    private lateinit var queueAdapter: QueueTimelineAdapter
     private lateinit var lyricsAdapter: LyricsAdapter
 
     private var tab: Tab = Tab.MAIN
@@ -129,10 +129,23 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         scrub.setOnSeekBarChangeListener(seekListener { PlayerRepository.seekTo(it) })
 
         queueList.layoutManager = LinearLayoutManager(activity)
-        queueAdapter = TrackAdapter(onPlay = { PlayerRepository.play(it, "Queue") })
+        queueAdapter = QueueTimelineAdapter(
+            onTapNext = { PlayerRepository.seekTimelinePosition(it) },
+            onTapPast = { PlayerRepository.seekTimelinePosition(it) },
+            onTapNow = { PlayerRepository.toggle() },
+        )
         queueList.adapter = queueAdapter
-        queueList.swipeToQueue(queueAdapter)
         queueList.queueDrag(queueAdapter)
+        queueList.swipeToRemove(queueAdapter) { entry, pos ->
+            PlayerRepository.deleteTimelineEntry(entry)
+            com.google.android.material.snackbar.Snackbar.make(
+                container,
+                R.string.removed_from_queue,
+                com.google.android.material.snackbar.Snackbar.LENGTH_LONG,
+            ).setAction(R.string.action_undo) {
+                PlayerRepository.insertTimelineEntry(entry, pos)
+            }.show()
+        }
 
         lyricsList.layoutManager = LinearLayoutManager(activity)
         lyricsAdapter = LyricsAdapter()
@@ -214,7 +227,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 }
                 pos.text = TrackAdapter.formatDuration(st.positionMs)
                 duration.text = TrackAdapter.formatDuration(st.durationMs)
-                queueAdapter.submitList(st.queue)
+                queueAdapter.setTimeline(PlayerRepository.timeline())
                 // Echo queue header: current track + queue size.
                 qTitle.text = t?.name ?: "Not playing"
                 qSub.text = t?.artistNames ?: ""
@@ -288,6 +301,11 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         // Echo split-button look: tab_bg/tab_text selectors react to selected.
         tabQueue.isSelected = tab == Tab.QUEUE
         tabLyrics.isSelected = tab == Tab.LYRICS
+        // Echo auto-scroll: land on the current row when expanding Queue.
+        if (tab == Tab.QUEUE) {
+            val nowPos = queueAdapter.nowPosition()
+            if (nowPos >= 0) queueList.scrollToPosition(nowPos)
+        }
     }
 
     /**

@@ -20,6 +20,13 @@
             style="@style/EchoHeadline" />
 
         <Button
+            android:id="@+id/history_clear"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/history_clear_label" />
+
+        <Button
             android:id="@+id/queue_clear"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
