@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Localhost-only cleartext exception for the audio cache Range-proxy
+     (AudioCache serves 127.0.0.1 over plain HTTP to the platform
+     MediaPlayer). No other cleartext is permitted anywhere. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

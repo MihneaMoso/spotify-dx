@@ -346,23 +346,20 @@ object PlayerRepository {
             val url = json?.optString("url", "")
             val svc = PlaybackService.instance
             if (!url.isNullOrEmpty() && svc != null) {
+                val format = json?.optString("format", "") ?: ""
+                val provider = json?.optString("provider", "") ?: ""
+                val quality = json?.optString("quality", "") ?: ""
                 update { s ->
-                    s.copy(
-                        audioTier = audioTier(
-                            json?.optString("format", "") ?: "",
-                            json?.optString("provider", "") ?: "",
-                            json?.optString("quality", "") ?: "",
-                        ),
-                    )
+                    s.copy(audioTier = audioTier(format, provider, quality))
                 }
                 svc.setPlayerVolume(_state.value.volume)
                 // Resume: the restored position belongs to THIS track only;
                 // anything else (tap-while-resolving swapped tracks) starts
-                // from the top.
+                // from the top. The quality tag keys the disk cache.
                 val cur = _state.value
                 val startMs =
                     if (cur.track?.id == track.id) cur.positionMs else 0
-                svc.playUrl(url, track, startMs)
+                svc.playUrl(url, track, startMs, "$provider/$format/$quality")
             } else {
                 update { s -> s.copy(isPlaying = false) }
                 Log.w(TAG, "play dropped: urlEmpty=${url.isNullOrEmpty()} svc=${svc != null}")

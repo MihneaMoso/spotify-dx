@@ -231,6 +231,26 @@ class SettingsFragment : Fragment() {
     private fun bindCacheNote(v: View) {
         v.findViewById<TextView>(R.id.cache_note)?.text =
             "Artwork and stream caches live in the app's private storage and are pruned automatically."
+        val size: TextView? = v.findViewById(R.id.cache_size)
+        val clear: Button? = v.findViewById(R.id.cache_clear)
+        fun refreshSize() {
+            viewLifecycleOwner.lifecycleScope.launch {
+                val (bytes, pinned) = AudioCache.sizeInfo()
+                val mb = bytes / (1024 * 1024)
+                val capMb = AudioCache.MAX_BYTES / (1024 * 1024)
+                size?.text = "Music cache: $mb MB / $capMb MB" +
+                    if (pinned > 0) " ($pinned pinned)" else ""
+            }
+        }
+        refreshSize()
+        clear?.setOnClickListener {
+            clear.isEnabled = false
+            viewLifecycleOwner.lifecycleScope.launch {
+                AudioCache.clear()
+                refreshSize()
+                clear.isEnabled = true
+            }
+        }
     }
 
     companion object {

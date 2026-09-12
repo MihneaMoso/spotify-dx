@@ -120,7 +120,7 @@ class PlaybackService : Service(),
     }
 
     /** Play a resolved stream URL (Phase 4 hands these over per track). */
-    fun playUrl(url: String, track: Track, startMs: Long = 0) {
+    fun playUrl(url: String, track: Track, startMs: Long = 0, qualityKey: String = "") {
         if (!requestFocus()) {
             Log.w(TAG, "audio focus denied; reconciling to paused")
             PlayerRepository.onServiceState(false)
@@ -136,7 +136,17 @@ class PlaybackService : Service(),
                     .build(),
             )
             setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
-            setDataSource(url)
+            // Disk cache first (Echo player-cache parity): complete files
+            // play straight from storage (instant, offline); anything else
+            // streams through the local Range-proxy, which fills the file
+            // as it serves. The SDK path keeps its own transport.
+            when (val src = AudioCache.playbackSource(this@PlaybackService, track, qualityKey, url)) {
+                is AudioCache.Source.Disk -> {
+                    Log.i(TAG, "playing cached file for ${track.id}")
+                    setDataSource(src.path)
+                }
+                is AudioCache.Source.Proxy -> setDataSource(src.url)
+            }
             setOnPreparedListener(this@PlaybackService)
             setOnCompletionListener(this@PlaybackService)
             setOnErrorListener(this@PlaybackService)

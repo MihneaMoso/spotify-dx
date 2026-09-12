@@ -18,7 +18,8 @@
         android:label="Spotify DX"
         android:theme="@style/Theme.SpotifyDx"
         android:allowBackup="true"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"

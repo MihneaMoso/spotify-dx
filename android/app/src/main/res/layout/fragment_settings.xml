@@ -257,11 +257,34 @@
                 android:visibility="gone" />
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/pad"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/cache_size"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="?attr/colorOnSurface"
+                style="@style/EchoBodySubtitle" />
+
+            <Button
+                android:id="@+id/cache_clear"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/cache_clear_label" />
+        </LinearLayout>
+
         <TextView
             android:id="@+id/cache_note"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/pad"
+            android:layout_marginTop="@dimen/pad_half"
             android:textColor="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 </ScrollView>

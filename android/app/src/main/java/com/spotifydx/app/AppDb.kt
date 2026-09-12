@@ -21,6 +21,8 @@ import androidx.room.Transaction
  * - `queue_items`: ordered track snapshots — the queue survives restarts.
  * - `history_items`: played-track snapshots, oldest→newest — Echo-style past
  *   songs so users can jump back (capped, survives restarts).
+ * - `cache_entries`: audio-cache index (bytes, completeness, play stats) —
+ *   the files themselves live in filesDir/audiocache (AudioCache).
  * - `playback_state`: single row — last-played track + position + wall-clock
  *   timestamp, restored paused (never autoplay).
  */
@@ -43,6 +45,19 @@ data class HistoryItem(
     @PrimaryKey val pos: Int,
     @ColumnInfo(name = "track_id") val trackId: String,
     @ColumnInfo(name = "track_json") val trackJson: String,
+)
+
+@Entity(tableName = "cache_entries")
+data class CacheEntry(
+    @PrimaryKey @ColumnInfo(name = "track_id") val trackId: String,
+    /** Provider/format/quality tag — a quality change invalidates the file. */
+    @ColumnInfo(name = "quality_key") val qualityKey: String = "",
+    @ColumnInfo(name = "bytes") val bytes: Long = 0,
+    /** Total length when known from upstream (-1 unknown). */
+    @ColumnInfo(name = "total_bytes") val totalBytes: Long = -1,
+    @ColumnInfo(name = "complete") val complete: Boolean = false,
+    @ColumnInfo(name = "play_count") val playCount: Int = 0,
+    @ColumnInfo(name = "last_played_ms") val lastPlayedMs: Long = 0,
 )
 
 @Entity(tableName = "playback_state")
@@ -113,6 +128,27 @@ interface HistoryDao {
 }
 
 @Dao
+interface AudioCacheDao {
+    @Query("SELECT * FROM cache_entries WHERE track_id = :key")
+    suspend fun entry(key: String): CacheEntry?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(e: CacheEntry)
+
+    @Query("DELETE FROM cache_entries WHERE track_id = :key")
+    suspend fun delete(key: String)
+
+    @Query("SELECT * FROM cache_entries ORDER BY last_played_ms")
+    suspend fun allOrdered(): List<CacheEntry>
+
+    @Query("SELECT COALESCE(SUM(bytes), 0) FROM cache_entries")
+    suspend fun totalBytes(): Long
+
+    @Query("DELETE FROM cache_entries")
+    suspend fun clear()
+}
+
+@Dao
 interface PlaybackDao {
     @Query("SELECT * FROM playback_state WHERE id = 0")
     suspend fun get(): PlaybackStateRow?
@@ -125,14 +161,15 @@ interface PlaybackDao {
 }
 
 @Database(
-    entities = [SearchEntry::class, QueueItem::class, HistoryItem::class, PlaybackStateRow::class],
-    version = 3,
+    entities = [SearchEntry::class, QueueItem::class, HistoryItem::class, CacheEntry::class, PlaybackStateRow::class],
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun search(): SearchDao
     abstract fun queue(): QueueDao
     abstract fun history(): HistoryDao
+    abstract fun audioCache(): AudioCacheDao
     abstract fun playback(): PlaybackDao
 
     companion object {
@@ -157,6 +194,22 @@ abstract class AppDb : RoomDatabase() {
             }
         }
 
+        /** v3 → v4: audio-cache index (files live in filesDir/audiocache). */
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS cache_entries (" +
+                        "track_id TEXT NOT NULL PRIMARY KEY, " +
+                        "quality_key TEXT NOT NULL DEFAULT '', " +
+                        "bytes INTEGER NOT NULL DEFAULT 0, " +
+                        "total_bytes INTEGER NOT NULL DEFAULT -1, " +
+                        "complete INTEGER NOT NULL DEFAULT 0, " +
+                        "play_count INTEGER NOT NULL DEFAULT 0, " +
+                        "last_played_ms INTEGER NOT NULL DEFAULT 0)",
+                )
+            }
+        }
+
         @Volatile
         private var inst: AppDb? = null
 
@@ -166,7 +219,7 @@ abstract class AppDb : RoomDatabase() {
                     ctx.applicationContext,
                     AppDb::class.java,
                     "spotifydx.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { inst = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { inst = it }
             }
     }
 }

@@ -11,6 +11,7 @@
     <string name="removed_from_queue">Removed from queue</string>
     <string name="action_undo">Undo</string>
     <string name="action_retry">Retry</string>
+    <string name="cache_clear_label">Clear music cache</string>
     <string name="search_hint">Search tracks, albums, artists</string>
     <string name="search_recent">Recent searches</string>
     <string name="home_playlists">Your playlists</string>
