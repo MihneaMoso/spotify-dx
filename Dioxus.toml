@@ -30,7 +30,7 @@ base_path = "spotify-dx/app"
 product_name = "Spotify DX"
 
 # Main window icon
-# icon = "assets/icon.ico"
+icon = "assets/icon.ico"
 
 # The asset root directory for desktop
 # assets_dir = "public"

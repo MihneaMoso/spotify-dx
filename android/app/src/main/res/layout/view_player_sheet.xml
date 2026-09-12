@@ -126,8 +126,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:maxHeight="24dp"
-                android:minHeight="24dp"
+                android:maxHeight="8dp"
+                android:minHeight="8dp"
                 android:splitTrack="false"
                 android:progressDrawable="@drawable/seekbar_progress"
                 android:thumb="@drawable/seekbar_thumb" />

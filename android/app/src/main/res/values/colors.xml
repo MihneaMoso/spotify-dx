@@ -26,6 +26,10 @@
          identical in both themes. -->
     <color name="spotify_green">#1DB954</color>
 
+    <!-- Adaptive-icon background (matches the logo artwork's navy so the
+         parallax edges never flash a foreign color). Not a theme token. -->
+    <color name="icon_bg">#021458</color>
+
     <!-- Echo-port translucent layers (Phase 1). ?attr/ colors cannot carry
          alpha in XML drawables, so translucency is baked per palette here
          and exposed via the echoCardShelf / echoSearchField theme attrs
