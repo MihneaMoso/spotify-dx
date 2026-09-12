@@ -53,7 +53,7 @@ class MainActivity : AppCompatActivity() {
 
     private var current: Destination = Destination.GATE
 
-    enum class Destination { GATE, HOME, SEARCH, LIBRARY, LIKED, QUEUE, SETTINGS, DETAIL }
+    enum class Destination { GATE, HOME, SEARCH, LIBRARY, SETTINGS, DETAIL }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // FragmentManager restores the visible fragment itself, but the
@@ -151,8 +151,6 @@ class MainActivity : AppCompatActivity() {
                 searchHandoff = null
             }
             Destination.LIBRARY -> LibraryFragment()
-            Destination.LIKED -> LikedFragment()
-            Destination.QUEUE -> QueueFragment()
             Destination.SETTINGS -> SettingsFragment()
             Destination.DETAIL -> DetailFragment().apply { arguments = args }
         }
@@ -183,7 +181,6 @@ class MainActivity : AppCompatActivity() {
             Destination.HOME -> R.id.nav_home
             Destination.SEARCH -> R.id.nav_search
             Destination.LIBRARY -> R.id.nav_library
-            Destination.LIKED -> R.id.nav_liked
             else -> null
         }
         if (target != null) {
@@ -266,8 +263,6 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_home -> Destination.HOME
                 R.id.nav_search -> Destination.SEARCH
                 R.id.nav_library -> Destination.LIBRARY
-                R.id.nav_liked -> Destination.LIKED
-                R.id.nav_queue -> Destination.QUEUE
                 else -> null
             }
             // Second half of the syncNav recursion guard: ignore selections
@@ -423,6 +418,4 @@ class MainActivity : AppCompatActivity() {
 
     /** Placeholder settings entry for layouts without a dedicated button. */
     fun openSettings(@Suppress("UNUSED_PARAMETER") v: View) = go(Destination.SETTINGS)
-
-    fun openQueue(@Suppress("UNUSED_PARAMETER") v: View) = go(Destination.QUEUE)
 }
