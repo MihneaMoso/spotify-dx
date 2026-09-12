@@ -74,7 +74,7 @@
             android:layout_width="match_parent"
             android:layout_height="300dp"
             android:layout_marginHorizontal="32dp"
-            android:layout_marginTop="@dimen/pad_half"
+            android:layout_marginTop="32dp"
             android:contentDescription="Artwork"
             android:scaleType="centerCrop" />
 
@@ -95,7 +95,7 @@
             android:id="@+id/sheet_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/pad_half"
+            android:layout_marginTop="24dp"
             android:maxLines="1"
             android:text="Not playing"
             style="@style/EchoTitleLarge" />
@@ -110,7 +110,7 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/pad_half"
+            android:layout_marginTop="24dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -126,6 +126,9 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:maxHeight="12dp"
+                android:minHeight="12dp"
+                android:splitTrack="false"
                 android:progressDrawable="@drawable/seekbar_progress"
                 android:thumb="@drawable/seekbar_thumb" />
 

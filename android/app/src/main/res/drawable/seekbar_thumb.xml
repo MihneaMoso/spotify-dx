@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Echo-port SeekBar thumb: solid dot in the primary accent. -->
+<!-- Echo-port SeekBar thumb: solid primary dot sized flush with the track
+     (12dp = seekbar maxHeight below) so it reads as part of the bar with
+     no protruding halo. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
     <solid android:color="?attr/colorPrimary" />
     <size
-        android:width="14dp"
-        android:height="14dp" />
+        android:width="12dp"
+        android:height="12dp" />
 </shape>

@@ -128,8 +128,11 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
+                android:maxHeight="12dp"
+                android:minHeight="12dp"
+                android:splitTrack="false"
                 android:progressDrawable="@drawable/seekbar_progress"
-                android:thumb="@android:color/transparent" />
+                android:thumb="@drawable/seekbar_thumb" />
 
             <LinearLayout
                 android:layout_width="match_parent"
