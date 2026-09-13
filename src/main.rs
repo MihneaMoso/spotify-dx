@@ -50,10 +50,20 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
+/// Runtime window icon (desktop): decoded from the bundled PNG so the OS
+/// chrome never falls back to the web page's favicon. `None` on any
+/// failure — a missing icon must never block startup.
+#[cfg(feature = "desktop")]
+fn window_icon() -> Option<dioxus::desktop::tao::window::Icon> {
+    let bytes = include_bytes!("../assets/icon-desktop.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    dioxus::desktop::tao::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 #[cfg(feature = "desktop")]
 fn main() {
     use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
-
     init_logging();
 
     // Swap in a staged update (downloaded in a previous session) before the
@@ -81,7 +91,10 @@ fn main() {
         .with_min_inner_size(LogicalSize::new(400.0, 600.0))
         // Frameless: hides the GTK title bar ("Spotify DX" + window buttons)
         // so the webview is the whole window. The app renders its own chrome.
-        .with_decorations(false);
+        .with_decorations(false)
+        // Explicit window icon: without this WebKitGTK shows the loaded
+        // page's favicon (Spotify's official mark) in taskbars/alt-tab.
+        .with_window_icon(window_icon());
 
     let config = Config::new()
         .with_window(window)
