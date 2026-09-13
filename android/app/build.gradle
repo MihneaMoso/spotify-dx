@@ -1,8 +1,10 @@
 // Kotlin app module (docs/KOTLIN_MIGRATION.md §7, §13). 64-bit mobile first
 // (arm64-v8a, matching the shipped architecture); further ABIs only with
 // measured demand. The native core (`libspotify_dx.so`) is built by
-// `scripts/build-kotlin.sh` via cargo+NDK and copied into
-// `src/main/jniLibs/<abi>/` before assembly — Gradle never builds Rust.
+// `scripts/build-kotlin.sh` via cargo+NDK and staged into
+// `app/build/nativeLibs/<abi>/` before assembly — Gradle never builds Rust.
+// (Staging OUTSIDE src/main: src/main/jniLibs staging made incremental
+// packaging keep stale duplicate .so entries, +348MB per APK.)
 //
 // Groovy DSL on purpose: the offline Gradle cache holds the AGP/KGP jars but
 // not the `plugins {}` marker artifacts, so the classic `apply plugin` style
@@ -40,9 +42,21 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
-            // Bridge + installer classes must survive any future minification.
+            // Max production optimization (tagged releases): R8 + resource
+            // shrinking. The JNI bridge, JS bridges, updater, and provider
+            // classes are pinned in proguard-rules.pro (WebView calls
+            // @JavascriptInterface methods by name via reflection).
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    sourceSets {
+        // Build-dir native staging (see header): replaces the default
+        // src/main/jniLibs so stale files there can never ship twice.
+        main {
+            jniLibs.srcDirs = ['build/nativeLibs']
         }
     }
 

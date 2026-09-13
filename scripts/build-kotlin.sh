@@ -81,10 +81,15 @@ cargo build --no-default-features --target "$TARGET" $PROFILE_FLAG
 SO="target/$TARGET/$([ "$MODE" = "release" ] && echo release || echo debug)/libspotify_dx.so"
 test -f "$SO" || { echo "missing $SO" >&2; exit 1; }
 
-JNILIBS="android/app/src/main/jniLibs/$ABI"
+JNILIBS="android/app/build/nativeLibs/$ABI"
 mkdir -p "$JNILIBS"
 cp -f "$SO" "$JNILIBS/libspotify_dx.so"
 echo "==> staged $SO -> $JNILIBS/"
+# Strip debug symbols from the STAGED copy only: target/ keeps full symbols
+# for native debugging, and symbols never execute (zero runtime effect).
+# Saves ~330MB per APK. NDK llvm-strip sits next to the clang above.
+"$NDK_BIN/llvm-strip" --strip-debug "$JNILIBS/libspotify_dx.so"
+echo "==> stripped staged lib ($(stat -c%s "$JNILIBS/libspotify_dx.so") bytes)"
 
 # --- Bridge compat: every Kotlin-declared native symbol must exist in the .so ---
 echo "==> bridge symbol check"
@@ -109,6 +114,12 @@ echo "==> gradle $GRADLE_TASK"
   # GRADLE_OFFLINE=0 for first-time dependency resolution.
   OFFLINE_FLAG="--offline"
   [ "${GRADLE_OFFLINE:-1}" = "0" ] && OFFLINE_FLAG=""
+  # Drop the previous APK first: AGP updates the zip in place and leaves
+  # hundreds of MB of orphaned bytes behind across incremental builds
+  # (dead space inside the file, invisible to unzip -l). Deleting only the
+  # outputs re-runs packaging (~seconds); compilation stays incremental.
+  APK_OUT="app/build/outputs/apk/$([ "$MODE" = "release" ] && echo release || echo debug)"
+  rm -rf "$APK_OUT"
   # shellcheck disable=SC2086
   ./gradlew "$GRADLE_TASK" $OFFLINE_FLAG --no-daemon
 )
@@ -117,3 +128,8 @@ APK_DIR="android/app/build/outputs/apk/$([ "$MODE" = "release" ] && echo release
 APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
 test -n "${APK:-}" || { echo "no APK produced" >&2; exit 1; }
 echo "==> APK: $APK"
+# Single-entry guard: incremental packaging once kept a stale duplicate .so
+# (+348MB). Fail loudly instead of shipping bloat.
+SO_COUNT="$(unzip -l "$APK" | grep -c "lib/$ABI/libspotify_dx.so")"
+[ "$SO_COUNT" = "1" ] || { echo "duplicate native lib entries: $SO_COUNT" >&2; exit 1; }
+echo "==> native lib entries: $SO_COUNT"

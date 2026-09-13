@@ -1600,6 +1600,24 @@ dioxus-mobile Rust code is untouched and still builds.
   ItemTouchHelper drags; uiautomator dumps FAIL during playback (ticker
   invalidates idle — pause first) and with infinite marquee (never use
   marquee on always-resident views).
+- **APK bloat autopsy (2026-09-14, 693MB → 37MB):** two independent
+  paddings stacked. (1) The debug `.so` is 348MB, 94% debug symbols —
+  `llvm-strip --strip-debug` the STAGED copy in `build-kotlin.sh`
+  (20MB, zero runtime effect; `target/` keeps symbols). The script's
+  bridge-compat `nm` check still passes post-strip (symtab stays for the
+  dynamic linker). (2) AGP updates the APK zip in place: stale duplicate
+  `.so` entries + hundreds of MB of dead space accumulate invisibly
+  (`unzip -l` looks clean while the file balloons — diagnose with raw
+  filename/ELF counts + EOCD offset). Fixes, all build-side, release
+  workflow untouched: stage into `app/build/nativeLibs` (never
+  `src/main/jniLibs`), `jniLibs.srcDirs` pointed there, single-entry
+  assert that fails the build, and `rm -rf` the APK output dir before
+  assemble (re-runs packaging in seconds, compilation stays incremental).
+  Release builds additionally minify+shrink (build.gradle only) with
+  `@JavascriptInterface` keeps (WebView calls those by name); the Cargo
+  release profile was already maxed (opt-3/fat-lto/single-unit/strip/
+  abort). A bare filename appearing twice in the raw bytes with one ELF
+  body is normal (JAR signature metadata) — only worry with 2+ ELFs.
 - **Lyrics view (Phase 5, 2026-09-11, compile-verified):** `Lrc.kt` (pure
   `[mm:ss.xx]` parse + binary-search `indexAt`), in-sheet container with
   three mutually exclusive views (synced list / plain scroll / state
