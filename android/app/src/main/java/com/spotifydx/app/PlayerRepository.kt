@@ -490,6 +490,14 @@ object PlayerRepository {
     /** Boot rehydrate: queue + last-played track/position/timestamp.
      * Always lands paused — restores state, never autoplay. */
     fun restore() {
+        // Reopening into live background playback must not clobber it:
+        // restore() unconditionally writes isPlaying=false + stale DB
+        // position, which flipped the play/pause icons to "play" while
+        // audio kept going. Live state already equals (or leads) storage.
+        if (PlaybackService.instance?.isPlayingNow() == true) {
+            Log.i(TAG, "restore skipped: service actively playing")
+            return
+        }
         scope.launch {
             val queue = PlaybackStore.loadQueue()
             val history = PlaybackStore.loadHistory()

@@ -89,12 +89,10 @@ class MainActivity : AppCompatActivity() {
         SessionRefresher.pageHost = { loginManager.takeIf { !isFinishing } }
 
         SettingsStore.load()
-        // Boot auth runs EXCLUSIVELY through bootResolve() below (single
-        // flight: status + conditional verify + mirror update). The old
-        // fire-and-forget refresh()/verifyAtBoot() here raced it with
-        // concurrent session calls into the core — overlapping native
-        // session flights wedge the bridge and hang boot (infinite splash
-        // that only "fixes" once later screens re-warm the path).
+        // Boot auth: no fire-and-forget session flights here (concurrent
+        // native session calls wedged the bridge and hung boot). The
+        // settled-gate in collectRepos owns routing; refresh/verify run
+        // from the application scope and the watchdog.
         SessionRepository.startWatchdog()
         UpdateCenter.checkAtBootIfEnabled()
         // Persisted app state: context holder first, then queue/last-played
@@ -351,6 +349,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderPlayerBar(s: PlayerRepository.State) {
         val bar = findViewById<View>(R.id.player_bar) ?: return
+        // Single owner for bar visibility: it shows if and only if a track
+        // exists (restored or playing). The old gated-only toggling left it
+        // hidden after cold starts that never passed a second syncNav.
+        bar.visibility = if (s.track != null) View.VISIBLE else View.GONE
         // Compare-before-write discipline extends to views: skip identical binds.
         bar.findViewById<TextView>(R.id.player_title)?.text =
             s.track?.name?.ifEmpty { "Not playing" } ?: "Not playing"

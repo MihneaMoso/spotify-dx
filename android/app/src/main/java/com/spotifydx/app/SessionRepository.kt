@@ -68,32 +68,6 @@ object SessionRepository {
         settled = true
     }
 
-    /**
-     * Cold-start resolver (splash-owned): same checks as refresh() +
-     * verifyAtBoot(), but suspending so the caller routes exactly once —
-     * authenticated straight to HOME (gate never flashes), otherwise GATE
-     * (normal login flow). Returns the resolved authentication.
-     */
-    suspend fun bootResolve(): Boolean {
-        val json = BridgeClient.sessionStatus().getOrNull()
-        if (json != null) applyStatus(json)
-        var s = _state.value
-        if (!s.authenticated && s.hasToken) {
-            val res = BridgeClient.currentUser()
-            if (res.isSuccess) {
-                BridgeClient.sessionStatus().getOrNull()?.let { applyStatus(it) }
-            } else {
-                val err = (res.exceptionOrNull() as? BridgeException)?.error
-                if (err is BridgeError.SessionExpired) {
-                    BridgeClient.logout()
-                    _state.value = Snapshot()
-                }
-            }
-            s = _state.value
-        }
-        return s.authenticated
-    }
-
     /** Kotlin login page reports a captured web-player session (§8.4). */
     fun notifyCaptured(accessToken: String, expiresAtMs: Long, userJson: String?) {
         scope.launch {

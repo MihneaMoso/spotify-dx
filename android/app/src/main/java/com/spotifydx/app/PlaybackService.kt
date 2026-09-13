@@ -202,6 +202,9 @@ class PlaybackService : Service(),
         }
     }
 
+    /** True while the platform player is audibly playing (for state guards). */
+    fun isPlayingNow(): Boolean = player?.isPlaying == true
+
     fun setPlayerVolume(v: Float) {
         player?.setVolume(v, v)
     }
