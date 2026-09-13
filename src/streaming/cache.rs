@@ -89,6 +89,12 @@ pub fn put(track_id: &str, provider: &str, url: &str, format: &str) {
         expires_at,
     };
     if let Ok(mut guard) = inner().lock() {
+        // Dedupe: re-caching a live key must refresh its slot, not append
+        // a second order entry (duplicates shrank the effective cap and
+        // made eviction O(n) over dead slots).
+        if let Some(pos) = guard.order.iter().position(|k| k == &key) {
+            guard.order.remove(pos);
+        }
         // FIFO eviction when at capacity.
         if guard.memory.len() >= MEMORY_CAP {
             if let Some(oldest) = guard.order.first().cloned() {
@@ -130,11 +136,15 @@ pub fn load_from_disk() {
         return;
     };
     if let Ok(mut guard) = inner().lock() {
-        for (key, entry) in entries {
-            if !entry.is_expired() {
-                guard.memory.insert(key.clone(), entry);
-                guard.order.push(key);
-            }
+        // Cap the load: a stale oversized file must not grow memory past
+        // MEMORY_CAP on startup (expired rows don't consume the budget).
+        for (key, entry) in entries
+            .into_iter()
+            .filter(|(_, v)| !v.is_expired())
+            .take(MEMORY_CAP)
+        {
+            guard.memory.insert(key.clone(), entry);
+            guard.order.push(key);
         }
     }
 }

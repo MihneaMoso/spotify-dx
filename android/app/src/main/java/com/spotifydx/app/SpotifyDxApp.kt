@@ -17,6 +17,10 @@ class SpotifyDxApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Process-wide singletons must not depend on any Activity: a
+        // START_STICKY-restarted service can run before MainActivity:init.
+        AppState.init(this)
+        AudioCache.init(this)
         scope.launch(Dispatchers.IO) {
             try {
                 BridgeClient.checkVersion()

@@ -102,15 +102,20 @@ class SettingsFragment : Fragment() {
         val onyx: RadioButton = v.findViewById(R.id.theme_onyx)
         viewLifecycleOwner.lifecycleScope.launch {
             SettingsStore.settings.collect { s ->
+                // Null-listener bind: programmatic check() must never fire
+                // the listener, or opening Settings with a non-default theme
+                // spuriously saves + recreates the activity.
+                group.setOnCheckedChangeListener(null)
                 group.check(if (s.theme == Theme.ONYX) R.id.theme_onyx else R.id.theme_deep)
+                group.setOnCheckedChangeListener { _, checked ->
+                    val cur = SettingsStore.settings.value
+                    val next = cur.copy(theme = if (checked == R.id.theme_onyx) Theme.ONYX else Theme.DEEP_BLUE)
+                    if (next.theme == cur.theme) return@setOnCheckedChangeListener
+                    SettingsStore.save(next)
+                    // Theme switch is an instant repaint with no data reload.
+                    activity?.recreate()
+                }
             }
-        }
-        group.setOnCheckedChangeListener { _, checked ->
-            val cur = SettingsStore.settings.value
-            val next = cur.copy(theme = if (checked == R.id.theme_onyx) Theme.ONYX else Theme.DEEP_BLUE)
-            SettingsStore.save(next)
-            // Theme switch is an instant repaint with no data reload.
-            activity?.recreate()
         }
         // Keep references live for the (otherwise unused) lookup above.
         deep.isEnabled = true
@@ -122,6 +127,7 @@ class SettingsFragment : Fragment() {
         val group: RadioGroup = v.findViewById(R.id.engine_group)
         viewLifecycleOwner.lifecycleScope.launch {
             SettingsStore.settings.collect { s ->
+                group.setOnCheckedChangeListener(null)
                 group.check(
                     when (s.engine) {
                         "spotify-sdk" -> R.id.engine_sdk
@@ -129,17 +135,18 @@ class SettingsFragment : Fragment() {
                         else -> R.id.engine_auto
                     },
                 )
+                // Snapshot-then-save: a crash cannot persist a half-written choice.
+                group.setOnCheckedChangeListener { _, checked ->
+                    val cur = SettingsStore.settings.value
+                    val engine = when (checked) {
+                        R.id.engine_sdk -> "spotify-sdk"
+                        R.id.engine_open -> "open"
+                        else -> "auto"
+                    }
+                    if (engine == cur.engine) return@setOnCheckedChangeListener
+                    SettingsStore.save(cur.copy(engine = engine))
+                }
             }
-        }
-        // Snapshot-then-save: a crash cannot persist a half-written choice.
-        group.setOnCheckedChangeListener { _, checked ->
-            val cur = SettingsStore.settings.value
-            val engine = when (checked) {
-                R.id.engine_sdk -> "spotify-sdk"
-                R.id.engine_open -> "open"
-                else -> "auto"
-            }
-            SettingsStore.save(cur.copy(engine = engine))
         }
         v.findViewById<View>(R.id.upsell_toggle)?.setOnClickListener {
             val cur = SettingsStore.settings.value

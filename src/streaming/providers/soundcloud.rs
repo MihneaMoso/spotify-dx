@@ -24,6 +24,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use regex::Regex;
 
+use super::common::urlencode;
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -286,11 +287,19 @@ async fn scrape_client_id(client: &reqwest::Client) -> Option<String> {
     let re_key = Regex::new(r#"client_id:"([A-Za-z0-9]{20,})""#).ok()?;
     // Dedup: same bundle may be referenced twice.
     let mut seen = std::collections::HashSet::new();
+    // Cap: pages reference dozens of bundles but the key lives in the
+    // first few — unbounded sequential 8s-timeout fetches stall resolves.
+    const MAX_ASSETS: usize = 5;
+    let mut checked = 0;
     for m in re_assets.find_iter(&html) {
+        if checked >= MAX_ASSETS {
+            break;
+        }
         let url = m.as_str();
         if !seen.insert(url) {
             continue;
         }
+        checked += 1;
         let js = client.get(url).send().await.ok()?.text().await.ok()?;
         if let Some(cap) = re_key.captures(&js) {
             return Some(cap[1].to_string());
@@ -300,20 +309,6 @@ async fn scrape_client_id(client: &reqwest::Client) -> Option<String> {
 }
 
 /// Minimal percent-encoding for query params (mirrors piped.rs).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else if b == b' ' {
-            out.push('+');
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 #[async_trait(?Send)]
 impl Provider for SoundcloudProvider {
     fn name(&self) -> &'static str {

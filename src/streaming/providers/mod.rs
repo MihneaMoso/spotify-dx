@@ -1,6 +1,7 @@
 //! Provider implementations.
 
 pub mod audius;
+pub mod common;
 pub mod piped;
 pub mod qobuz;
 pub mod saavn;

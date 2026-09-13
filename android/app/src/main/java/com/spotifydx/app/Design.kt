@@ -54,9 +54,12 @@ object Design {
                 outline.setRoundRect(0, 0, v.width, v.height, radiusPx)
             }
         }
-        // Outline is measured at layout time; re-clip once laid out so
-        // recycled views with stale bounds round correctly.
-        view.post { view.invalidateOutline() }
+        // getOutline reads live bounds, so an already-laid-out (recycled)
+        // view invalidates synchronously — no posted runnable. Only
+        // never-laid-out views need the post (their bounds are still 0 and
+        // nothing would refresh the outline after layout).
+        if (view.width == 0 || view.height == 0) view.post { view.invalidateOutline() }
+        else view.invalidateOutline()
     }
 
     /** Circular variant (Echo artist/avatar treatment). */

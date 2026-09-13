@@ -70,6 +70,7 @@ class PlaybackService : Service(),
     private val binder = LocalBinder()
     private var player: MediaPlayer? = null
     private var pendingStartMs: Long = 0
+    private var playSeq: Long = 0
     private var session: MediaSession? = null
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -127,34 +128,44 @@ class PlaybackService : Service(),
             return
         }
         releasePlayer()
-        pendingStartMs = startMs
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
-            )
-            setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
-            // Disk cache first (Echo player-cache parity): complete files
-            // play straight from storage (instant, offline); anything else
-            // streams through the local Range-proxy, which fills the file
-            // as it serves. The SDK path keeps its own transport.
-            when (val src = AudioCache.playbackSource(this@PlaybackService, track, qualityKey, url)) {
-                is AudioCache.Source.Disk -> {
-                    Log.i(TAG, "playing cached file for ${track.id}")
-                    setDataSource(src.path)
-                }
-                is AudioCache.Source.Proxy -> setDataSource(src.url)
-            }
-            setOnPreparedListener(this@PlaybackService)
-            setOnCompletionListener(this@PlaybackService)
-            setOnErrorListener(this@PlaybackService)
-            prepareAsync()
-        }
-        player = mp
+        // Generation guard: taps outrunning prepares must not let a stale
+        // build win — only the latest sequence proceeds past the resolve.
+        // (This also retires the shared pendingStartMs race: only the
+        // proceeding build writes it.)
+        val seq = ++playSeq
         startForeground(NOTIFICATION_ID, buildNotification(track, playing = true))
         updateSession(PlaybackState.STATE_BUFFERING, 0, track)
+        scope.launch {
+            // Suspend resolve (Room lookup) — never runBlocking on Main.
+            val src = AudioCache.playbackSource(this@PlaybackService, track, qualityKey, url)
+            if (seq != playSeq) return@launch
+            pendingStartMs = startMs
+            val mp = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                )
+                setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
+                // Disk cache first (Echo player-cache parity): complete files
+                // play straight from storage (instant, offline); anything else
+                // streams through the local Range-proxy, which fills the file
+                // as it serves. The SDK path keeps its own transport.
+                when (src) {
+                    is AudioCache.Source.Disk -> {
+                        Log.i(TAG, "playing cached file for ${track.id}")
+                        setDataSource(src.path)
+                    }
+                    is AudioCache.Source.Proxy -> setDataSource(src.url)
+                }
+                setOnPreparedListener(this@PlaybackService)
+                setOnCompletionListener(this@PlaybackService)
+                setOnErrorListener(this@PlaybackService)
+                prepareAsync()
+            }
+            player = mp
+        }
     }
 
     fun pausePlayback() {
@@ -435,6 +446,9 @@ class PlaybackService : Service(),
         val url = track.coverUrl
         if (url == artKey) return
         artJob?.cancel()
+        // Recycle the superseded bitmap: without this every track change
+        // leaks native pixel memory until GC pressure catches up.
+        artBitmap?.recycle()
         artBitmap = null
         artKey = url
         if (url.isEmpty()) return

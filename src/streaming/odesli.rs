@@ -62,9 +62,26 @@ pub async fn resolve(spotify_id: &str) -> Option<ProviderIds> {
         urlencoding::encode(&spotify_url)
     );
 
-    let resp = crate::spotify::client::filtered_get(&api_url).await.ok()?;
-    let body = resp.text().await.ok()?;
-    let parsed: OdesliResponse = serde_json::from_str(&body).ok()?;
+    let resp = match crate::spotify::client::filtered_get(&api_url).await {
+        Ok(resp) => resp,
+        // Network failure is NOT "not found": log it so outages stay
+        // distinguishable from genuine mapping misses in diagnostics.
+        Err(e) => {
+            tracing::debug!("odesli fetch failed for {spotify_id}: {e}");
+            return None;
+        }
+    };
+    let body = match resp.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::debug!("odesli body failed for {spotify_id}: {e}");
+            return None;
+        }
+    };
+    let parsed: OdesliResponse = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(_) => return None, // genuine non-match / shape drift: silent miss
+    };
 
     let platforms = parsed.links_by_platform?;
 

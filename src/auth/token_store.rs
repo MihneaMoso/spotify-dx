@@ -13,10 +13,16 @@ const KEY_EXPIRY: &str = "expires_at_ms"; // decimal string
 pub fn save(access_token: &str, expires_at_ms: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let kr_token = keyring::Entry::new(SERVICE, KEY_TOKEN).unwrap();
-        let kr_expiry = keyring::Entry::new(SERVICE, KEY_EXPIRY).unwrap();
-        let _ = kr_token.set_password(access_token);
-        let _ = kr_expiry.set_password(&expires_at_ms.to_string());
+        // Best-effort keychain (Entry::new fails without a secret-service
+        // daemon — never panic on a bridge path); the file fallback below
+        // always runs so the session still persists.
+        if let (Ok(kr_token), Ok(kr_expiry)) = (
+            keyring::Entry::new(SERVICE, KEY_TOKEN),
+            keyring::Entry::new(SERVICE, KEY_EXPIRY),
+        ) {
+            let _ = kr_token.set_password(access_token);
+            let _ = kr_expiry.set_password(&expires_at_ms.to_string());
+        }
         // File fallback for headless desktops without a secret-service daemon:
         save_to_file(access_token, expires_at_ms);
     }

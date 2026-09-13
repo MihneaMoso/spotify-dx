@@ -47,18 +47,26 @@ fn uptime_state() -> &'static std::sync::Mutex<UptimeState> {
 }
 
 /// Refresh the live uptime list in the background. Non-blocking.
+/// NOTE: currently dead code (provider parked — `is_available` is false
+/// and nothing calls this). The bounds below exist so a future revival
+/// can't hang or fan out unboundedly: 10s fetch timeout, instance cap.
 pub async fn refresh_uptime() {
-    let Ok(resp) = reqwest::get(UPTIME_URL).await else {
+    let client = super::common::http_client("spotify-dx-uptime/1.0", 10);
+    let Ok(resp) = client.get(UPTIME_URL).send().await else {
         return;
     };
     let Ok(body) = resp.text().await else {
         return;
     };
     // The uptime list is newline-separated base URLs of healthy instances.
+    // Cap: the resolver tries instances in order with per-try timeouts, so
+    // dozens of stale entries mean minutes of doomed probing.
+    const MAX_UPTIME_INSTANCES: usize = 12;
     let mut instances: Vec<String> = body
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| l.starts_with("http"))
+        .take(MAX_UPTIME_INSTANCES)
         .collect();
     // Always include fallbacks at the end.
     for fb in FALLBACK_INSTANCES {

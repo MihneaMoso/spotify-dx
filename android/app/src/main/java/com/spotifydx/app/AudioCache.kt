@@ -65,6 +65,14 @@ object AudioCache {
     @Volatile
     private var appCtx: Context? = null
 
+    /** Process-lifetime init (call from Application.onCreate). */
+    fun init(ctx: Context) {
+        if (appCtx == null) appCtx = ctx.applicationContext
+    }
+
+    private fun requireCtx(): Context =
+        requireNotNull(appCtx) { "AudioCache.init(applicationContext) missing" }
+
     @Volatile
     private var port: Int = 0
 
@@ -79,7 +87,7 @@ object AudioCache {
 
     private fun lockFor(key: String): Any = locks.getOrPut(key) { Any() }
 
-    private fun dir(): File = appCtx!!.filesDir.resolve(DIR).apply { mkdirs() }
+    private fun dir(): File = requireCtx().filesDir.resolve(DIR).apply { mkdirs() }
 
     private fun fileFor(key: String): File = dir().resolve("$key.audio")
 
@@ -88,14 +96,18 @@ object AudioCache {
         return clean.ifEmpty { "noid" }
     }
 
-    private fun dao() = AppDb.get(appCtx!!).audioCache()
+    private fun dao() = AppDb.get(requireCtx()).audioCache()
 
     /**
      * Playback source for a freshly resolved track. Complete files hit
      * disk directly; anything else streams through the proxy (which fills
      * the file as it serves). Never throws — falls back to proxy.
+     *
+     * Suspend (Room is main-safe): playUrl calls this from the Main scope,
+     * so no runBlocking here. The one-time ServerSocket bind in
+     * ensureServer stays inline (sub-ms, first play only).
      */
-    fun playbackSource(
+    suspend fun playbackSource(
         ctx: Context,
         track: Track,
         qualityKey: String,
@@ -111,7 +123,7 @@ object AudioCache {
             return Source.Proxy("http://127.0.0.1:$port/$liveKey")
         }
         val entry = try {
-            runBlocking(Dispatchers.IO) { dao().entry(key) }
+            dao().entry(key)
         } catch (e: Exception) {
             Log.w(TAG, "index read failed, proxying: ${e.message}")
             null
@@ -216,6 +228,11 @@ object AudioCache {
                 return
             }
             val key = parts[1].trimStart('/').substringBefore('?').take(128)
+                // Re-sanitize like keyFor(): the port is reachable from
+                // loopback, so path traversal ("../") must die here even
+                // though only our player should ever connect. Replace-only
+                // (no trim): legit keys pass through byte-identical.
+                .replace(Regex("[^A-Za-z0-9_.-]"), "_")
             var rangeStart: Long? = null
             var rangeEnd: Long? = null
             while (true) {
@@ -242,6 +259,16 @@ object AudioCache {
     }
 
     private fun serve(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?) {
+        // Lock-free fast path: fully-cached spans serve without the per-key
+        // lock, so a seek never stalls behind an in-progress download (the
+        // lock below spans whole-track network fetches). The snapshot may
+        // lag a concurrent append by ms — serveLocked re-checks under lock
+        // on fallthrough. Runs on pool threads: blocking index read is fine.
+        try {
+            if (tryServeCached(sock, key, reqStart, reqEnd)) return
+        } catch (e: Exception) {
+            Log.w(TAG, "fast path $key: ${e.message}")
+        }
         val lock = lockFor(key)
         synchronized(lock) {
             serving.add(key)
@@ -254,6 +281,27 @@ object AudioCache {
             }
         }
         scope.launch { evictIfNeeded() }
+    }
+
+    /** Serves a fully-cached span with no locking (read-only snapshot). */
+    private fun tryServeCached(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?): Boolean {
+        val file = fileFor(key)
+        if (!file.isFile) return false
+        val have = file.length()
+        if (have == 0L) return false
+        serving.add(key)
+        try {
+            val total = runBlocking(Dispatchers.IO) { dao().entry(key) }?.totalBytes ?: -1
+            if (total <= 0) return false
+            val start = reqStart ?: 0
+            if (start >= have) return false
+            val end = minOf(reqEnd ?: (total - 1), total - 1)
+            if (end < start) return false
+            sendFile(sock, file, start, end, total)
+            return true
+        } finally {
+            serving.remove(key)
+        }
     }
 
     private fun serveLocked(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?) {

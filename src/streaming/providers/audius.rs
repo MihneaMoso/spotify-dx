@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
+use super::common::urlencode;
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -197,20 +198,6 @@ fn pick_track(items: &[serde_json::Value], track_ms: u64) -> Option<String> {
     }
     None
 }
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else if b == b' ' {
-            out.push('+');
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 #[async_trait(?Send)]
 impl Provider for AudiusProvider {
     fn name(&self) -> &'static str {

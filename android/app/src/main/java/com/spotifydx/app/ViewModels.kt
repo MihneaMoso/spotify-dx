@@ -319,54 +319,6 @@ class LibraryViewModel : ScopedViewModel() {
         _state.value = ScreenState.Content(empty = rows.isEmpty())
     }
 }
-
-// -- Liked (paged, append-only) ------------------------------------------------------
-class LikedViewModel : ScopedViewModel() {
-    private val _state = MutableStateFlow<ScreenState>(ScreenState.Loading)
-    val state: StateFlow<ScreenState> = _state.asStateFlow()
-    private val _tracks = MutableStateFlow<List<Track>>(emptyList())
-    val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
-
-    private var offset = 0
-    private var loadingMore = false
-    var total = Int.MAX_VALUE
-        private set
-
-    fun load() {
-        offset = 0
-        total = Int.MAX_VALUE
-        _tracks.value = emptyList()
-        loadPage()
-    }
-
-    fun loadMore() {
-        if (loadingMore || _tracks.value.size >= total) return
-        loadPage()
-    }
-
-    private fun loadPage() {
-        loadingMore = true
-        if (offset == 0) _state.value = ScreenState.Loading
-        vmScope.launch {
-            val res = MusicRepository.withSessionCheck { MusicRepository.likedTracks(50, offset) }
-            loadingMore = false
-            val json = res.getOrNull()
-            if (json != null) {
-                val page = Models.savedTracks(json)
-                total = Models.pageTotal(json, _tracks.value.size + page.size)
-                offset += page.size
-                // Append-only accumulation owned by the ViewModel (§6.2).
-                _tracks.value = _tracks.value + page
-                _state.value = ScreenState.Content(empty = _tracks.value.isEmpty())
-            } else if (offset == 0) {
-                _state.value = ScreenState.Error(UiStates.errorCopy(res.exceptionOrNull())) { load() }
-            } else {
-                ToastBus.fromBridge(res.exceptionOrNull() ?: return@launch)
-            }
-        }
-    }
-}
-
 // -- Detail (album / artist / playlist) ------------------------------------------------
 class DetailViewModel : ScopedViewModel() {
     /** Playlist sort orders (Spotify parity). CUSTOM = fetch order, default. */

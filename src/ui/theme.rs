@@ -118,15 +118,29 @@ mod tests {
     #[test]
     fn app_shell_grid_wires_every_shell_zone() {
         // Phase-2 contract: five zones, including the toggleable np column.
-        for needle in [
-            ".top-bar { grid-area: top; }",
-            ".side-nav { grid-area: sidenav; }",
-            ".main-content { grid-area: main;",
-            ".now-playing-col { grid-area: np;",
-            ".player-bar { grid-area: player; }",
-            ".bottom-nav { grid-area: nav; }",
-            "\"sidenav main   np\"",
+        // Order- and whitespace-insensitive per-rule check: rule bodies
+        // legitimately gain declarations and wrap across lines (e.g.
+        // `.side-nav` grew `will-change`), and the contract is about which
+        // grid-area each zone rule carries, not declaration order.
+        let flat: String = CSS.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (selector, area) in [
+            (".top-bar {", "grid-area: top;"),
+            (".side-nav {", "grid-area: sidenav;"),
+            (".main-content {", "grid-area: main;"),
+            (".now-playing-col {", "grid-area: np;"),
+            (".player-bar {", "grid-area: player;"),
+            (".bottom-nav {", "grid-area: nav;"),
         ] {
+            let body = flat
+                .split('}')
+                .find(|rule| rule.contains(selector))
+                .unwrap_or_else(|| panic!("shell grid lost `{selector}`"));
+            assert!(
+                body.contains(area),
+                "shell grid lost `{area}` in `{selector}`"
+            );
+        }
+        for needle in ["\"sidenav main   np\""] {
             assert!(CSS.contains(needle), "shell grid lost `{needle}`");
         }
     }

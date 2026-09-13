@@ -213,7 +213,15 @@ impl Settings {
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        std::fs::write(path, json)?;
+        // This file can hold provider secrets (qobuz_auth_token, tidal
+        // token, deezer ARL): owner-only, like the token_store fallback.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
     }
 
     /// Clamp/repair values that could have been hand-edited into nonsense.

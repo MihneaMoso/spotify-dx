@@ -90,8 +90,17 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     }
     let a = parse_version(latest);
     let b = parse_version(current);
+    // Lexicographic per-component compare: the old `.any(a[i] > b[i])`
+    // called 1.10 "newer" than 2.0 (10 > 0 in a later slot wins).
     let max = a.len().max(b.len());
-    (0..max).any(|i| a.get(i).copied().unwrap_or(0) > b.get(i).copied().unwrap_or(0))
+    for i in 0..max {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
 }
 
 /// A newer release that has been downloaded and verified, ready to apply.
@@ -104,7 +113,11 @@ pub struct ReadyUpdate {
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn latest_release() -> Result<ReleaseInfo, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = reqwest::Client::new()
+    // Bounded: an update check must never hang the caller's IO thread.
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("update client failed: {e}"))?
         .get(&url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "spotify-dx-updater")
@@ -203,7 +216,10 @@ async fn download_to(url: &str, dest: &std::path::Path, sha256: Option<&str>) ->
     use tokio::io::AsyncWriteExt;
     use tokio::io::BufWriter;
 
-    let resp = reqwest::Client::new()
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("download client failed: {e}"))?
         .get(url)
         .header("User-Agent", "spotify-dx-updater")
         .send()
@@ -661,6 +677,11 @@ mod tests {
         assert!(is_newer("1.0.0", "0.1.7"));
         assert!(!is_newer("0.1.7", "0.1.7"));
         assert!(!is_newer("0.1.6", "0.1.7"));
+        // Higher-major must beat any higher-minor (was broken by .any()).
+        assert!(!is_newer("1.10.0", "2.0.0"));
+        assert!(is_newer("2.0.0", "1.10.0"));
+        assert!(is_newer("1.10.0", "1.9.9"));
+        assert!(!is_newer("1.9.0", "1.10.0"));
     }
 
     #[test]

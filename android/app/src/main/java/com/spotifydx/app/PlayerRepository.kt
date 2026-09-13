@@ -90,16 +90,6 @@ object PlayerRepository {
         PlaybackStore.saveQueueSoon(_state.value.queue)
     }
 
-    /** Drag-reorder the queue (single adjacent move + persist). */
-    fun moveQueue(from: Int, to: Int) {
-        val q = _state.value.queue
-        if (from !in q.indices || to !in q.indices || from == to) return
-        val m = q.toMutableList()
-        m.add(to, m.removeAt(from))
-        update { s -> s.copy(queue = m) }
-        PlaybackStore.saveQueueSoon(m)
-    }
-
     /**
      * Wholesale queue reorder (Echo commit-on-drop): the drag session owns
      * a visual index permutation and lands the fully-reordered list once.

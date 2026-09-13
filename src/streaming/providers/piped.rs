@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
+use super::common::urlencode;
 use super::youtube;
 use crate::streaming::provider::{Provider, Resolution, TrackQuery};
 
@@ -219,20 +220,6 @@ fn video_id_from_url(url: &str) -> Option<String> {
 
 /// Minimal percent-encoding for query params (no extra deps).
 /// Pure (unit-tested).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else if b == b' ' {
-            out.push('+');
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 #[async_trait(?Send)]
 impl Provider for PipedProvider {
     fn name(&self) -> &'static str {
@@ -301,13 +288,6 @@ mod tests {
         );
         assert_eq!(video_id_from_url("/channel/UC123"), None);
         assert_eq!(video_id_from_url(""), None);
-    }
-
-    #[test]
-    fn urlencode_escapes_query_chars() {
-        assert_eq!(urlencode("Kanye West"), "Kanye+West");
-        assert_eq!(urlencode("R&B/Hip-Hop"), "R%26B%2FHip-Hop");
-        assert_eq!(urlencode("abc-_.~09"), "abc-_.~09");
     }
 
     #[test]
