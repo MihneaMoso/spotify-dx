@@ -89,8 +89,12 @@ class MainActivity : AppCompatActivity() {
         SessionRefresher.pageHost = { loginManager.takeIf { !isFinishing } }
 
         SettingsStore.load()
-        SessionRepository.refresh()
-        SessionRepository.verifyAtBoot()
+        // Boot auth runs EXCLUSIVELY through bootResolve() below (single
+        // flight: status + conditional verify + mirror update). The old
+        // fire-and-forget refresh()/verifyAtBoot() here raced it with
+        // concurrent session calls into the core — overlapping native
+        // session flights wedge the bridge and hang boot (infinite splash
+        // that only "fixes" once later screens re-warm the path).
         SessionRepository.startWatchdog()
         UpdateCenter.checkAtBootIfEnabled()
         // Persisted app state: context holder first, then queue/last-played
@@ -123,13 +127,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) {
-            // Reopen with a surviving process (service playing): the session
-            // mirror is live, so land straight on the app — never flash the
-            // gate. Fresh process starts unauthenticated → gate as usual.
-            go(
-                if (SessionRepository.snapshot().authenticated) Destination.HOME
-                else Destination.GATE,
-            )
+            // Shell-first: HOME immediately, session resolves underneath.
+            // The settled-gate above routes to GATE if and only if the core
+            // definitively reports signed-out — no gate copy ever flashes
+            // for valid sessions, no splash traps boot either.
+            go(Destination.HOME)
         }
     }
 
@@ -205,6 +207,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -- Gate switch (single boolean, §4.2) --------------------------------------------
+    // Shell-first (Echo parity: no gate, no splash): cold start lands on
+    // HOME immediately and the auto-GATE below only fires once the session
+    // mirror holds a DEFINITIVE core answer (see settled). Valid sessions
+    // therefore never flash gate copy; transient bridge failures surface
+    // as page-local error/retry instead of a gate detour.
     private fun collectRepos() {
         lifecycleScope.launch {
             SessionRepository.state.collect { s ->
@@ -212,7 +219,9 @@ class MainActivity : AppCompatActivity() {
                     loginManager.hide()
                     if (current == Destination.GATE) go(Destination.HOME)
                 } else {
-                    if (current != Destination.GATE) go(Destination.GATE)
+                    if (SessionRepository.isSettled() && current != Destination.GATE) {
+                        go(Destination.GATE)
+                    }
                 }
             }
         }

@@ -52,7 +52,23 @@ fun parseEnvelope(raw: String): Envelope {
  */
 object BridgeClient {
     suspend fun initCore(filesDir: String, cacheDir: String): Result<JSONObject> =
-        callData { CoreBridge.initCore(filesDir, cacheDir) }
+        callData(awaitReady = false, timeoutMs = 90_000) { CoreBridge.initCore(filesDir, cacheDir) }
+
+    /**
+     * Core-readiness latch: no screen may outrun native init. Cold-start
+     * get_home fired during the adblock/session bootstrap and hung
+     * forever (infinite splash/home spinner that only "healed" once later
+     * screens re-warmed the path). Every gated call awaits this first;
+     * [markReady] fires from Application once init resolves either way.
+     */
+    private val readySignal = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    fun markReady() {
+        if (!readySignal.isCompleted) readySignal.complete(Unit)
+    }
+
+    private const val READY_TIMEOUT_MS = 20_000L
+    private const val CALL_TIMEOUT_MS = 30_000L
 
     /** Refuses loudly with a diagnostic on mismatch (§6, §12.7). */
     fun checkVersion() {
@@ -204,28 +220,82 @@ object BridgeClient {
 
     private fun arg(id: String): String = JSONObject().put("id", id).toString()
 
-    private suspend fun callData(phase: String = "Phase 2+", block: () -> String): Result<JSONObject> =
+    private suspend fun callData(
+        phase: String = "Phase 2+",
+        awaitReady: Boolean = true,
+        timeoutMs: Long = CALL_TIMEOUT_MS,
+        block: () -> String,
+    ): Result<JSONObject> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val env = parseEnvelope(block())
-                if (!env.ok) throw toException(env, phase)
-                // Collection legs return bare arrays; normalize to {items}.
-                val data = env.data ?: "{}"
-                if (data.trimStart().startsWith("[")) {
-                    JSONObject().put("items", org.json.JSONArray(data))
-                } else {
-                    JSONObject(data)
+            if (awaitReady) {
+                val ready = kotlinx.coroutines.withTimeoutOrNull(READY_TIMEOUT_MS) {
+                    readySignal.await()
                 }
+                if (ready == null) {
+                    return@withContext Result.failure(
+                        BridgeException(BridgeError.NotWired("boot", "core init not ready")),
+                    )
+                }
+            }
+            try {
+                kotlinx.coroutines.withTimeout(timeoutMs) {
+                    runCatching {
+                        val env = parseEnvelope(block())
+                        if (!env.ok) throw toException(env, phase)
+                        // Collection legs return bare arrays; normalize to {items}.
+                        val data = env.data ?: "{}"
+                        if (data.trimStart().startsWith("[")) {
+                            JSONObject().put("items", org.json.JSONArray(data))
+                        } else {
+                            JSONObject(data)
+                        }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                // Only OUR timeout lands here (external cancellation
+                // propagates as its own CancellationException): a hung
+                // native call becomes a retryable error, never an
+                // infinite spinner.
+                Result.failure(
+                    BridgeException(
+                        BridgeError.Core("TIMEOUT", "bridge call timed out after ${timeoutMs}ms"),
+                    ),
+                )
             }
         }
 
-    private suspend fun callString(phase: String = "Phase 2+", block: () -> String): Result<String> =
+    private suspend fun callString(
+        phase: String = "Phase 2+",
+        awaitReady: Boolean = true,
+        timeoutMs: Long = CALL_TIMEOUT_MS,
+        block: () -> String,
+    ): Result<String> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val env = parseEnvelope(block())
-                if (!env.ok) throw toException(env, phase)
-                // `data` may be a JSON string or an object; return it raw.
-                env.data ?: ""
+            if (awaitReady) {
+                val ready = kotlinx.coroutines.withTimeoutOrNull(READY_TIMEOUT_MS) {
+                    readySignal.await()
+                }
+                if (ready == null) {
+                    return@withContext Result.failure(
+                        BridgeException(BridgeError.NotWired("boot", "core init not ready")),
+                    )
+                }
+            }
+            try {
+                kotlinx.coroutines.withTimeout(timeoutMs) {
+                    runCatching {
+                        val env = parseEnvelope(block())
+                        if (!env.ok) throw toException(env, phase)
+                        // `data` may be a JSON string or an object; return it raw.
+                        env.data ?: ""
+                    }
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                Result.failure(
+                    BridgeException(
+                        BridgeError.Core("TIMEOUT", "bridge call timed out after ${timeoutMs}ms"),
+                    ),
+                )
             }
         }
 

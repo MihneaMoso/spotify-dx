@@ -36,19 +36,62 @@ object SessionRepository {
 
     fun snapshot(): Snapshot = _state.value
 
+    /**
+     * True once the mirror holds a DEFINITIVE core answer (status envelope
+     * received at least once). The shell-first gate switch uses this: only
+     * a settled signed-out mirror may route to GATE, so transient bridge
+     * failures at boot can never flash gate copy for valid sessions.
+     */
+    @Volatile
+    private var settled: Boolean = false
+
+    fun isSettled(): Boolean = settled
+
     fun refresh() {
         scope.launch {
             val json = BridgeClient.sessionStatus().getOrNull() ?: return@launch
-            val user = json.optJSONObject("user")
-            val next = Snapshot(
-                authenticated = json.optBoolean("authenticated", false),
-                hasToken = json.optBoolean("has_token", false),
-                expiresAtMs = json.optLong("expires_at_ms", 0),
-                isPremium = user?.optString("product", "") == "premium",
-            )
-            // Compare-before-write: touching the store re-renders subscribers.
-            if (_state.value != next) _state.value = next
+            applyStatus(json)
         }
+    }
+
+    /** Shared mirror update (refresh + verify paths must agree exactly). */
+    private fun applyStatus(json: org.json.JSONObject) {
+        val user = json.optJSONObject("user")
+        val next = Snapshot(
+            authenticated = json.optBoolean("authenticated", false),
+            hasToken = json.optBoolean("has_token", false),
+            expiresAtMs = json.optLong("expires_at_ms", 0),
+            isPremium = user?.optString("product", "") == "premium",
+        )
+        // Compare-before-write: touching the store re-renders subscribers.
+        if (_state.value != next) _state.value = next
+        settled = true
+    }
+
+    /**
+     * Cold-start resolver (splash-owned): same checks as refresh() +
+     * verifyAtBoot(), but suspending so the caller routes exactly once —
+     * authenticated straight to HOME (gate never flashes), otherwise GATE
+     * (normal login flow). Returns the resolved authentication.
+     */
+    suspend fun bootResolve(): Boolean {
+        val json = BridgeClient.sessionStatus().getOrNull()
+        if (json != null) applyStatus(json)
+        var s = _state.value
+        if (!s.authenticated && s.hasToken) {
+            val res = BridgeClient.currentUser()
+            if (res.isSuccess) {
+                BridgeClient.sessionStatus().getOrNull()?.let { applyStatus(it) }
+            } else {
+                val err = (res.exceptionOrNull() as? BridgeException)?.error
+                if (err is BridgeError.SessionExpired) {
+                    BridgeClient.logout()
+                    _state.value = Snapshot()
+                }
+            }
+            s = _state.value
+        }
+        return s.authenticated
     }
 
     /** Kotlin login page reports a captured web-player session (§8.4). */

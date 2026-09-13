@@ -31,6 +31,9 @@ class SpotifyDxApp : Application() {
             val filesDir = filesDir.absolutePath
             val cacheDir = cacheDir.absolutePath
             val outcome = BridgeClient.initCore(filesDir, cacheDir)
+            // Unlatch the bridge gate either way: success proceeds, failure
+            // surfaces real errors per call instead of hanging at readiness.
+            BridgeClient.markReady()
             if (outcome.isFailure) {
                 Log.e(TAG, "initCore failed: ${outcome.exceptionOrNull()}")
                 return@launch
