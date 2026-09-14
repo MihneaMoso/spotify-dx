@@ -109,6 +109,21 @@ object PlaybackStore {
             }
         }
 
+    /**
+     * True when any playback state survived on disk (last-played row,
+     * queue, or history). A completely blank store on cold start proves a
+     * fresh device — no valid session can predate it — so the boot flow
+     * may route to GATE without waiting out a slow core. (A logged-in user
+     * who never played has no rows either, but then the core answers fast
+     * and the settled path wins before this fallback matters.)
+     */
+    suspend fun hasPersistedState(): Boolean = withContext(Dispatchers.IO) {
+        val db = AppDb.get(AppState.ctx())
+        runCatching { db.playback().get() != null }.getOrDefault(false) ||
+            runCatching { db.queue().all().isNotEmpty() }.getOrDefault(false) ||
+            runCatching { db.history().all().isNotEmpty() }.getOrDefault(false)
+    }
+
     fun saveLastSoon(track: Track?, positionMs: Long, source: String = "") {
         scope.launch {
             withContext(Dispatchers.IO) {

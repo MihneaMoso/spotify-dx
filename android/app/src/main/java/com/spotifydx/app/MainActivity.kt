@@ -130,6 +130,34 @@ class MainActivity : AppCompatActivity() {
             // definitively reports signed-out — no gate copy ever flashes
             // for valid sessions, no splash traps boot either.
             go(Destination.HOME)
+            // Fast fresh-device path: a blank store proves no prior login,
+            // so don't wait out a slow core — open the login flow as soon
+            // as a short settle window lapses with no session. Stored state
+            // (or a fast answer) keeps the flash-free settled path.
+            lifecycleScope.launch {
+                val settledInTime = SessionRepository.awaitSettled(3_000)
+                if (SessionRepository.snapshot().authenticated) return@launch
+                if (settledInTime || !PlaybackStore.hasPersistedState()) {
+                    if (current != Destination.GATE) go(Destination.GATE)
+                }
+                // Else: probable valid session on a slow core — stay on
+                // HOME; the settled collector and the backstop below finish
+                // the job without any gate flash.
+            }
+            // Backstop for wedged devices: if the mirror never settles (core
+            // not answering), an unauthenticated user must still reach the
+            // login flow within seconds — stranding on a dead HOME with a
+            // dead retry is the worse evil. Arm late enough that healthy
+            // boots (settled in ~2s) never notice it.
+            lifecycleScope.launch {
+                kotlinx.coroutines.delay(15_000)
+                bootGateArmed = true
+                if (!SessionRepository.snapshot().authenticated &&
+                    current != Destination.GATE
+                ) {
+                    go(Destination.GATE)
+                }
+            }
         }
     }
 
@@ -205,11 +233,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -- Gate switch (single boolean, §4.2) --------------------------------------------
-    // Shell-first (Echo parity: no gate, no splash): cold start lands on
-    // HOME immediately and the auto-GATE below only fires once the session
-    // mirror holds a DEFINITIVE core answer (see settled). Valid sessions
-    // therefore never flash gate copy; transient bridge failures surface
-    // as page-local error/retry instead of a gate detour.
+    // Shell-first (Echo parity: no gate flash): cold start lands on HOME
+    // immediately and the auto-GATE below only fires once the session
+    // mirror holds a DEFINITIVE core answer (see settled), or the boot
+    // backstop below trips. Valid sessions therefore never flash gate
+    // copy; transient bridge failures surface as page-local error/retry
+    // instead of a gate detour. A fresh signed-out device still reaches
+    // GATE in seconds (settled signed-out) — never stranded on a dead
+    // HOME whose retry just re-logouts into the same error.
+    private var bootGateArmed = false
+
     private fun collectRepos() {
         lifecycleScope.launch {
             SessionRepository.state.collect { s ->
@@ -217,7 +250,9 @@ class MainActivity : AppCompatActivity() {
                     loginManager.hide()
                     if (current == Destination.GATE) go(Destination.HOME)
                 } else {
-                    if (SessionRepository.isSettled() && current != Destination.GATE) {
+                    if ((SessionRepository.isSettled() || bootGateArmed) &&
+                        current != Destination.GATE
+                    ) {
                         go(Destination.GATE)
                     }
                 }

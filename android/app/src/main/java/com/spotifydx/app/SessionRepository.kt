@@ -47,6 +47,20 @@ object SessionRepository {
 
     fun isSettled(): Boolean = settled
 
+    /**
+     * Awaits the first definitive core answer, bounded. Lets callers
+     * distinguish "signed out" (route to GATE fast) from "core still
+     * booting" (stay put) without trapping anyone forever.
+     */
+    suspend fun awaitSettled(timeoutMs: Long): Boolean {
+        val end = android.os.SystemClock.uptimeMillis() + timeoutMs
+        while (!settled) {
+            if (android.os.SystemClock.uptimeMillis() >= end) return false
+            kotlinx.coroutines.delay(100)
+        }
+        return true
+    }
+
     fun refresh() {
         scope.launch {
             val json = BridgeClient.sessionStatus().getOrNull() ?: return@launch
