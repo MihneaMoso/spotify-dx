@@ -1600,6 +1600,55 @@ dioxus-mobile Rust code is untouched and still builds.
   ItemTouchHelper drags; uiautomator dumps FAIL during playback (ticker
   invalidates idle — pause first) and with infinite marquee (never use
   marquee on always-resident views).
+- **Shell-first boot contract (2026-09-15):** cold start goes HOME with
+  zero session gating; auto-GATE fires ONLY on a settled signed-out
+  mirror (`SessionRepository.isSettled`), plus a 15s wedged-core
+  backstop, plus a 3s fast path when the store is blank (fresh-device
+  proof). Never route on transient bridge failures — page-local
+  error/retry instead. Never add a blocking splash: any awaited resolver
+  becomes the next infinite trap (proven twice).
+- **Bridge call discipline (2026-09-15):** every `BridgeClient` call
+  awaits the readiness latch (20s → typed `NotWired`) and carries a
+  timeout (30s, 90s init) — cold-start `get_home` outran native init and
+  hung forever, masquerading as infinite splash/spinners. External
+  cancellation must propagate (don't wrap it in `runCatching`).
+- **Review discipline (2026-09-13):** verify every automated finding
+  line-by-line before fixing — four P0 claims were false on inspection
+  (`indexAt` bounds, `insertAt` math, dual helpers, guarded `peek`).
+  Real finds ship in Phases A–E; rejected ones stay out, no churn.
+- **Mini player + resume ownership (2026-09-15):** bar visibility is
+  track-driven in `renderPlayerBar` (never nav-driven — cold starts
+  stranded it `gone`); `restore()` early-returns while the service
+  plays (`isPlayingNow`), else icons lie; resume seeks on prepare with
+  explicit 0-reset on track change/advance/seek.
+- **Sort-to-top rule (2026-09-15):** scroll in `submitList`'s commit
+  callback — posted scrolls race the async diff and lose (the dispatch
+  yanks scroll back down).
+- **Screens persist via show/hide cache (2026-09-15, verified on-device):**
+  `MainActivity` keeps visited screens HIDDEN instead of destroying them
+  (LRU 8, keyed destination + kind/id; cleared only on login
+  transitions) — ViewModels, loaded data, and view scroll survive tab
+  switches and back walks with zero reload. Fragments load once per
+  instance (`loaded` flag; rotation/death still reload correctly).
+- **Per-tab back stacks (2026-09-15, verified on-device incl. a
+  select/go/syncNav StackOverflow crash):** each tab (HOME/SEARCH/
+  LIBRARY/SETTINGS) owns its stack; tab taps resume the tab top
+  (playlist included — no clearing, ever, except login transitions);
+  active-tab tap pops to root; back pops within the tab, then falls back
+  to the HOME tab, then exits. `syncNav` drives highlights under a
+  `syncingNav` mute flag — comparing against the visible screen
+  re-enters infinitely once drills detach highlight from content
+  (crashed Library→Home). `syncNav` never touches player-bar visibility
+  (track-owned since the mini-player fix).
+  Search drops its consumed handoff so re-attaches can't replay stale
+  queries (`submitExternal` delivers fresh top-bar queries into the live
+  screen). Back history stores tags (same instance on pop). Scroll memory
+  (`ScrollMemory` + `rememberScroll`) covers evicted/rebuilt screens:
+  save-gated until the initial restore lands (initial-layout scrolls
+  clobber with 0 otherwise), empty first dispatches (StateFlow `[]`)
+  never consume the one-shot, restore runs synchronously in the dispatch
+  (a posted restore raced layout scrolls and lost) — all three proven via
+  logcat against real navigation.
 - **APK bloat autopsy (2026-09-14, 693MB → 37MB):** two independent
   paddings stacked. (1) The debug `.so` is 348MB, 94% debug symbols —
   `llvm-strip --strip-debug` the STAGED copy in `build-kotlin.sh`

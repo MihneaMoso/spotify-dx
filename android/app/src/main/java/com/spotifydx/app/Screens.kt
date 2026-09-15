@@ -31,6 +31,71 @@ private fun Fragment.bindState(
     )
 }
 
+// -- Scroll memory -----------------------------------------------------------------------
+/**
+ * Per-screen scroll positions (Echo keeps list state across navigation;
+ * our replace-based nav destroys views, so positions persist here
+ * instead). Keyed per list ("home:shelf"), detail pages namespaced by
+ * kind+id. Data itself already survives in repositories/caches — only the
+ * viewport needs remembering.
+ */
+object ScrollMemory {
+    private val pos = mutableMapOf<String, Pair<Int, Int>>()
+
+    fun save(key: String, lm: LinearLayoutManager) {
+        val p = lm.findFirstVisibleItemPosition()
+        if (p == RecyclerView.NO_POSITION) return
+        // Start-edge offset in the layout direction (top for vertical,
+        // left for the horizontal shelf) — what scrollToPositionWithOffset
+        // consumes to reproduce the exact viewport.
+        val edge = lm.findViewByPosition(p)?.let {
+            if (lm.orientation == LinearLayoutManager.HORIZONTAL) lm.getDecoratedLeft(it)
+            else lm.getDecoratedTop(it)
+        } ?: 0
+        pos[key] = p to edge
+    }
+
+    fun restore(key: String, rv: RecyclerView) {
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return
+        val (p, off) = pos[key] ?: return
+        val count = rv.adapter?.itemCount ?: 0
+        if (count == 0) return
+        lm.scrollToPositionWithOffset(p.coerceIn(0, count - 1), off)
+    }
+}
+
+/** Persist scroll on every move; restore once on first data delivery. */
+fun RecyclerView.rememberScroll(key: String) {
+    val lm = layoutManager as? LinearLayoutManager ?: return
+    // Initial layout passes fire onScrolled at position 0 — saving those
+    // would clobber the remembered position before the restore below runs.
+    // Only saves count once the initial restore has landed.
+    var restored = false
+    addOnScrollListener(object : RecyclerView.OnScrollListener() {
+        override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+            if (restored) ScrollMemory.save(key, lm)
+        }
+    })
+    adapter?.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
+        var done = false
+        override fun onChanged() = restoreOnce()
+        override fun onItemRangeInserted(positionStart: Int, itemCount: Int) = restoreOnce()
+        private fun restoreOnce() {
+            if (done) return
+            // Empty dispatches (the StateFlow's initial [] emission) must
+            // NOT consume the one-shot: real data lands in a later dispatch.
+            if ((adapter?.itemCount ?: 0) == 0) return
+            done = true
+            // Synchronous (data is committed): scrollToPosition pends safely
+            // pre-layout, so no intermediate top-layout can fire clobbering
+            // saves.
+            ScrollMemory.restore(key, this@rememberScroll)
+            restored = true
+            adapter?.unregisterAdapterDataObserver(this)
+        }
+    })
+}
+
 // -- Gate --------------------------------------------------------------------------
 /** Login gate (§4.3 ARCHITECTURE): branded placeholder while the sign-in flow
  * runs exactly once; failures surface an error with a retry control. */
@@ -102,10 +167,12 @@ class HomeFragment : Fragment() {
             itemLayout = R.layout.item_card,
         )
         list.adapter = shelves
+        list.rememberScroll("home:shelf")
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
         val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Liked Songs") })
         likedList.adapter = liked
+        likedList.rememberScroll("home:liked")
         likedList.swipeToQueue(liked)
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
@@ -127,14 +194,29 @@ class HomeFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             vm.liked.collect { liked.submitList(it) }
         }
-        if (s == null) vm.load()
+        // Cached screens re-attach with ViewModel (data) intact: load once
+        // per instance, never per view. Rotation/rotation-death creates a
+        // new instance (loaded=false) and loads correctly.
+        if (!loaded) {
+            loaded = true
+            vm.load()
+        }
     }
+
+    /** View state is rebuilt; instance state (ViewModel) survives hides. */
+    private var loaded = false
 }
 
 // -- Search ----------------------------------------------------------------------------
 class SearchFragment : Fragment() {
     private val vm: SearchViewModel by lazy {
         ViewModelProvider(this)[SearchViewModel::class.java]
+    }
+
+    /** Forwards a fresh top-bar query into this live (cached) screen. */
+    fun submitExternal(query: String) {
+        view?.findViewById<EditText>(R.id.search_box)?.setText(query)
+        vm.submit(query)
     }
 
     override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View =
@@ -146,6 +228,7 @@ class SearchFragment : Fragment() {
         list.layoutManager = LinearLayoutManager(context)
         val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Search") })
         list.adapter = adapter
+        list.rememberScroll("search:tracks")
         list.swipeToQueue(adapter)
         val albumList: RecyclerView = v.findViewById(R.id.search_albums)
         albumList.layoutManager = LinearLayoutManager(context)
@@ -155,6 +238,7 @@ class SearchFragment : Fragment() {
             }
         })
         albumList.adapter = albums
+        albumList.rememberScroll("search:albums")
         val artistList: RecyclerView = v.findViewById(R.id.search_artists)
         artistList.layoutManager = LinearLayoutManager(context)
         val artists = TitleAdapter(onClick = { pos ->
@@ -163,6 +247,7 @@ class SearchFragment : Fragment() {
             }
         })
         artistList.adapter = artists
+        artistList.rememberScroll("search:artists")
         box.setOnEditorActionListener { tv, _, _ ->
             vm.submit(tv.text.toString())
             true
@@ -234,9 +319,12 @@ class SearchFragment : Fragment() {
                 artists.submitList(items.map { TitleAdapter.Row(it.name, "Artist", it.imageUrl) })
             }
         }
-        // One-shot handoff consumed on arrival, never re-seeded.
+        // One-shot handoff consumed on arrival, never re-seeded: drop it
+        // from arguments so re-attaching this cached screen cannot replay
+        // a stale query over live results.
         if (s == null) {
             vm.consumeHandoff(arguments?.getString("handoff"))
+            arguments?.remove("handoff")
         }
     }
 }
@@ -270,6 +358,7 @@ class LibraryFragment : Fragment() {
             }
         })
         list.adapter = rows
+        list.rememberScroll("library:list")
         // Echo split-button look (tab_bg/tab_text selectors react to
         // selected; PLAYLISTS starts selected in XML to match the default).
         val libTabIds = listOf(R.id.tab_playlists, R.id.tab_albums, R.id.tab_liked)
@@ -318,8 +407,15 @@ class LibraryFragment : Fragment() {
                 })
             }
         }
-        if (s == null) vm.load()
+        // Same load-once rule as Home: cached re-attaches reuse the live
+        // ViewModel (tab, filter, rows) instead of refetching defaults.
+        if (!loaded) {
+            loaded = true
+            vm.load()
+        }
     }
+
+    private var loaded = false
 }
 
 // -- Album / Artist / Playlist detail (shared layout) -------------------------------------------
@@ -338,6 +434,11 @@ class DetailFragment : Fragment() {
         list.layoutManager = LinearLayoutManager(context)
         val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, title.text.toString()) })
         list.adapter = adapter
+        // Detail scroll namespaces by kind+id: each playlist/album/artist
+        // remembers its own viewport independently.
+        val detailKey =
+            "detail:${arguments?.getString("kind", "playlist")}:${arguments?.getString("id", "")}"
+        list.rememberScroll(detailKey)
         list.swipeToQueue(adapter)
         v.findViewById<Button>(R.id.detail_play)?.setOnClickListener {
             adapter.currentList.firstOrNull()
@@ -404,11 +505,17 @@ class DetailFragment : Fragment() {
                 }
             }
         }
-        if (s == null) {
+        // Detail pages are keyed per kind+id in the screen cache: a cached
+        // revisit reuses tracks AND position instead of reloading. Title
+        // rebinds every attach (cheap, always correct).
+        title.text = arguments?.getString("title", "") ?: ""
+        if (!loaded) {
+            loaded = true
             val kind = arguments?.getString("kind", "playlist") ?: "playlist"
             val id = arguments?.getString("id", "") ?: ""
-            title.text = arguments?.getString("title", "") ?: ""
             vm.load(kind, id)
         }
     }
+
+    private var loaded = false
 }

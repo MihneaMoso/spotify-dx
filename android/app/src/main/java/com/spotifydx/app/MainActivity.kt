@@ -41,11 +41,14 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val KEY_DEST = "current_destination"
+        private const val KEY_TAB = "current_tab"
+        const val MAX_CACHED_SCREENS = 8
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_DEST, current.name)
+        outState.putString(KEY_TAB, currentTab.name)
     }
     private lateinit var toastView: TextView
     private var toastJob: Job? = null
@@ -53,14 +56,21 @@ class MainActivity : AppCompatActivity() {
 
     private var current: Destination = Destination.GATE
 
+    /** Last navigation args (copied — fragments must not alias these). */
+    private var lastArgs: Bundle? = null
+
     enum class Destination { GATE, HOME, SEARCH, LIBRARY, SETTINGS, DETAIL }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // FragmentManager restores the visible fragment itself, but the
-        // `current` field resets to GATE — resync it or system back reads a
-        // stale destination and exits from sub-screens.
+        // navigation fields reset — resync them or system back reads a
+        // stale destination and exits from sub-screens. Per-tab stacks
+        // restart empty (fragment instances are adopted on demand).
         if (savedInstanceState != null) {
             runCatching {
+                currentTab = Destination.valueOf(
+                    savedInstanceState.getString(KEY_TAB) ?: Destination.HOME.name,
+                )
                 current = Destination.valueOf(
                     savedInstanceState.getString(KEY_DEST) ?: Destination.GATE.name,
                 )
@@ -112,17 +122,9 @@ class MainActivity : AppCompatActivity() {
         // a disabled callback stays dead for the activity instance, so one
         // back-press on HOME/GATE would silently break every later
         // sub-screen back (permanent-exit bug).
-        onBackPressedDispatcher.addCallback(this) {
-            // Open player sheet: expanded section collapses first (Echo
-            // parity), then the sheet minimizes.
-            if (playerSheet.isOpen) {
-                if (!playerSheet.backToMain()) playerSheet.close()
-            } else if (current != Destination.HOME && current != Destination.GATE) {
-                go(Destination.HOME)
-            } else {
-                finish()
-            }
-        }
+        // Single back behavior for gesture, button, and top-bar chevron:
+        // sheet first, then back-stack pop, then root, then exit.
+        onBackPressedDispatcher.addCallback(this) { handleBack() }
 
         if (savedInstanceState == null) {
             // Shell-first: HOME immediately, session resolves underneath.
@@ -138,7 +140,7 @@ class MainActivity : AppCompatActivity() {
                 val settledInTime = SessionRepository.awaitSettled(3_000)
                 if (SessionRepository.snapshot().authenticated) return@launch
                 if (settledInTime || !PlaybackStore.hasPersistedState()) {
-                    if (current != Destination.GATE) go(Destination.GATE)
+                    if (current != Destination.GATE) go(Destination.GATE, null, true)
                 }
                 // Else: probable valid session on a slow core — stay on
                 // HOME; the settled collector and the backstop below finish
@@ -155,9 +157,27 @@ class MainActivity : AppCompatActivity() {
                 if (!SessionRepository.snapshot().authenticated &&
                     current != Destination.GATE
                 ) {
-                    go(Destination.GATE)
+                    go(Destination.GATE, null, true)
                 }
             }
+        }
+    }
+
+    /**
+     * Single back behavior for gesture, system button, and top-bar
+     * chevron: sheet first, then back-stack pop, then root, then exit.
+     */
+    private fun handleBack() {
+        // Open player sheet: expanded section collapses first (Echo
+        // parity), then the sheet minimizes.
+        if (playerSheet.isOpen) {
+            if (!playerSheet.backToMain()) playerSheet.close()
+        } else if (goBack()) {
+            // Back history popped (previous screen restored).
+        } else if (current != Destination.HOME && current != Destination.GATE) {
+            go(Destination.HOME)
+        } else {
+            finish()
         }
     }
 
@@ -167,29 +187,202 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -- Navigation ------------------------------------------------------------------
-    fun go(dest: Destination, args: Bundle? = null) {
-        current = dest
-        val frag: Fragment = when (dest) {
-            Destination.GATE -> GateFragment()
-            Destination.HOME -> HomeFragment()
-            Destination.SEARCH -> SearchFragment().apply {
-                arguments = (args ?: Bundle()).apply {
-                    searchHandoff?.let { putString("handoff", it) }
-                }
-                searchHandoff = null
+    /**
+     * Shown-screen cache (state persistence across navigation): visited
+     * screens are HIDDEN, never destroyed, keyed by destination (+kind/id
+     * for details) — so ViewModels, loaded data, and view state survive
+     * tab switches and back walks instead of reloading defaults. LRU-
+     * capped; evicted screens rebuild fresh on revisit (scroll memory
+     * still restores their viewport). Cleared on login transitions so no
+     * other account's screens can resurface.
+     */
+    private val fragCache = LinkedHashMap<String, Fragment>()
+    /**
+     * Per-tab back stacks (Spotify model): every tab resumes exactly where
+     * you left it — playlist included. Tapping a tab reveals its top;
+     * drilling (openDetail) pushes onto the current tab; back pops within
+     * the tab, then falls back to the HOME tab, then exits. GATE resets
+     * everything (never leak screens across login). Entries carry tags so
+     * pops return the SAME cached instance (show/hide cache) — never a
+     * rebuild.
+     */
+    private data class ScreenEntry(val tag: String, val dest: Destination, val args: Bundle?)
+
+    private val tabStacks = mutableMapOf<Destination, ArrayDeque<ScreenEntry>>()
+    private var currentTab: Destination = Destination.HOME
+
+    /** True while syncNav drives the highlight (listener must stay out). */
+    private var syncingNav = false
+
+    private fun stackFor(tab: Destination): ArrayDeque<ScreenEntry> =
+        tabStacks.getOrPut(tab) { ArrayDeque() }
+
+    private fun trimStack(stack: ArrayDeque<ScreenEntry>) {
+        while (stack.size > 25) stack.removeFirst()
+    }
+
+    private fun tagFor(dest: Destination, args: Bundle?): String = when (dest) {
+        Destination.DETAIL ->
+            "DETAIL:${args?.getString("kind")}:${args?.getString("id")}"
+        else -> dest.name
+    }
+
+    fun go(dest: Destination, args: Bundle? = null, clearStack: Boolean = false) {
+        if (clearStack) {
+            clearScreens()
+            tabStacks.clear()
+        }
+        when (dest) {
+            Destination.GATE -> {
+                currentTab = Destination.HOME
+                current = dest
+                lastArgs = null
+                showCached(dest, null)
             }
-            Destination.LIBRARY -> LibraryFragment()
-            Destination.SETTINGS -> SettingsFragment()
-            Destination.DETAIL -> DetailFragment().apply { arguments = args }
+            Destination.HOME, Destination.SEARCH, Destination.LIBRARY, Destination.SETTINGS -> {
+                currentTab = dest
+                val stack = stackFor(dest)
+                // Fresh top-bar query always opens a new search screen
+                // (back returns to the previous one); otherwise resume.
+                if (stack.isEmpty() || (dest == Destination.SEARCH && searchHandoff != null)) {
+                    val tag = tagFor(dest, args)
+                    stack.addLast(ScreenEntry(tag, dest, args?.let { Bundle(it) }))
+                    trimStack(stack)
+                    current = dest
+                    lastArgs = args?.let { Bundle(it) }
+                } else {
+                    val top = stack.last()
+                    current = top.dest
+                    lastArgs = top.args?.let { Bundle(it) }
+                }
+                val top = stackFor(currentTab).last()
+                showCached(top.dest, top.args?.let { Bundle(it) }, top.tag)
+            }
+            Destination.DETAIL -> {
+                val tag = tagFor(dest, args)
+                val stack = stackFor(currentTab)
+                if (stack.lastOrNull()?.tag != tag) {
+                    stack.addLast(ScreenEntry(tag, dest, args?.let { Bundle(it) }))
+                    trimStack(stack)
+                }
+                current = dest
+                lastArgs = args?.let { Bundle(it) }
+                showCached(dest, lastArgs)
+            }
+        }
+    }
+
+    /** Active-tab reselect: pop to the tab root (Spotify behavior). */
+    private fun popTabToRoot(tab: Destination) {
+        val stack = stackFor(tab)
+        while (stack.size > 1) stack.removeLast()
+        val root = stack.lastOrNull()
+        if (root == null) {
+            val tag = tagFor(tab, null)
+            stack.addLast(ScreenEntry(tag, tab, null))
+            currentTab = tab
+            current = tab
+            lastArgs = null
+            showCached(tab, null)
+        } else {
+            currentTab = tab
+            current = root.dest
+            lastArgs = root.args?.let { Bundle(it) }
+            showCached(root.dest, lastArgs, root.tag)
+        }
+    }
+
+    /** Pops back history (back gesture/button). False when already at root. */
+    private fun goBack(): Boolean {
+        val stack = stackFor(currentTab)
+        if (stack.size > 1) {
+            stack.removeLast()
+            val top = stack.last()
+            current = top.dest
+            lastArgs = top.args?.let { Bundle(it) }
+            showCached(top.dest, lastArgs, top.tag)
+            return true
+        }
+        if (currentTab != Destination.HOME) {
+            currentTab = Destination.HOME
+            val home = stackFor(Destination.HOME)
+            val top = home.lastOrNull()
+            if (top == null) {
+                val tag = tagFor(Destination.HOME, null)
+                home.addLast(ScreenEntry(tag, Destination.HOME, null))
+                current = Destination.HOME
+                lastArgs = null
+                showCached(Destination.HOME, null)
+            } else {
+                current = top.dest
+                lastArgs = top.args?.let { Bundle(it) }
+                showCached(top.dest, lastArgs, top.tag)
+            }
+            return true
+        }
+        return false
+    }
+
+    /** Drops every cached screen (login transitions only). */
+    private fun clearScreens() {
+        if (fragCache.isEmpty()) return
+        val tx = supportFragmentManager.beginTransaction()
+        fragCache.values.forEach { if (it.isAdded) tx.remove(it) }
+        tx.commitAllowingStateLoss()
+        fragCache.clear()
+    }
+
+    private fun showCached(dest: Destination, args: Bundle?, knownTag: String? = null) {
+        val tag = knownTag ?: tagFor(dest, args)
+        val fm = supportFragmentManager
+        val tx = fm.beginTransaction()
+        fragCache.values.forEach { if (it.isAdded && it.tag != tag) tx.hide(it) }
+        var frag: Fragment? = fragCache[tag] ?: fm.findFragmentByTag(tag)
+        if (frag == null) {
+            frag = createFragment(dest, args)
+            tx.add(R.id.content, frag, tag)
+            fragCache[tag] = frag
+            // LRU evict the eldest hidden screen past the cap.
+            while (fragCache.size > MAX_CACHED_SCREENS) {
+                val eldest = fragCache.keys.firstOrNull { it != tag } ?: break
+                fragCache.remove(eldest)?.let { if (it.isAdded) tx.remove(it) }
+            }
+        } else {
+            // Touch for LRU + adopt process-restored instances.
+            fragCache.remove(tag)
+            fragCache[tag] = frag
+            if (frag.isAdded) tx.show(frag)
+            else tx.add(R.id.content, frag, tag)
+            // Fresh top-bar query into a live Search screen.
+            if (dest == Destination.SEARCH && frag is SearchFragment) {
+                searchHandoff?.let {
+                    searchHandoff = null
+                    frag.submitExternal(it)
+                }
+            }
         }
         // Allowing state loss: navigation is driven by async repo state
         // (session/watchdog collectors) that can legally emit after
         // onSaveInstanceState (backgrounded app) — a lost frame beats a
         // crash (IllegalStateException seen on-device 2026-09-09).
-        supportFragmentManager.beginTransaction()
-            .replace(R.id.content, frag)
-            .commitAllowingStateLoss()
-        syncNav(dest)
+        tx.commitAllowingStateLoss()
+        // Highlight the TAB (not the screen): a detail drilled from Search
+        // keeps Search lit, matching the stack it belongs to.
+        syncNav(currentTab)
+    }
+
+    private fun createFragment(dest: Destination, args: Bundle?): Fragment = when (dest) {
+        Destination.GATE -> GateFragment()
+        Destination.HOME -> HomeFragment()
+        Destination.SEARCH -> SearchFragment().apply {
+            arguments = (args ?: Bundle()).apply {
+                searchHandoff?.let { putString("handoff", it) }
+            }
+            searchHandoff = null
+        }
+        Destination.LIBRARY -> LibraryFragment()
+        Destination.SETTINGS -> SettingsFragment()
+        Destination.DETAIL -> DetailFragment().apply { arguments = args }
     }
 
     fun openDetail(kind: String, id: String, title: String) {
@@ -201,10 +394,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun syncNav(dest: Destination) {
-        // Guarded writes: NavigationBarView.setSelectedItemId dispatches the
-        // selection listener UNCONDITIONALLY (even for the current id), so an
-        // unguarded write here recurses select -> go -> syncNav until the
-        // stack blows (StackOverflowError in findViewById).
+        // Guarded writes: NavigationBarView.setOnItemSelectedListener fires
+        // on programmatic setSelectedItemId too, so syncNav runs muted —
+        // otherwise select -> go -> syncNav recurses until the stack blows
+        // (the old id-compare guard broke the moment the visible screen
+        // stopped matching the highlighted tab, i.e. every drill-down).
         val target = when (dest) {
             Destination.HOME -> R.id.nav_home
             Destination.SEARCH -> R.id.nav_search
@@ -212,18 +406,22 @@ class MainActivity : AppCompatActivity() {
             else -> null
         }
         if (target != null) {
-            findViewById<BottomNavigationView>(R.id.bottom_nav)?.let {
-                if (it.selectedItemId != target) it.selectedItemId = target
-            }
-            findViewById<NavigationRailView>(R.id.nav_rail)?.let {
-                if (it.selectedItemId != target) it.selectedItemId = target
+            syncingNav = true
+            try {
+                findViewById<BottomNavigationView>(R.id.bottom_nav)?.let {
+                    if (it.selectedItemId != target) it.selectedItemId = target
+                }
+                findViewById<NavigationRailView>(R.id.nav_rail)?.let {
+                    if (it.selectedItemId != target) it.selectedItemId = target
+                }
+            } finally {
+                syncingNav = false
             }
         }
-        // The gate is chromeless: no top bar, nav, or player bar — just the
-        // placeholder with the login page layered above it (§4.3).
+        // The gate is chromeless: no top bar or nav (player-bar visibility
+        // belongs to renderPlayerBar's track-driven ownership — syncNav
+        // must not force it visible on every navigation).
         val gated = dest == Destination.GATE
-        findViewById<View>(R.id.player_bar)?.visibility =
-            if (gated) View.GONE else View.VISIBLE
         findViewById<View>(R.id.bottom_nav)?.visibility =
             if (gated) View.GONE else View.VISIBLE
         findViewById<View>(R.id.nav_rail)?.visibility =
@@ -248,12 +446,12 @@ class MainActivity : AppCompatActivity() {
             SessionRepository.state.collect { s ->
                 if (s.authenticated) {
                     loginManager.hide()
-                    if (current == Destination.GATE) go(Destination.HOME)
+                    if (current == Destination.GATE) go(Destination.HOME, null, true)
                 } else {
                     if ((SessionRepository.isSettled() || bootGateArmed) &&
                         current != Destination.GATE
                     ) {
-                        go(Destination.GATE)
+                        go(Destination.GATE, null, true)
                     }
                 }
             }
@@ -280,9 +478,8 @@ class MainActivity : AppCompatActivity() {
 
     // -- Top bar ------------------------------------------------------------------------
     private fun bindTopBar() {
-        findViewById<View>(R.id.btn_back)?.setOnClickListener {
-            if (current != Destination.HOME && current != Destination.GATE) go(Destination.HOME)
-        }
+        // Chevron mirrors system back exactly (shared handler above).
+        findViewById<View>(R.id.btn_back)?.setOnClickListener { handleBack() }
         findViewById<SearchView>(R.id.search_view)?.setOnQueryTextListener(
             object : SearchView.OnQueryTextListener {
                 override fun onQueryTextSubmit(query: String): Boolean {
@@ -301,16 +498,28 @@ class MainActivity : AppCompatActivity() {
     // -- Bottom nav / rail (same breakpoints as the responsive contract) ------------------
     private fun bindNav() {
         val select: (Int) -> Boolean = { id ->
-            val dest = when (id) {
-                R.id.nav_home -> Destination.HOME
-                R.id.nav_search -> Destination.SEARCH
-                R.id.nav_library -> Destination.LIBRARY
-                else -> null
+            if (syncingNav) {
+                // Programmatic highlight sync — never a navigation.
+                true
+            } else {
+                val dest = when (id) {
+                    R.id.nav_home -> Destination.HOME
+                    R.id.nav_search -> Destination.SEARCH
+                    R.id.nav_library -> Destination.LIBRARY
+                    else -> null
+                }
+                // Switching tabs resumes each tab's top (playlist included);
+                // tapping the ACTIVE tab pops it to root (Spotify behavior).
+                if (dest == null) {
+                    true
+                } else if (dest == currentTab) {
+                    popTabToRoot(dest)
+                    true
+                } else {
+                    go(dest)
+                    true
+                }
             }
-            // Second half of the syncNav recursion guard: ignore selections
-            // that are already current (covers programmatic dispatches).
-            if (dest != null && dest != current) go(dest)
-            true
         }
         findViewById<BottomNavigationView>(R.id.bottom_nav)?.setOnItemSelectedListener { item ->
             select(item.itemId)

@@ -939,3 +939,121 @@ a localhost-only cleartext exception. Settings shows live usage
   (Echo's mostly-transparent glyph pattern — a full-bleed monochrome
   renders as a solid tinted disc); desktop `assets/icon.ico` enabled in
   `Dioxus.toml`. Release builds inherit everything from source.
+
+---
+
+## 20. Session implementation log (2026-09-13/15 — review hardening, boot/login, navigation)
+
+### 20.1 Full code review, Phases A–E (all verified, four claims rejected)
+
+A three-agent sweep (Rust core, Kotlin app, security) plus line-by-line
+verification of every P0 before touching code — four agent claims were
+checked and dropped (`notifyItemChanged(-1)` impossible by
+`indexAt` bounds; `insertAt` double-coerce provably identical; dual
+`ItemTouchHelper`s standard; `player_api.rs` mirror guard already
+present). Shipped fixes:
+
+- **A (crashes):** `AudioCache`/`AppState` contexts init in
+  `SpotifyDxApp.onCreate` (service-first starts); `!!` → `requireNotNull`;
+  `keyring Entry::new().unwrap()` → best-effort `ok()` chain with the
+  existing file fallback; Settings radio groups null-listener during
+  programmatic bind + skip same-value save/recreate (opening Settings on
+  Onyx no longer restarts the activity once).
+- **B (AudioCache correctness):** lock-free cached-span fast path ahead of
+  the per-key lock (seeks never stall behind downloads);
+  `playbackSource` suspend (no Main `runBlocking`); request-path
+  re-sanitization; superseded art bitmap recycled; `playUrl` generation
+  counter retiring the `pendingStartMs` race.
+- **C (updates/secrets):** lexicographic `is_newer` (+ regression tests:
+  `2.0.0 > 1.10.0`); 15s/30s updater client timeouts; `settings.json`
+  `0600`; `backup_rules.xml` excluding core data dir, audio cache, and
+  staged APKs (backups keep working minus secrets).
+- **D (resolve latency):** Tidal uptime fetch bounded + instance-capped
+  (provider parked — hardening only); SoundCloud asset scrape capped at 5
+  bundles; new `providers::common` (`urlencode`, `http_client`) replacing
+  all four copies (md5-verified identical; piped's test moved along).
+- **E (hygiene):** deleted dead `moveQueue`/`LikedViewModel`; `clipRounded`
+  invalidates synchronously for laid-out views; stream-URL cache dedupes
+  slots + caps disk loads; odesli logs net-vs-miss distinctly.
+- Incidental: the pre-existing `app_shell_grid` test failure was a
+  brittle exact-substring match against reformatted CSS (app correct) —
+  rewritten order- and whitespace-insensitive; suite back to 112/112.
+
+### 20.2 Boot, login, and the death of the gate flash
+
+- **Settled gate + backstop + fast fresh-device path** (`MainActivity`,
+  `SessionRepository`, `PlaybackStore`): cold start lands on HOME
+  immediately; auto-GATE fires only on a *settled* signed-out mirror
+  (never on transient failures), plus a 15s backstop for wedged cores,
+  plus a 3s fast path that routes to GATE at once when the store is
+  completely blank (proof of a fresh device — no valid session predates
+  stored state). Accepted edge: logged-in-but-never-played on a slow
+  core may briefly see GATE before auto-HOME.
+- **Bridge readiness latch + call timeouts** (`BridgeClient`): no call
+  outruns native init (the cold-start `get_home` hang that masqueraded
+  as infinite splash/home spinners); every bridge call is bounded (30s,
+  90s init) and surfaces retryable errors; external cancellation now
+  propagates instead of being swallowed by `runCatching`.
+- **Splash added then removed** within the same arc: a suspending
+  resolver + splash screen trapped boot whenever the core stalled; the
+  settled design above achieves the goal (no gate copy for valid
+  sessions) with no new screen to trap.
+- **Fresh-device login fix**: the settled gate initially stranded new
+  installs on a dead HOME (`NeedsPage` → logout loop, retry doing
+  nothing, WebView never opening) — the backstop + fast path restore
+  the login flow within seconds.
+- **Login spinner fix**: `begin()` drops `starting` once the login page
+  takes over, so a cycling web flow can't wedge the gate on "Opening
+  login…" with retry hidden.
+
+### 20.3 Navigation: back stack → per-tab stacks + show/hide cache
+
+- **Show/hide screen cache** (`MainActivity`, LRU 8, cleared only on
+  login transitions): visited screens hide instead of dying — ViewModels,
+  data, and scroll survive tab switches with zero reload; fragments load
+  once per instance (rotation/death still reload); Search drops consumed
+  handoffs and takes fresh queries via `submitExternal`.
+- **Per-tab back stacks** (Spotify model): each tab resumes exactly where
+  left (playlist included — verified on-device to the exact row);
+  active-tab tap pops to root; back pops within the tab, falls back to
+  the HOME tab, then exits. Fixed en route: a select/go/syncNav infinite
+  recursion (StackOverflow crash Library→Home) via a `syncingNav` mute
+  flag, and `syncNav` no longer force-shows the mini player.
+- **Scroll memory** (`ScrollMemory` + `rememberScroll`, seven lists,
+  detail pages namespaced): three races fixed against live logcat
+  evidence — empty first dispatches never consume the one-shot, restore
+  runs synchronously in the dispatch (a posted restore lost to layout
+  scrolls), saves gate on restore-landed; horizontal shelf measures its
+  left edge.
+
+### 20.4 Player correctness fixes
+
+- **Mini-player visibility** (`renderPlayerBar` owns it): shows iff a
+  track exists — the old gated-only toggling left it hidden after cold
+  starts that never passed a second sync.
+- **Play/pause icons on reopen**: `restore()` early-returns while the
+  service is audibly playing (new `isPlayingNow()` query) instead of
+  clobbering live state with `isPlaying = false`.
+- **Resume-from-position** (both engines): restored offset seeks on
+  prepare with no from-the-top blip; fresh tracks/advances/seeks reset
+  to 0; track-swap-mid-resolve guard included.
+- **Sort lands on top**: `submitList` commit callback (a posted scroll
+  raced the async diff and lost — the diff re-dispatch yanked scroll
+  back).
+- **Removed screens**: Liked (lives in Library's tab) and Queue (lives
+  in the sheet) fragments, layouts, nav items, destinations — zero
+  dangling references.
+
+### 20.5 Icons, continued (post-§19.7 iterations)
+
+- Root-caused via pixel forensics (`logo.png` is 62% transparent; the
+  cropped file is fully opaque): launcher white-fill came from
+  transparency, erased strokes from a center crop past the mark bbox
+  (true extent found at 12% threshold + margin), green-blob themed icon
+  from a full-bleed monochrome layer.
+- Final recipe: tight mark crop → 230px safe-zone placement (launchers
+  mask to ~61%, preview-verified per iteration) → feathered navy field;
+  monochrome re-derived as a brightness-threshold glyph (~10%, clean
+  blobs); desktop runtime icon via `with_window_icon` (the window was
+  showing Spotify's page favicon — bundle `icon` only affects
+  packaging). Previews were screenshot-verified before each rebuild.
