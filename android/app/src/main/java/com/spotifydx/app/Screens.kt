@@ -349,6 +349,10 @@ class DetailFragment : Fragment() {
         val detailKind = arguments?.getString("kind", "playlist") ?: "playlist"
         val sortBtn = v.findViewById<Button>(R.id.detail_sort)
         sortBtn?.visibility = if (detailKind == "playlist") View.VISIBLE else View.GONE
+        // A fresh sort always lands on top (Echo/Spotify parity): without
+        // this DiffUtil preserves the old scroll offset and the user ends
+        // up at the bottom (or a random middle) of the new order.
+        var sortJustChanged = false
         sortBtn?.setOnClickListener { anchor ->
             val menu = android.widget.PopupMenu(context, anchor)
             DetailViewModel.SortOrder.entries.forEachIndexed { i, order ->
@@ -358,7 +362,12 @@ class DetailFragment : Fragment() {
             menu.menu.getItem(vm.sort.value.ordinal)?.isChecked = true
             menu.setOnMenuItemClickListener { item ->
                 DetailViewModel.SortOrder.entries.getOrNull(item.itemId)
-                    ?.let { vm.setSort(it) }
+                    ?.let {
+                        if (it != vm.sort.value) {
+                            sortJustChanged = true
+                            vm.setSort(it)
+                        }
+                    }
                 true
             }
             menu.show()
@@ -383,7 +392,17 @@ class DetailFragment : Fragment() {
             vm.subtitle.collect { subtitle.text = it }
         }
         viewLifecycleOwner.lifecycleScope.launch {
-            vm.tracks.collect { adapter.submitList(it) }
+            vm.tracks.collect {
+                if (sortJustChanged) {
+                    sortJustChanged = false
+                    // Commit callback runs AFTER the async diff lands the
+                    // new order: scrolling here can't be undone by a later
+                    // dispatch (the previous post() raced it and lost).
+                    adapter.submitList(it) { list.scrollToPosition(0) }
+                } else {
+                    adapter.submitList(it)
+                }
+            }
         }
         if (s == null) {
             val kind = arguments?.getString("kind", "playlist") ?: "playlist"
