@@ -24,8 +24,13 @@ import kotlin.math.min
  * every track list via [RecyclerView.swipeToQueue].
  */
 class SwipeToQueue(
-    private val adapter: TrackAdapter,
+    private val adapter: RecyclerView.Adapter<*>,
     private val onQueue: (Track) -> Unit,
+    private val trackAt: (Int) -> Track? = { pos ->
+        (adapter as? TrackAdapter)?.currentList?.getOrNull(pos)
+    },
+    /** Per-row eligibility (unified lists swipe tracks only, never titles). */
+    private val canSwipe: (Int) -> Boolean = { true },
 ) : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT) {
 
     private var bgPaint: Paint? = null
@@ -42,10 +47,19 @@ class SwipeToQueue(
     /** Commit slightly before halfway — snappier than the default 0.5. */
     override fun getSwipeThreshold(holder: RecyclerView.ViewHolder): Float = 0.4f
 
+    override fun getSwipeDirs(
+        rv: RecyclerView,
+        holder: RecyclerView.ViewHolder,
+    ): Int {
+        val pos = holder.bindingAdapterPosition
+        if (pos == RecyclerView.NO_POSITION || !canSwipe(pos)) return 0
+        return super.getSwipeDirs(rv, holder)
+    }
+
     override fun onSwiped(holder: RecyclerView.ViewHolder, direction: Int) {
         val pos = holder.bindingAdapterPosition
         if (pos != RecyclerView.NO_POSITION) {
-            adapter.currentList.getOrNull(pos)?.let(onQueue)
+            trackAt(pos)?.let(onQueue)
             // Dataset unchanged: rebind to spring the row back into place.
             adapter.notifyItemChanged(pos)
         }
@@ -111,4 +125,20 @@ private fun queueWithToast(t: Track) {
 /** Attach Spotify-style swipe-to-queue to a track list. */
 fun RecyclerView.swipeToQueue(adapter: TrackAdapter) {
     ItemTouchHelper(SwipeToQueue(adapter, ::queueWithToast)).attachToRecyclerView(this)
+}
+
+/** Unified search results: swipe enqueues track rows only, never titles. */
+fun RecyclerView.swipeToQueue(adapter: SearchAdapter) {
+    ItemTouchHelper(
+        SwipeToQueue(
+            adapter,
+            ::queueWithToast,
+            trackAt = { pos ->
+                (adapter.currentList.getOrNull(pos) as? SearchRow.TrackRow)?.track
+            },
+            canSwipe = { pos ->
+                adapter.currentList.getOrNull(pos) is SearchRow.TrackRow
+            },
+        ),
+    ).attachToRecyclerView(this)
 }

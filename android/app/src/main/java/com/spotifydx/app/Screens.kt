@@ -224,30 +224,22 @@ class SearchFragment : Fragment() {
 
     override fun onViewCreated(v: View, s: Bundle?) {
         val box: EditText = v.findViewById(R.id.search_box)
-        val list: RecyclerView = v.findViewById(R.id.search_list)
+        // Unified results (songs → artists → albums, API order kept): one
+        // list, track rows playable + swipeable, title rows drill down.
+        val list: RecyclerView = v.findViewById(R.id.search_results)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Search") })
+        val adapter = SearchAdapter(
+            onPlayTrack = { PlayerRepository.play(it, "Search") },
+            onOpenAlbum = { id, name ->
+                (activity as? MainActivity)?.openDetail("album", id, name)
+            },
+            onOpenArtist = { id, name ->
+                (activity as? MainActivity)?.openDetail("artist", id, name)
+            },
+        )
         list.adapter = adapter
-        list.rememberScroll("search:tracks")
+        list.rememberScroll("search:results")
         list.swipeToQueue(adapter)
-        val albumList: RecyclerView = v.findViewById(R.id.search_albums)
-        albumList.layoutManager = LinearLayoutManager(context)
-        val albums = TitleAdapter(onClick = { pos ->
-            vm.albums.value.getOrNull(pos)?.let {
-                (activity as? MainActivity)?.openDetail("album", it.id, it.name)
-            }
-        })
-        albumList.adapter = albums
-        albumList.rememberScroll("search:albums")
-        val artistList: RecyclerView = v.findViewById(R.id.search_artists)
-        artistList.layoutManager = LinearLayoutManager(context)
-        val artists = TitleAdapter(onClick = { pos ->
-            vm.artists.value.getOrNull(pos)?.let {
-                (activity as? MainActivity)?.openDetail("artist", it.id, it.name)
-            }
-        })
-        artistList.adapter = artists
-        artistList.rememberScroll("search:artists")
         box.setOnEditorActionListener { tv, _, _ ->
             vm.submit(tv.text.toString())
             true
@@ -305,19 +297,7 @@ class SearchFragment : Fragment() {
             }
         }
         viewLifecycleOwner.lifecycleScope.launch {
-            vm.tracks.collect { adapter.submitList(it) }
-        }
-        viewLifecycleOwner.lifecycleScope.launch {
-            vm.albums.collect { items ->
-                albums.submitList(items.map {
-                    TitleAdapter.Row(it.name, it.artists.joinToString(", "), it.coverUrl)
-                })
-            }
-        }
-        viewLifecycleOwner.lifecycleScope.launch {
-            vm.artists.collect { items ->
-                artists.submitList(items.map { TitleAdapter.Row(it.name, "Artist", it.imageUrl) })
-            }
+            vm.results.collect { adapter.submitList(it) }
         }
         // One-shot handoff consumed on arrival, never re-seeded: drop it
         // from arguments so re-attaching this cached screen cannot replay

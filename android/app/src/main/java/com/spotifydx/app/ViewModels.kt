@@ -156,6 +156,10 @@ class SearchViewModel : ScopedViewModel() {
     private val _artists = MutableStateFlow<List<Artist>>(emptyList())
     val artists: StateFlow<List<Artist>> = _artists.asStateFlow()
 
+    /** Unified results (songs, then artists, then albums — API order kept). */
+    private val _results = MutableStateFlow<List<SearchRow>>(emptyList())
+    val results: StateFlow<List<SearchRow>> = _results.asStateFlow()
+
     private var generation = 0
     private var debounce: Job? = null
     private var handoff: String? = null
@@ -188,6 +192,7 @@ class SearchViewModel : ScopedViewModel() {
             _tracks.value = emptyList()
             _albums.value = emptyList()
             _artists.value = emptyList()
+            _results.value = emptyList()
             _state.value = ScreenState.Content(empty = true)
             return
         }
@@ -215,8 +220,15 @@ class SearchViewModel : ScopedViewModel() {
                     List(arr.length()) { i -> arr.optJSONObject(i) }
                         .filterNotNull().map(Models::artist)
                 }
-                val empty = _tracks.value.isEmpty() && _albums.value.isEmpty() &&
-                    _artists.value.isEmpty()
+                // Unified relevance order: each array arrives Spotify-ordered;
+                // concatenate songs → artists → albums (the app's vertical
+                // order), no client ranking invented.
+                _results.value = buildList {
+                    _tracks.value.forEach { add(SearchRow.TrackRow(it)) }
+                    _artists.value.forEach { add(SearchRow.ArtistRow(it)) }
+                    _albums.value.forEach { add(SearchRow.AlbumRow(it)) }
+                }
+                val empty = _results.value.isEmpty()
                 _state.value = ScreenState.Content(empty = empty)
             } else {
                 _state.value = ScreenState.Error(UiStates.errorCopy(res.exceptionOrNull())) {

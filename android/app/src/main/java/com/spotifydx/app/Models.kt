@@ -67,6 +67,18 @@ data class Playlist(
     val trackCount: Int = 0,
 )
 
+/**
+ * One row of the unified search results: the API returns tracks, artists,
+ * and albums each internally relevance-ordered; the list concatenates them
+ * in the official app's vertical section order (songs, artists, albums)
+ * with no client-side ranking invented on top.
+ */
+sealed interface SearchRow {
+    data class TrackRow(val track: Track) : SearchRow
+    data class AlbumRow(val album: Album) : SearchRow
+    data class ArtistRow(val artist: Artist) : SearchRow
+}
+
 /** Lenient readers over core JSON (per-operation field variants tolerated). */
 object Models {
     /** Snapshot a [Track] to the core-shaped JSON [track] parses back —
