@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.SearchView
 import android.widget.SeekBar
 import android.widget.TextView
@@ -17,8 +18,10 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.navigationrail.NavigationRailView
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Routed shell (§10.1 migration): top bar (history, global search with
@@ -493,7 +496,50 @@ class MainActivity : AppCompatActivity() {
             },
         )
         findViewById<View>(R.id.btn_avatar)?.setOnClickListener { go(Destination.SETTINGS) }
+        findViewById<View>(R.id.avatar_photo)?.let { Design.clipCircle(it) }
+        refreshProfileBadge()
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Profile may have changed in Settings (name save, avatar set or
+        // cleared) — re-read on every return.
+        refreshProfileBadge()
+    }
+
+    /** Top-right profile badge: username + circular avatar photo. */
+    private fun refreshProfileBadge() {
+        val name = findViewById<TextView>(R.id.avatar_name) ?: return
+        val photo = findViewById<ImageView>(R.id.avatar_photo) ?: return
+        lifecycleScope.launch {
+            val json = withContext(Dispatchers.IO) {
+                BridgeClient.getProfile().getOrNull()
+            }
+            name.text = json?.optString("username", "").orEmpty()
+            val b64 = json?.optString("avatar_b64", "").orEmpty()
+            if (b64.isEmpty()) {
+                photo.setImageResource(android.R.drawable.ic_menu_myplaces)
+                return@launch
+            }
+            val bmp = withContext(Dispatchers.IO) { decodeAvatar(b64) }
+            if (bmp != null) photo.setImageBitmap(bmp)
+            else photo.setImageResource(android.R.drawable.ic_menu_myplaces)
+        }
+    }
+
+    /** Downsamples avatar bytes to badge size (cheap, no cache needed). */
+    private fun decodeAvatar(b64: String): android.graphics.Bitmap? = runCatching {
+        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+        if (bytes.isEmpty()) return null
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 96 && bounds.outHeight / (sample * 2) >= 96) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    }.getOrNull()
 
     // -- Bottom nav / rail (same breakpoints as the responsive contract) ------------------
     private fun bindNav() {
