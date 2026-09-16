@@ -134,21 +134,20 @@ object PlayerRepository {
     }
 
     /**
-     * Lands a drag-session timeline (Echo commit-on-drop). Past/upcoming
-     * membership re-splits around the CURRENT track's id wherever it
-     * landed — every row (including NOW) drags freely, yet the playing
-     * track object itself is never touched: reorder only re-files tracks
-     * around a stationary current, so Echo's rapid song-switching on
-     * cross-current moves cannot happen (reorder never calls play/seek).
-     * Single emit + persists.
+     * Lands a drag-session timeline (Echo commit-on-drop). Membership
+     * follows the entries' kinds with the NOW-kind position authoritative
+     * (exactly one exists by construction — dupe track ids can't misfile,
+     * unlike first-id-match); the current track object is NEVER touched —
+     * reorder (even across the NOW row) cannot make the player jump
+     * tracks, which is exactly Echo's cross-current bug, excluded by
+     * construction.
      */
     fun commitTimeline(entries: List<QueueEntry>) {
         val tracks = entries.map { it.track }
-        val curId = _state.value.track?.id.orEmpty()
-        val idx = if (curId.isEmpty()) -1 else tracks.indexOfFirst { it.id == curId }
-        if (idx < 0) {
-            // Current absent from the landed order (shouldn't happen — NOW
-            // can't be swiped away): fall back to kind membership.
+        val nowIdx = entries.indexOfFirst { it.kind == RowKind.NOW }
+        if (nowIdx < 0) {
+            // No current row (shouldn't happen — NOW can't be swiped
+            // away): fall back to kind membership.
             val history = entries.filter { it.kind == RowKind.PAST }.map { it.track }
                 .takeLast(HISTORY_CAP)
             val queue = entries.filter { it.kind == RowKind.NEXT }.map { it.track }
@@ -157,8 +156,117 @@ object PlayerRepository {
             PlaybackStore.saveQueueSoon(queue)
             return
         }
+        val history = tracks.subList(0, nowIdx).takeLast(HISTORY_CAP)
+        val queue = tracks.subList(nowIdx + 1, tracks.size).toList()
+        update { s -> s.copy(history = history, queue = queue) }
+        PlaybackStore.saveHistorySoon(history)
+        PlaybackStore.saveQueueSoon(queue)
+    }
+
+    /**
+     * Drop commit for a drag gesture ([QueueDrag]): lands the user's
+     * lift→hover move against LIVE repo state instead of the (possibly
+     * stale) visual session. A track ending mid-drag — or any other queue
+     * mutation — can therefore never corrupt the order or silently eat
+     * the gesture. Returns true when a move was applied.
+     */
+    fun commitDrop(session: List<QueueEntry>, lift: Int, hover: Int): Boolean {
+        if (lift !in session.indices || hover !in session.indices) return false
+        val fresh = timeline()
+        if (sameIdMultiset(session, fresh)) {
+            // Nothing changed mid-drag: plain positional move on fresh
+            // state (equivalent to the gesture, exact).
+            val m = fresh.toMutableList()
+            val e = m.removeAt(lift)
+            m.add(hover.coerceIn(0, m.size), e)
+            commitTimeline(m)
+            return true
+        }
+        // Content changed mid-drag: anchor the drop to surviving neighbors
+        // (dupe-safe via occurrence ranks), else abandon into a resync.
+        // The dragged row itself sits at hover — neighbors are stable sides.
+        // Membership splits ARITHMETICALLY around the live NOW position:
+        // session kinds are stale here by definition, so they (and id
+        // searches, which dupes defeat) are never consulted.
+        val moved = session[lift]
+        val anchors = listOfNotNull(
+            session.getOrNull(hover - 1)?.let { it to true },
+            session.getOrNull(hover + 1)?.let { it to false },
+        )
+        for ((anchor, placeAfter) in anchors) {
+            val aIdx = if (placeAfter) hover - 1 else hover + 1
+            val aRank = occurrenceRank(session, aIdx, anchor.track.id)
+            val fAnchor = findOccurrence(fresh, anchor.track.id, aRank)
+            if (fAnchor < 0) continue
+            val mRank = occurrenceRank(session, lift, moved.track.id)
+            val mIdx = findOccurrence(fresh, moved.track.id, mRank)
+            if (mIdx < 0) return false
+            val nfIdx = fresh.indexOfFirst { it.kind == RowKind.NOW }
+            if (nfIdx < 0) {
+                // No current track (never played): membership by kind —
+                // the moved row inherits its anchor side's kind.
+                val m = fresh.toMutableList()
+                m.removeAt(mIdx)
+                var ins = if (placeAfter) fAnchor + 1 else fAnchor
+                if (mIdx < ins) ins--
+                ins = ins.coerceIn(0, m.size)
+                val anchorKind = m.getOrNull(if (placeAfter) ins - 1 else ins)?.kind
+                    ?: moved.kind
+                m.add(ins, moved.copy(kind = anchorKind))
+                commitTimeline(m)
+                return true
+            }
+            val tracks = fresh.map { it.track }.toMutableList()
+            tracks.removeAt(mIdx)
+            var ins = if (placeAfter) fAnchor + 1 else fAnchor
+            if (mIdx < ins) ins--
+            ins = ins.coerceIn(0, tracks.size)
+            tracks.add(ins, moved.track)
+            // The moved row lands at `ins`. NOW follows arithmetically:
+            // it lives where it landed when IT moved, else shifts only if
+            // the removal or insertion crossed it.
+            val nowIdx = if (mIdx == nfIdx) {
+                ins
+            } else {
+                var c = nfIdx
+                if (mIdx < nfIdx) c--
+                if (ins <= c) c++ else c
+            }
+            splitByIndex(tracks, nowIdx)
+            return true
+        }
+        return false
+    }
+
+    /** 1-based occurrence rank of the id at pos within list. */
+    private fun occurrenceRank(list: List<QueueEntry>, pos: Int, id: String): Int {
+        if (pos !in list.indices) return 0
+        return list.subList(0, pos + 1).count { it.track.id == id }
+    }
+
+    /** Index of the rank-th occurrence of id, or -1. */
+    private fun findOccurrence(list: List<QueueEntry>, id: String, rank: Int): Int {
+        if (rank <= 0) return -1
+        var c = 0
+        list.forEachIndexed { i, e ->
+            if (e.track.id == id) {
+                c++
+                if (c == rank) return i
+            }
+        }
+        return -1
+    }
+
+    private fun sameIdMultiset(a: List<QueueEntry>, b: List<QueueEntry>): Boolean {
+        if (a.size != b.size) return false
+        return a.map { it.track.id }.sorted() == b.map { it.track.id }.sorted()
+    }
+
+    /** Membership split at an explicit current index (dupe-proof). */
+    private fun splitByIndex(tracks: List<Track>, nowIdx: Int) {
+        val idx = nowIdx.coerceIn(0, tracks.size)
         val history = tracks.subList(0, idx).takeLast(HISTORY_CAP)
-        val queue = tracks.subList(idx + 1, tracks.size).toList()
+        val queue = tracks.subList((idx + 1).coerceAtMost(tracks.size), tracks.size).toList()
         update { s -> s.copy(history = history, queue = queue) }
         PlaybackStore.saveHistorySoon(history)
         PlaybackStore.saveQueueSoon(queue)
@@ -329,12 +437,23 @@ object PlayerRepository {
         }
     }
 
-    private fun playViaOpen(track: Track) {
+    private fun playViaOpen(track: Track, attempt: Int = 0) {
         scope.launch {
             val res = withContext(Dispatchers.IO) { MusicRepository.resolveStream(track) }
             val json = res.getOrNull()
             val url = json?.optString("url", "")
-            val svc = PlaybackService.instance
+            var svc = PlaybackService.instance
+            if (svc == null) {
+                // Service dead/restarting is NOT a network problem: (re)start
+                // it and give it one window instead of failing instantly.
+                runCatching {
+                    androidx.core.content.ContextCompat.startForegroundService(
+                        AppState.ctx(), PlaybackService.intentOf(AppState.ctx()),
+                    )
+                }
+                delay(500)
+                svc = PlaybackService.instance
+            }
             if (!url.isNullOrEmpty() && svc != null) {
                 val format = json?.optString("format", "") ?: ""
                 val provider = json?.optString("provider", "") ?: ""
@@ -352,10 +471,48 @@ object PlayerRepository {
                 svc.playUrl(url, track, startMs, "$provider/$format/$quality")
             } else {
                 update { s -> s.copy(isPlaying = false) }
-                Log.w(TAG, "play dropped: urlEmpty=${url.isNullOrEmpty()} svc=${svc != null}")
-                ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("no player"))
+                val err = res.exceptionOrNull()
+                val code = (err as? BridgeException)?.error
+                    ?.let { it as? BridgeError.Core }?.code
+                // Transient network failures get ONE backoff retry; region
+                // blocks (NOT_FOUND) and session/premium errors never do.
+                val transient = url.isNullOrEmpty() && (code == "NET" || code == "TIMEOUT")
+                if (transient && attempt == 0) {
+                    Log.i(TAG, "resolve transient ($code), retrying once after backoff")
+                    delay(1500)
+                    playViaOpen(track, 1)
+                    return@launch
+                }
+                when {
+                    svc == null -> {
+                        Log.w(TAG, "play dropped: service unavailable after restart")
+                        ToastBus.error("Player unavailable — reopen the app")
+                    }
+                    code == "NOT_FOUND" -> {
+                        Log.w(TAG, "play dropped: no playable source for ${track.id}")
+                        ToastBus.error("Not available — nothing playable found")
+                    }
+                    transient -> {
+                        Log.w(TAG, "play dropped: resolve failed twice ($code)")
+                        ToastBus.error("Couldn't load song — check your connection")
+                    }
+                    else -> {
+                        Log.w(TAG, "play dropped: urlEmpty=${url.isNullOrEmpty()} svc=${svc != null}")
+                        ToastBus.fromBridge(err ?: Exception("no player"))
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * Re-resolve + replay after a transient media error (single attempt;
+     * attempt=1 disables further resolve-retries — no loops). Same-track
+     * resume keeps the position via the startMs path.
+     */
+    fun retryAfterError() {
+        val t = _state.value.track ?: return
+        playViaOpen(t, 1)
     }
 
     /** SDK path: ensure the hidden device, then Connect-play the URI on it.

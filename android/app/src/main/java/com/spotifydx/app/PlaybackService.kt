@@ -23,6 +23,7 @@ import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -71,6 +72,10 @@ class PlaybackService : Service(),
     private var player: MediaPlayer? = null
     private var pendingStartMs: Long = 0
     private var playSeq: Long = 0
+    /** Generation of the last successfully prepared player. */
+    private var preparedSeq: Long = -1
+    /** Last generation that already consumed its media-error retry. */
+    private var errorRetriedSeq: Long = -1
     private var session: MediaSession? = null
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -165,6 +170,20 @@ class PlaybackService : Service(),
                 prepareAsync()
             }
             player = mp
+            // Prepare watchdog: prepareAsync has no framework timeout — a
+            // stalled stream would hang forever with no error and no retry.
+            // Bound it; the generation guard keeps this from ever killing a
+            // newer (healthy) build.
+            val watchSeq = seq
+            scope.launch {
+                delay(20_000)
+                if (watchSeq == playSeq && preparedSeq != watchSeq) {
+                    Log.w(TAG, "prepare timed out, releasing")
+                    releasePlayer()
+                    PlayerRepository.onServiceState(false)
+                    ToastBus.error("Couldn't load song — check your connection")
+                }
+            }
         }
     }
 
@@ -230,6 +249,7 @@ class PlaybackService : Service(),
 
     // -- MediaPlayer callbacks ----------------------------------------------------
     override fun onPrepared(mp: MediaPlayer) {
+        preparedSeq = playSeq
         mp.start()
         PlayerRepository.onServiceState(true)
         // Resume: jump straight to the restored position (no audible
@@ -257,8 +277,23 @@ class PlaybackService : Service(),
 
     override fun onError(mp: MediaPlayer, what: Int, extra: Int): Boolean {
         Log.w(TAG, "mediaplayer error what=$what extra=$extra")
-        ToastBus.error("Playback failed (error $what)")
-        PlayerRepository.onServiceState(false)
+        // Transient I/O failures (dropped wifi mid-stream) get ONE
+        // re-resolve + replay; anything else — or a second failure for the
+        // same generation — stops loudly. Bounded, no loops.
+        val transient = what == MediaPlayer.MEDIA_ERROR_UNKNOWN &&
+            (extra == MediaPlayer.MEDIA_ERROR_IO || extra == MediaPlayer.MEDIA_ERROR_TIMED_OUT)
+        if (transient && errorRetriedSeq != playSeq &&
+            PlayerRepository.state.value.track != null
+        ) {
+            errorRetriedSeq = playSeq
+            Log.i(TAG, "transient media error, re-resolving once")
+            PlayerRepository.retryAfterError()
+        } else {
+            if (transient) Log.w(TAG, "media error retry already used, stopping")
+            ToastBus.error("Playback failed (error $what)")
+            PlayerRepository.onServiceState(false)
+            releasePlayer()
+        }
         return true
     }
 

@@ -47,9 +47,6 @@ class QueueTimelineAdapter(
     var dragging: Boolean = false
         private set
 
-    /** Stashed repo state landing mid-drag (applied on drop, kinds intact). */
-    private var pending: List<QueueEntry>? = null
-
     /**
      * Drag starter, armed by [queueDrag]: PAST/NEXT rows show the drag
      * handle and touching it begins an instant drag (Echo's
@@ -59,10 +56,11 @@ class QueueTimelineAdapter(
 
     /** Repository resync (Echo `LaunchedEffect(queueWindows)`). */
     fun setTimeline(entries: List<QueueEntry>) {
-        if (dragging) {
-            pending = entries
-            return
-        }
+        // Mid-drag emits are IGNORED outright: the visual session owns the
+        // truth until drop, and the drop reconciles against live repo state
+        // (anchor commit or forced resync). Stashing them (the old pending
+        // design) let a mid-drag advance poison the commit with stale order.
+        if (dragging) return
         // Ticker-speed emits with identical content skip silently — no
         // rebind churn while playing.
         if (entries == windows) return
@@ -93,14 +91,21 @@ class QueueTimelineAdapter(
         return true
     }
 
-    /** Drop: applies any stashed resync, returns the landed timeline. */
+    /** Drop: ends the session, returns the landed visual order. */
     fun endDrag(): List<QueueEntry> {
         dragging = false
-        pending?.let {
-            pending = null
-            setTimeline(it)
-        }
         return windows.toList()
+    }
+
+    /**
+     * Force-resync to live repo state (abandoned drops): replaces visuals
+     * wholesale so a stale session can never linger on screen.
+     */
+    fun forceResync(entries: List<QueueEntry>) {
+        dragging = false
+        windows.clear()
+        windows.addAll(entries)
+        notifyDataSetChanged()
     }
 
     /** Swipe-remove support (Echo dismiss): excises + animates one row. */
