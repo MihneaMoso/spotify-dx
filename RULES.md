@@ -1592,8 +1592,7 @@ dioxus-mobile Rust code is untouched and still builds.
   cannot displace, tap toggles) so cross-current moves can't disturb
   playback — Echo's rapid song-switching on such moves is structurally
   impossible (`track` lives outside the reorderable list). Drags start
-  instantly from an explicit handle (`ic_drag_handle`, handle touch →
-  `startDrag`, long-press drag OFF). Handles show only on armed lists.
+  instantly from an explicit handle (`ic_drag_handle`, handle touch →  `startDrag`, long-press drag OFF). Handles show only on armed lists.
   History (Room v3 `history_items` + `MIGRATION_2_3`, cap 50, debounced
   persist): pushed on advance/play, jump-back truncates, survives
   restarts. Test harness notes: `adb shell input draganddrop` drives real
@@ -1635,11 +1634,18 @@ dioxus-mobile Rust code is untouched and still builds.
   LIBRARY/SETTINGS) owns its stack; tab taps resume the tab top
   (playlist included — no clearing, ever, except login transitions);
   active-tab tap pops to root; back pops within the tab, then falls back
-  to the HOME tab, then exits. `syncNav` drives highlights under a
+  to the HOME tab, then exits.   `syncNav` drives highlights under a
   `syncingNav` mute flag — comparing against the visible screen
   re-enters infinitely once drills detach highlight from content
   (crashed Library→Home). `syncNav` never touches player-bar visibility
   (track-owned since the mini-player fix).
+- **Show/hide must hide by container, not by cache (2026-09-17,
+  screenshot-verified):** first cold-start switch overlaid Search on
+  Home because the hide loop only iterated the fragment cache — a
+  process/activity-restored fragment the cache never saw stayed visible
+  forever. `showCached` now flushes pending transactions first and hides
+  every attached fragment in `R.id.content` except the target
+  (adopting shown instances into the cache as it goes).
   Search drops its consumed handoff so re-attaches can't replay stale
   queries (`submitExternal` delivers fresh top-bar queries into the live
   screen). Back history stores tags (same instance on pop). Scroll memory

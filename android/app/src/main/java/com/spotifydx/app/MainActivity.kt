@@ -338,8 +338,19 @@ class MainActivity : AppCompatActivity() {
     private fun showCached(dest: Destination, args: Bundle?, knownTag: String? = null) {
         val tag = knownTag ?: tagFor(dest, args)
         val fm = supportFragmentManager
+        // Flush pending transactions first: hide decisions below read live
+        // attachment state, and an un-executed add (cold start, theme
+        // recreate) would otherwise be invisible to the hide loop while
+        // still rendering on top afterwards.
+        fm.executePendingTransactions()
         val tx = fm.beginTransaction()
-        fragCache.values.forEach { if (it.isAdded && it.tag != tag) tx.hide(it) }
+        // Hide EVERYTHING attached in our container — not just the cache:
+        // a process/activity-restored fragment the cache never saw (theme
+        // recreate, death restore) stays visible forever otherwise, which
+        // is exactly the first-switch overlay.
+        fm.fragments.forEach {
+            if (it.isAdded && it.id == R.id.content && it.tag != tag) tx.hide(it)
+        }
         var frag: Fragment? = fragCache[tag] ?: fm.findFragmentByTag(tag)
         if (frag == null) {
             frag = createFragment(dest, args)
