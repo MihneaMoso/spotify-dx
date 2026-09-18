@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pressed-state foreground for shelf cards (Echo ripple_item_container
+     parity): same highlight ripple, masked to the card's own corner radius
+     (echo_radius_card, matching card_shelf) so the gray hold state never
+     bleeds past the rounded corners. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="?attr/colorControlHighlight">
+    <item android:id="@android:id/mask">
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/white" />
+            <corners android:radius="@dimen/echo_radius_card" />
+        </shape>
+    </item>
+</ripple>

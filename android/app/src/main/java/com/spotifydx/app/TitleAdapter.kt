@@ -20,6 +20,13 @@ import androidx.recyclerview.widget.RecyclerView
 class TitleAdapter(
     private val onClick: (Int) -> Unit = {},
     private val itemLayout: Int = R.layout.item_title,
+    /**
+     * Context menu (2s hold or dots, card overlay included): position-based
+     * like [onClick] — rows are lossy, so the caller resolves pos → object.
+     * Fired with the *current* bindingAdapterPosition (guarded), never the
+     * stale bind-time index.
+     */
+    private val onMenu: (Int) -> Unit = {},
 ) : ListAdapter<TitleAdapter.Row, TitleAdapter.Holder>(DIFF) {
 
     data class Row(val title: String, val subtitle: String, val coverUrl: String = "")
@@ -44,6 +51,13 @@ class TitleAdapter(
             sub.text = r.subtitle
             sub.visibility = if (r.subtitle.isEmpty()) View.GONE else View.VISIBLE
             itemView.setOnClickListener { onClick(pos) }
+            fun fireMenu() {
+                val p = bindingAdapterPosition
+                if (p != RecyclerView.NO_POSITION) onMenu(p)
+            }
+            itemView.findViewById<android.widget.ImageButton>(R.id.title_more)
+                ?.setOnClickListener { fireMenu() }
+            HoldToOpen.arm(itemView, ::fireMenu)
         }
     }
 

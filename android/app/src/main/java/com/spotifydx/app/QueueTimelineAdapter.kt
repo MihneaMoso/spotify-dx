@@ -38,6 +38,8 @@ class QueueTimelineAdapter(
     private val onTapNext: (Int) -> Unit,
     private val onTapPast: (Int) -> Unit,
     private val onTapNow: () -> Unit,
+    /** Context menu (2s hold or dots) — the caller maps Track → MenuTarget.Song. */
+    private val onMenu: (Track) -> Unit = {},
 ) : RecyclerView.Adapter<QueueTimelineAdapter.Holder>() {
 
     /** Adapter-owned truth (Echo `mutableQueueWindows`). */
@@ -130,6 +132,7 @@ class QueueTimelineAdapter(
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val more: android.widget.ImageButton = v.findViewById(R.id.track_more)
         private val handle: android.widget.ImageView = v.findViewById(R.id.track_handle)
 
         @SuppressLint("ClickableViewAccessibility")
@@ -140,9 +143,13 @@ class QueueTimelineAdapter(
             art.setTag(R.id.track_art, t.coverUrl)
             ArtworkLoader.load(art, t.coverUrl)
             title.text = t.name.ifEmpty { "Unknown track" }
-            val sub = listOf(t.artistNames, t.albumName).filter { it.isNotEmpty() }
-            subtitle.text = sub.joinToString(" · ")
+            subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = TrackAdapter.formatDuration(t.durationMs)
+            // Context menu on every row incl. NOW (tap still toggles —
+            // HoldToOpen only fires on a 2s stationary hold, and the dots
+            // are a separate target from the row click).
+            more.setOnClickListener { onMenu(t) }
+            HoldToOpen.arm(itemView) { onMenu(t) }
             when (e.kind) {
                 // NOW: highlighted, tap toggles (Echo: tapping the current
                 // row toggles play/pause). Draggable like every other row —

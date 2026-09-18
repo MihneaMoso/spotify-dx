@@ -10,7 +10,7 @@ import org.json.JSONObject
  * the same internal-API response shapes cross the bridge as JSON.
  *
  * Field map (core `spotify::models`, serialized 1:1):
- * - Track: {id, name, artists:[{name}], album:{name, images:[{url,width}]},
+ * - Track: {id, name, artists:[{id, name}], album:{id, name, images:[{url,width}]},
  *   duration_ms, uri}
  * - Album: {id, name, artists, images, release_date, total_tracks, uri}
  * - Playlist (GQL): {id, name, images, tracks:{total, items:[Track]}, uri}
@@ -22,7 +22,11 @@ data class Track(
     val id: String = "",
     val name: String = "",
     val artists: List<String> = emptyList(),
+    /** Parallel to [artists]: Spotify IDs for artist-page navigation. */
+    val artistIds: List<String> = emptyList(),
     val albumName: String = "",
+    /** Spotify album ID for album-page navigation; "" when unknown. */
+    val albumId: String = "",
     val coverUrl: String = "",
     val durationMs: Long = 0,
     val uri: String = "",
@@ -37,6 +41,8 @@ data class Album(
     val id: String = "",
     val name: String = "",
     val artists: List<String> = emptyList(),
+    /** Parallel to [artists]: Spotify IDs for artist-page navigation. */
+    val artistIds: List<String> = emptyList(),
     val coverUrl: String = "",
     val trackCount: Int = 0,
 )
@@ -85,7 +91,13 @@ object Models {
      * queue / last-played persistence round-trips through this. */
     fun trackToJson(t: Track): org.json.JSONObject {
         val artists = org.json.JSONArray()
-        t.artists.forEach { artists.put(org.json.JSONObject().put("name", it)) }
+        t.artists.forEachIndexed { i, name ->
+            artists.put(
+                org.json.JSONObject()
+                    .put("name", name)
+                    .put("id", t.artistIds.getOrNull(i) ?: ""),
+            )
+        }
         val images = org.json.JSONArray()
         if (t.coverUrl.isNotEmpty()) {
             images.put(org.json.JSONObject().put("url", t.coverUrl))
@@ -97,6 +109,7 @@ object Models {
             .put("artists", artists)
             .put(
                 "album", org.json.JSONObject()
+                    .put("id", t.albumId)
                     .put("name", t.albumName)
                     .put("images", images),
             )
@@ -104,26 +117,35 @@ object Models {
             .put("added_at", t.addedAt)
     }
 
-    fun track(o: JSONObject): Track = Track(
-        id = o.optString("id", ""),
-        name = o.optString("name", ""),
-        artists = namedList(o.optJSONArray("artists")),
-        albumName = o.optJSONObject("album")?.optString("name", "") ?: "",
-        coverUrl = widest(o.optJSONObject("album")?.optJSONArray("images")),
-        durationMs = o.optLong("duration_ms", o.optLong("durationMs", 0)),
-        uri = o.optString("uri", ""),
-        addedAt = o.optString("added_at", ""),
-    )
+    fun track(o: JSONObject): Track {
+        val (names, ids) = namesAndIds(o.optJSONArray("artists"))
+        return Track(
+            id = o.optString("id", ""),
+            name = o.optString("name", ""),
+            artists = names,
+            artistIds = ids,
+            albumName = o.optJSONObject("album")?.optString("name", "") ?: "",
+            albumId = o.optJSONObject("album")?.optString("id", "") ?: "",
+            coverUrl = widest(o.optJSONObject("album")?.optJSONArray("images")),
+            durationMs = o.optLong("duration_ms", o.optLong("durationMs", 0)),
+            uri = o.optString("uri", ""),
+            addedAt = o.optString("added_at", ""),
+        )
+    }
 
-    fun album(o: JSONObject): Album = Album(
-        id = o.optString("id", ""),
-        name = o.optString("name", ""),
-        artists = namedList(o.optJSONArray("artists")),
-        coverUrl = widest(o.optJSONArray("images")),
-        // Library counts are unreliable (often 0) — the detail page carries
-        // the real count; shelves hide "0 tracks" like the current build.
-        trackCount = o.optInt("total_tracks", o.optInt("track_count", 0)),
-    )
+    fun album(o: JSONObject): Album {
+        val (names, ids) = namesAndIds(o.optJSONArray("artists"))
+        return Album(
+            id = o.optString("id", ""),
+            name = o.optString("name", ""),
+            artists = names,
+            artistIds = ids,
+            coverUrl = widest(o.optJSONArray("images")),
+            // Library counts are unreliable (often 0) — the detail page carries
+            // the real count; shelves hide "0 tracks" like the current build.
+            trackCount = o.optInt("total_tracks", o.optInt("track_count", 0)),
+        )
+    }
 
     fun artist(o: JSONObject): Artist = Artist(
         id = o.optString("id", ""),
@@ -164,12 +186,19 @@ object Models {
     fun pageTotal(o: JSONObject, fallback: Int): Int =
         o.optInt("total", fallback)
 
-    private fun namedList(a: JSONArray?): List<String> {
-        if (a == null) return emptyList()
-        return List(a.length()) { i ->
-            val item = a.opt(i) ?: return@List ""
-            if (item is String) item else (item as? JSONObject)?.optString("name", "") ?: ""
-        }.filter { it.isNotEmpty() }
+    /** Parallel name+ID lists for `artists`, filtered as one row set so indices stay paired. */
+    private fun namesAndIds(a: JSONArray?): Pair<List<String>, List<String>> {
+        if (a == null) return emptyList<String>() to emptyList()
+        val names = mutableListOf<String>()
+        val ids = mutableListOf<String>()
+        for (i in 0 until a.length()) {
+            val item = a.opt(i) ?: continue
+            val name = if (item is String) item else (item as? JSONObject)?.optString("name", "") ?: ""
+            if (name.isEmpty()) continue
+            names += name
+            ids += (item as? JSONObject)?.optString("id", "") ?: ""
+        }
+        return names to ids
     }
 
     private fun widest(a: JSONArray?): String {

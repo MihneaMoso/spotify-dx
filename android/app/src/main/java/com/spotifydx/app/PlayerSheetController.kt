@@ -133,6 +133,9 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             onTapNext = { PlayerRepository.seekTimelinePosition(it) },
             onTapPast = { PlayerRepository.seekTimelinePosition(it) },
             onTapNow = { PlayerRepository.toggle() },
+            onMenu = {
+                ContextMenuHost.showMenu(activity.supportFragmentManager, MenuTarget.Song(it))
+            },
         )
         queueList.adapter = queueAdapter
         queueList.queueDrag(queueAdapter)

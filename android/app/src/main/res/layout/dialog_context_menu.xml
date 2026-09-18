@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Context-menu sheet body (Echo dialog_media_more parity): the whole
+     sheet is one RecyclerView — full-span header (thumb + titles + close),
+     2-column action grid, full-span artist/album nav rows. -->
+<androidx.recyclerview.widget.RecyclerView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/menu_grid"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipToPadding="false"
+    android:paddingHorizontal="20dp"
+    android:paddingBottom="20dp" />

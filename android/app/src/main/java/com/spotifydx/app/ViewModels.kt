@@ -348,6 +348,9 @@ class DetailViewModel : ScopedViewModel() {
     val title: StateFlow<String> = _title.asStateFlow()
     private val _subtitle = MutableStateFlow("")
     val subtitle: StateFlow<String> = _subtitle.asStateFlow()
+    /** Header artwork (album cover / artist image / playlist cover). */
+    private val _cover = MutableStateFlow("")
+    val cover: StateFlow<String> = _cover.asStateFlow()
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
     private val _sort = MutableStateFlow(SortOrder.CUSTOM)
@@ -394,17 +397,20 @@ class DetailViewModel : ScopedViewModel() {
                         val album = json.optJSONObject("album") ?: org.json.JSONObject()
                         _title.value = album.optString("name", "")
                         _subtitle.value = album.optString("release_date", "")
+                        _cover.value = Models.album(album).coverUrl
                         parsed = Models.tracks(json.optJSONArray("tracks"))
                     }
                     "artist" -> {
                         val artist = json.optJSONObject("artist") ?: org.json.JSONObject()
                         _title.value = artist.optString("name", "")
                         _subtitle.value = "Artist"
+                        _cover.value = Models.artist(artist).imageUrl
                         parsed = Models.tracks(json.optJSONArray("top_tracks"))
                     }
                     else -> {
                         _title.value = json.optString("name", "")
                         _subtitle.value = json.optString("description", "")
+                        _cover.value = Models.playlist(json).coverUrl
                         parsed = Models.playlistTracks(json)
                     }
                 }

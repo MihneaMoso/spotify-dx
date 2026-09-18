@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Context-menu section label (full-span): "Artists" / "Album". -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingTop="12dp"
+    android:paddingBottom="4dp"
+    android:textAllCaps="true"
+    style="@style/EchoBodySubtitle" />

@@ -26,6 +26,8 @@ import androidx.recyclerview.widget.RecyclerView
 class TrackAdapter(
     private val showIndex: Boolean = true,
     private val onPlay: (Track) -> Unit = {},
+    /** Context menu (2s hold or dots) — the caller maps Track → MenuTarget.Song. */
+    private val onMenu: (Track) -> Unit = {},
 ) : ListAdapter<Track, TrackAdapter.Holder>(DIFF) {
 
     companion object {
@@ -54,6 +56,7 @@ class TrackAdapter(
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val more: android.widget.ImageButton = v.findViewById(R.id.track_more)
         private val handle: android.widget.ImageView = v.findViewById(R.id.track_handle)
 
         @SuppressLint("ClickableViewAccessibility")
@@ -67,8 +70,9 @@ class TrackAdapter(
             art.setTag(R.id.track_art, t.coverUrl)
             ArtworkLoader.load(art, t.coverUrl)
             title.text = t.name.ifEmpty { "Unknown track" }
-            val sub = listOf(t.artistNames, t.albumName).filter { it.isNotEmpty() }
-            subtitle.text = sub.joinToString(" · ")
+            // Duration sits left of the artist under the title (the old
+            // right-side duration slot is now the dots button).
+            subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = formatDuration(t.durationMs)
             // Echo drag handle: visible only on reorderable lists; touching
             // it starts the drag instantly (consumed, so no tap-through play).
@@ -88,6 +92,8 @@ class TrackAdapter(
                 }
             }
             itemView.setOnClickListener { onPlay(t) }
+            more.setOnClickListener { onMenu(t) }
+            HoldToOpen.arm(itemView) { onMenu(t) }
         }
     }
 

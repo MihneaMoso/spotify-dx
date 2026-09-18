@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.fragment.app.Fragment
@@ -166,12 +167,21 @@ class HomeFragment : Fragment() {
                 }
             },
             itemLayout = R.layout.item_card,
+            onMenu = { pos ->
+                vm.playlists.value.getOrNull(pos)?.let {
+                    ContextMenuHost.showMenu(parentFragmentManager, MenuTarget.Playlist(it))
+                }
+            },
         )
         list.adapter = shelves
         list.rememberScroll("home:shelf")
         val likedList: RecyclerView = v.findViewById(R.id.home_liked)
         likedList.layoutManager = LinearLayoutManager(context)
-        val liked = TrackAdapter(showIndex = false, onPlay = { PlayerRepository.play(it, "Liked Songs") })
+        val liked = TrackAdapter(
+            showIndex = false,
+            onPlay = { PlayerRepository.play(it, "Liked Songs") },
+            onMenu = { ContextMenuHost.showMenu(parentFragmentManager, MenuTarget.Song(it)) },
+        )
         likedList.adapter = liked
         likedList.rememberScroll("home:liked")
         likedList.swipeToQueue(liked)
@@ -238,6 +248,7 @@ class SearchFragment : Fragment() {
             onOpenArtist = { id, name ->
                 (activity as? MainActivity)?.openDetail("artist", id, name)
             },
+            onMenu = { ContextMenuHost.showMenu(parentFragmentManager, it) },
         )
         list.adapter = adapter
         list.rememberScroll("search:results")
@@ -354,6 +365,14 @@ class LibraryFragment : Fragment() {
                 is LibraryViewModel.LibraryRow.T -> PlayerRepository.play(r.t, "Liked Songs")
                 null -> {}
             }
+        }, onMenu = { pos ->
+            val target = when (val r = vm.rows.value.getOrNull(pos)) {
+                is LibraryViewModel.LibraryRow.P -> MenuTarget.Playlist(r.p)
+                is LibraryViewModel.LibraryRow.A -> MenuTarget.Album(r.a)
+                is LibraryViewModel.LibraryRow.T -> MenuTarget.Song(r.t)
+                null -> null
+            }
+            target?.let { ContextMenuHost.showMenu(parentFragmentManager, it) }
         })
         list.adapter = rows
         list.rememberScroll("library:list")
@@ -428,9 +447,16 @@ class DetailFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         val title: TextView = v.findViewById(R.id.detail_title)
         val subtitle: TextView = v.findViewById(R.id.detail_subtitle)
+        val art: ImageView = v.findViewById(R.id.detail_art)
+        // Artist headers are circular (Echo avatar treatment); albums and
+        // playlists keep the rounded player-art clip.
+        val isArtist = (arguments?.getString("kind", "playlist") ?: "playlist") == "artist"
         val list: RecyclerView = v.findViewById(R.id.detail_list)
         list.layoutManager = LinearLayoutManager(context)
-        val adapter = TrackAdapter(onPlay = { PlayerRepository.play(it, title.text.toString()) })
+        val adapter = TrackAdapter(
+            onPlay = { PlayerRepository.play(it, title.text.toString()) },
+            onMenu = { ContextMenuHost.showMenu(parentFragmentManager, MenuTarget.Song(it)) },
+        )
         list.adapter = adapter
         // Detail scroll namespaces by kind+id: each playlist/album/artist
         // remembers its own viewport independently.
@@ -489,6 +515,12 @@ class DetailFragment : Fragment() {
         }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.subtitle.collect { subtitle.text = it }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            vm.cover.collect { url ->
+                ArtworkLoader.load(art, url, ArtworkLoader.Art.PLAYER)
+                if (isArtist) Design.clipCircle(art)
+            }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.tracks.collect {

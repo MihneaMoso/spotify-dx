@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Opaque context-menu sheet background (set in code in
+     ContextMenuSheet.onStart): surface fill with rounded TOP corners only
+     (Echo nested-sheet language, mirroring sheet_top_rounded). Explicit so
+     the sheet never inherits a transparent style fallback. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/colorSurface" />
+    <corners
+        android:topLeftRadius="@dimen/echo_radius_row"
+        android:topRightRadius="@dimen/echo_radius_row"
+        android:bottomLeftRadius="0dp"
+        android:bottomRightRadius="0dp" />
+</shape>

@@ -80,6 +80,24 @@ object PlayerRepository {
         PlaybackStore.saveQueueSoon(_state.value.queue)
     }
 
+    /**
+     * Insert tracks to play next (head of upcoming, order preserved).
+     * Dedupes by id like [enqueue] so repeats move instead of doubling.
+     */
+    fun playNext(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        val ids = tracks.map { it.id }.toSet()
+        update { s ->
+            s.copy(
+                queue = tracks.filter { it.playable } +
+                    s.queue.filter { it.id !in ids },
+            )
+        }
+        PlaybackStore.saveQueueSoon(_state.value.queue)
+    }
+
+    fun playNext(track: Track) = playNext(listOf(track))
+
     fun clearQueue() {
         update { s -> s.copy(queue = emptyList(), queueOriginal = emptyList()) }
         PlaybackStore.saveQueueSoon(emptyList())
@@ -353,6 +371,16 @@ object PlayerRepository {
         val prev = _state.value.track
         if (prev != null && prev.id != track.id) pushHistory(prev)
         startTrack(track, source)
+    }
+
+    /**
+     * Play a context (album/playlist/artist top-tracks): [first] becomes
+     * NOW (outgoing current → history via [play]) and [rest] lands between
+     * it and the previous upcoming head, order preserved.
+     */
+    fun playContext(first: Track, rest: List<Track>, source: String = "") {
+        play(first, source)
+        playNext(rest)
     }
 
     /** Shared track-launch tail (state flip + engine dispatch). */

@@ -5,6 +5,7 @@
 -keep class com.spotifydx.app.SpotifyDxUpdater { *; }
 -keep class com.spotifydx.app.SpotifyDxFileProvider { *; }
 -keep class com.spotifydx.app.InstallResultReceiver { *; }
+-keep class com.spotifydx.app.ContextMenuSheet { *; }
 # WebViews invoke @JavascriptInterface methods by name via reflection
 # (LoginWebView/SdkWebView bridges) — shrinking them breaks login/SDK play.
 -keepclassmembers class * {

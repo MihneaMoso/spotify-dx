@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Context-menu action cell (Echo item_more_button parity): rounded
+     rectangle card, icon over label, 2-column grid. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp"
+    android:background="@drawable/card_shelf"
+    android:gravity="center"
+    android:minHeight="88dp"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <ImageView
+        android:id="@+id/action_icon"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:tint="?attr/colorPrimary" />
+
+    <TextView
+        android:id="@+id/action_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        style="@style/EchoBodySubtitle" />
+</LinearLayout>

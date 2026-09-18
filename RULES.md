@@ -1732,7 +1732,30 @@ dioxus-mobile Rust code is untouched and still builds.
   update), staged versionCode must be >= installed. Session commits are
   updates, never uninstalls — data/cache survive. Provider `query()` now
   serves DISPLAY_NAME/SIZE.
-
+- **Context menu (2026-09-18):** one funnel — every song/album/artist/
+  playlist trigger (2s `HoldToOpen` or dots) lands in
+  `ContextMenuHost.showMenu` → `ContextMenuSheet` (BottomSheetDialogFragment,
+  ¾ peek, 2-col grid + full-span artist/album nav). Trigger is the
+  framework long-press via `HoldToOpen.arm` (Echo parity — a custom hold
+  timer + per-touch overlay waves janked scrolls; the only animation is a
+  single slow wave burst at fire time, so taps/scrolls render nothing). Track artist/album IDs
+  were already in the bridge JSON (core `ArtistRef`/`AlbumRef`) — only
+  `Models.kt` dropped them; `Track.artistIds`/`albumId` (+ `Album.artistIds`,
+  all round-tripped through `trackToJson` so queue/history restore keeps
+  them) fixed nav with zero Rust changes. New queue ops are additive only
+  (`playNext`, `playContext`). Gesture coexistence: hold cancels on any
+  move (swipe/drag safe), `isLongPressDragEnabled` stays false, dots are
+  the non-timed equivalent. `item_track` subtitle is now
+  duration · artist (album name lives in menus); dots own the old duration
+  slot; `item_card` dots overlay the art (shared-ID contract kept).
+- **Debugging "dead" navigation (2026-09-18):** an artist-page report
+  (back chevron + Home tab both dead, no crash) turned out to be stale
+  app state — reinstall cleared it, no code fault. Before assuming a
+  wedge: confirm the foreground app is ours (`dumpsys activity`
+  `mFocusedApp`), confirm input reaches it (back gestures log
+  InputDispatcher "stealing touch" lines; plain taps log nothing), and
+  check for a still-added dialog in the fragment dump. A screenshot
+  settles "what's on screen" instantly.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

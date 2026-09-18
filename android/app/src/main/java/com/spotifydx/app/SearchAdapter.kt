@@ -20,6 +20,8 @@ class SearchAdapter(
     private val onPlayTrack: (Track) -> Unit = {},
     private val onOpenAlbum: (id: String, name: String) -> Unit = { _, _ -> },
     private val onOpenArtist: (id: String, name: String) -> Unit = { _, _ -> },
+    /** Context menu (2s hold or dots) with the row's resolved target. */
+    private val onMenu: (MenuTarget) -> Unit = {},
 ) : ListAdapter<SearchRow, RecyclerView.ViewHolder>(DIFF) {
 
     companion object {
@@ -54,10 +56,12 @@ class SearchAdapter(
             art.setTag(R.id.track_art, t.coverUrl)
             ArtworkLoader.load(art, t.coverUrl)
             title.text = t.name.ifEmpty { "Unknown track" }
-            val sub = listOf(t.artistNames, t.albumName).filter { it.isNotEmpty() }
-            subtitle.text = sub.joinToString(" · ")
+            subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = TrackAdapter.formatDuration(t.durationMs)
             itemView.setOnClickListener { onPlayTrack(t) }
+            itemView.findViewById<android.widget.ImageButton>(R.id.track_more)
+                ?.setOnClickListener { onMenu(MenuTarget.Song(t)) }
+            HoldToOpen.arm(itemView) { onMenu(MenuTarget.Song(t)) }
         }
     }
 
@@ -95,10 +99,18 @@ class SearchAdapter(
             is SearchRow.AlbumRow -> (holder as TitleHolder).apply {
                 bind(row.album.name, row.album.artists.joinToString(", "), row.album.coverUrl)
                 itemView.setOnClickListener { onOpenAlbum(row.album.id, row.album.name) }
+                val target = MenuTarget.Album(row.album)
+                itemView.findViewById<android.widget.ImageButton>(R.id.title_more)
+                    ?.setOnClickListener { onMenu(target) }
+                HoldToOpen.arm(itemView) { onMenu(target) }
             }
             is SearchRow.ArtistRow -> (holder as TitleHolder).apply {
                 bind(row.artist.name, "Artist", row.artist.imageUrl)
                 itemView.setOnClickListener { onOpenArtist(row.artist.id, row.artist.name) }
+                val target = MenuTarget.Artist(row.artist)
+                itemView.findViewById<android.widget.ImageButton>(R.id.title_more)
+                    ?.setOnClickListener { onMenu(target) }
+                HoldToOpen.arm(itemView) { onMenu(target) }
             }
         }
     }
