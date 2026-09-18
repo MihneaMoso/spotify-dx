@@ -1715,7 +1715,23 @@ dioxus-mobile Rust code is untouched and still builds.
   `app-release-unsigned-signed.apk` is confirmed installable-as-update, the
   updater's apply step remains live-untested. Verified 2026-09: check path
   live ("Up to date (v0.1.10)"), settings survive force-stop, local
-  `assembleRelease` + version stamping green (99999/9.9.9-test in aapt).
+   `assembleRelease` + version stamping green (99999/9.9.9-test in aapt).
+- **In-app install rewritten (2026-09-18):** the old `ACTION_VIEW`-only
+  `installApk` silently did nothing on Android 8+ when the per-app
+  "Install unknown apps" grant was missing, and the provider's null
+  `query()` aborted installs that did open. Installs now go through the
+  `PackageInstaller` Session API (`SpotifyDxUpdater.installViaSession`;
+  VIEW over the provider is fallback-only), with
+  `REQUEST_INSTALL_PACKAGES` in the manifest, a `canRequestPackageInstalls`
+  check that routes to `ACTION_MANAGE_UNKNOWN_APP_SOURCES` first, and a
+  manifest-registered `InstallResultReceiver` that fires the
+  `PENDING_USER_ACTION` confirmation intent (without it no window appears)
+  and toasts success/failure. Prechecks abort early with readable errors
+  instead of system "conflict" dialogs: staged package must equal ours,
+  signers must match (same key — release-over-debug is a conflict, not an
+  update), staged versionCode must be >= installed. Session commits are
+  updates, never uninstalls — data/cache survive. Provider `query()` now
+  serves DISPLAY_NAME/SIZE.
 
 ## 7. Testing
 

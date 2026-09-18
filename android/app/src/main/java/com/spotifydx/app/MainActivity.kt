@@ -659,6 +659,18 @@ class MainActivity : AppCompatActivity() {
             s.track?.name?.ifEmpty { "Not playing" } ?: "Not playing"
         bar.findViewById<TextView>(R.id.player_subtitle)?.text =
             s.track?.artistNames ?: ""
+        // Mini artwork: tag-guarded so position ticks don't restart the
+        // Coil request every emission; PLAYER rounding (12dp) matches the
+        // pill's rounded language at thumbnail scale (the pill's own 28dp
+        // would render a 48dp thumb fully circular).
+        val art = bar.findViewById<ImageView>(R.id.mini_art)
+        if (art != null) {
+            val url = s.track?.coverUrl ?: ""
+            if (art.getTag(R.id.mini_art) != url) {
+                art.setTag(R.id.mini_art, url)
+                ArtworkLoader.load(art, url, ArtworkLoader.Art.PLAYER)
+            }
+        }
         bar.findViewById<ImageButton>(R.id.btn_play)?.setImageResource(
             if (s.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
         )

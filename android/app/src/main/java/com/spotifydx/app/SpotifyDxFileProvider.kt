@@ -4,8 +4,10 @@ import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.UriMatcher
 import android.database.Cursor
+import android.database.MatrixCursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import java.io.File
 
 /**
@@ -54,7 +56,16 @@ class SpotifyDxFileProvider : ContentProvider() {
         selection: String?,
         selectionArgs: Array<out String>?,
         sortOrder: String?,
-    ): Cursor? = null
+    ): Cursor? {
+        // The system installer reads DISPLAY_NAME/SIZE before opening the
+        // APK; a null cursor aborts the install with no UI. (This bit the
+        // old ACTION_VIEW path: intent fired, nothing appeared.)
+        if (matcher.match(uri) != APK) return null
+        val apk = File(context?.filesDir, "updates/spotify-dx-update.apk")
+        if (!apk.exists()) return null
+        return MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), 1)
+            .apply { addRow(arrayOf(apk.name, apk.length())) }
+    }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
 
