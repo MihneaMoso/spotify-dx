@@ -600,9 +600,18 @@ proxy, not client workarounds).
   binary replaces the current one (with a rename-then-copy dance on systems
   that forbid overwriting a running executable), cleans up, and relaunches.
   Non-tarball packages report a clean error instead of failing obscurely.
-- **Android staging:** download the package into the app's private files and
-  fire the system package installer through a file-provider URI (wired via a
-  staged manifest entry); the OS handles consent and installation.
+- **Android install:** the package downloads into the app's private files,
+  then installs through the `PackageInstaller` Session API
+  (`SpotifyDxUpdater.installViaSession`, `ACTION_VIEW` over the provider
+  kept as fallback only). `REQUEST_INSTALL_PACKAGES` is declared and the
+  per-app unknown-sources grant is checked first (routed to system
+  settings when missing — its absence was the silent no-window failure);
+  the provider serves `DISPLAY_NAME`/`SIZE` (a null cursor aborted the
+  system installer); a manifest-registered `InstallResultReceiver` fires
+  the pending-user-action confirmation intent and toasts the result.
+  Prechecks reject wrong-package / foreign-signature / older-versionCode
+  payloads with readable errors instead of system conflict dialogs;
+  session commits are updates, so data and cache survive.
 - The browser build omits the updater entirely.
 
 ---
@@ -862,8 +871,13 @@ icons, no circles); full-width 12dp scrub underneath with transparent
 gap-free track (`splitTrack="false"`, thumb flush 12dp primary dot) and
 an elapsed-left / duration-right caption row. Removed from the bar:
 volume slider, time combo label, star, queue button (queue lives in the
-bottom nav + sheet; all removed bindings were safe-calls). Swipe-up to
-open the sheet is attached to the whole bar and unaffected.
+bottom nav + sheet; all removed bindings were safe-calls). The bar opens
+the sheet on background tap (debounced, shared with the swipe-up run
+detection in the same touch listener — controls consume their own
+streams first) as well as swipe-up. A 48dp `mini_art` thumbnail sits left
+of the titles (12dp player-art rounding, bar padding + 8dp gap; loads via
+`ArtworkLoader`, tag-guarded so position ticks never restart the Coil
+request).
 
 ### 19.4 Queue rewrite (Echo-modeled, from scratch)
 
@@ -1057,3 +1071,91 @@ present). Shipped fixes:
   blobs); desktop runtime icon via `with_window_icon` (the window was
   showing Spotify's page favicon — bundle `icon` only affects
   packaging). Previews were screenshot-verified before each rebuild.
+
+## 21. Session implementation log (2026-09-18 — updater reinstall, row/menu upgrades)
+
+### 21.1 Search screen: clear button + empty-query reset
+
+- The search field wraps the box in the field background with an inline
+  ✕ (`search_clear`, framework close glyph, tinted) mirroring the top
+  bar's close affordance — visible only while text is present (synced on
+  view recreation, which doesn't fire the watcher).
+- Emptying the box (backspace or ✕) calls the existing
+  `SearchViewModel.submit("")` blank path, which clears results
+  synchronously with no fetch — previously nothing invoked it, so stale
+  results lingered over an empty box. Cleared lists re-arm the
+  recent-searches chips (first-launch default state).
+
+### 21.2 Row rework: duration move + dots + Echo pressed state
+
+- `item_track.xml`: duration moved under the title (`3:24 · Artist`,
+  album name dropped from rows — it lives in menus); the old
+  right-side duration slot is now the `track_more` dots button
+  (`ic_more_vert`, new vector). `item_title.xml` gained `title_more`;
+  `item_card.xml` overlays `title_more` on the art corner (scrimmed).
+  All three adapters' subtitle binds updated to match.
+- Pressed hold state is Echo's exact mechanism (`Selectable` →
+  foreground `ripple_item_container`): `row_ripple.xml` (square mask)
+  on both row roots, `card_ripple.xml` (masked to `echo_radius_card`,
+  matching `card_shelf`) on cards — theme highlight ripple, zero code
+  on the touch path.
+
+### 21.3 Context menu (Echo `MediaMoreBottomSheet` parity)
+
+- One funnel: framework long-press (`HoldToOpen.arm`, stock ~500ms —
+  a custom 2s timer plus per-touch overlay waves janked scrolling and
+  was replaced by Echo's approach) or any dots button →
+  `ContextMenuHost.showMenu` → `ContextMenuSheet`
+  (`BottomSheetDialogFragment`).
+- Sheet: ✕ top-right, thumb + title + artist/type header, 2-column
+  rounded-card action grid (Play, Add to next, Add to queue, Save to
+  playlist, Download, Save to library, Like, Share), then full-width
+  artist cards + album card drilling into detail pages. Async actions
+  run in the caller's scope (activity fallback for the sheet-queue
+  menu), so dismissal never cancels Play/Download.
+- No Rust changes were needed: the bridge JSON already carried
+  artist/album IDs (`ArtistRef`/`AlbumRef`) — only `Models.kt` dropped
+  them. `Track.artistIds`/`albumId` (+ `Album.artistIds`) parse now
+  and round-trip through `trackToJson`, so restored queue/history
+  keeps navigation. ID-less entries omit their nav rows (never dead
+  buttons). New `PlayerRepository.playNext` (head-insert, deduped) and
+  `playContext` (first plays, rest inserted after current) are
+  additive-only. Write actions (playlist/library/like) toast
+  "Not implemented yet" behind `TODO(gql-POST)` seams; Download uses
+  the highest-quality resolved stream via `DownloadManager` into
+  `Downloads/SpotifyDX/`; Share sends the `open.spotify.com` link.
+- Sheet behavior contract (learned over four iterations — size-only
+  and single-flag fixes each missed a direction): `fitToContents`
+  (expansion stops at content height) + ¾ peek with container
+  `minHeight` floor (short menus share the boundary) +
+  non-hideable (no downward escape) + fully enabled dragging (long
+  menus expand and scroll inside) + explicit opaque `menu_sheet_bg`
+  and 0.5 window dim (the app theme defines no
+  `bottomSheetDialogTheme`, and the style fallback resolved
+  transparent *and* undimmed — the app showed straight through).
+- Triggers on every screen: Home shelf cards + liked tracks, Search
+  songs/albums/artists, Library rows (pos → object at the fragment —
+  `TitleAdapter` rows are lossy), Detail lists, sheet queue timeline.
+  `TitleAdapter` fires menus with the live `bindingAdapterPosition`
+  (guarded), never the stale bind index.
+
+### 21.4 Detail header artwork + menu artist covers
+
+- Detail pages had no header artwork: `DetailViewModel.cover` parses
+  the right image per kind (artist image / album cover / playlist
+  cover); `fragment_detail.xml` headers a 64dp `detail_art` left of
+  the title — circular on artist pages (Echo avatar treatment),
+  rounded player-art clip otherwise.
+- Menu artist rows arrive coverless (tracks carry names + IDs only),
+  so the sheet backfills each from the cached artist page and rebinds
+  just that row (dismissal cancels the scope); menu artist thumbs are
+  circular to match.
+
+### 21.5 Stale-state navigation scare (no code fault)
+
+- An artist page reported dead back chevron + dead Home tab with no
+  crash. Device forensics (foreground check, input delivery, fragment
+  dump, screenshots) found a healthy app; reinstall cleared it — stale
+  process state, not a navigation bug. Lesson recorded in RULES.md:
+  verify foreground + input delivery before assuming a wedge (one
+  round trip was lost to presses landing in Instagram).

@@ -1756,6 +1756,31 @@ dioxus-mobile Rust code is untouched and still builds.
   InputDispatcher "stealing touch" lines; plain taps log nothing), and
   check for a still-added dialog in the fragment dump. A screenshot
   settles "what's on screen" instantly.
+- **Mini player extras (2026-09-18):** `mini_art` loads through
+  `ArtworkLoader` with a tag guard — `renderPlayerBar` runs on every
+  position tick, so an unguarded `load()` would restart the Coil request
+  continuously. Tap-to-open lives INSIDE the bar's swipe-up touch
+  listener (a separate click listener never fires — the swipe listener
+  consumes the stream); taps on controls still work because children
+  consume their own streams first.
+- **Search clear (2026-09-18):** the `submit("")` blank path already
+  existed in `SearchViewModel` — nothing called it. The watcher calls it
+  on empty; the ✕ routes through `setText("")` so visibility, reset,
+  and history share one path (never duplicated).
+- **Sheet behavior is a contract, not a flag (2026-09-18):** four
+  iterations proved each single fix insufficient (`minHeight` sizes but
+  doesn't constrain movement; `isHideable=false` blocks only the
+  downward escape; `isDraggable=false` freezes long menus too). Final:
+  `fitToContents` (upward stops at content height) + peek/`minHeight`
+  floor + non-hideable + dragging on + opaque bg + explicit dim (the
+  theme has no `bottomSheetDialogTheme` — the fallback was transparent
+  and undimmed). Details in ARCHITECTURE.md §21.3.
+- **Echo pressed state = foreground ripple (2026-09-18):** `Selectable`
+  style → `ripple_item_container` (`colorControlHighlight`, rounded
+  mask). Mirrored as `row_ripple.xml` / `card_ripple.xml` foregrounds —
+  no code on the touch path, so zero scroll/startup cost (the custom
+  per-touch wave animators that caused the jank are gone; only a single
+  fire-time burst remains).
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in
