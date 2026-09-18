@@ -601,11 +601,22 @@ class MainActivity : AppCompatActivity() {
         var lastY = 0f
         var accDy = 0f
         var lastOpenMs = 0L
+        var downY = 0f
+        var downMs = 0L
         bar.setOnTouchListener { _, e ->
+            fun tryOpen() {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastOpenMs > 500) {
+                    lastOpenMs = now
+                    openPlayer()
+                }
+            }
             when (e.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     lastY = e.y
                     accDy = 0f
+                    downY = e.y
+                    downMs = android.os.SystemClock.uptimeMillis()
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
@@ -615,13 +626,18 @@ class MainActivity : AppCompatActivity() {
                         accDy += dy
                         if (accDy > 150) {
                             accDy = 0f
-                            val now = android.os.SystemClock.uptimeMillis()
-                            if (now - lastOpenMs > 500) {
-                                lastOpenMs = now
-                                openPlayer()
-                            }
+                            tryOpen()
                         }
                     }
+                    true
+                }
+                // Tap (not drag) on the bar background opens the sheet too
+                // (Spotify parity). Controls/SeekBar consume their own
+                // streams first, so this only sees background taps.
+                android.view.MotionEvent.ACTION_UP -> {
+                    val moved = kotlin.math.abs(e.y - downY)
+                    val held = android.os.SystemClock.uptimeMillis() - downMs
+                    if (moved < 24 && held < 500) tryOpen()
                     true
                 }
                 else -> false
