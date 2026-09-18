@@ -139,19 +139,31 @@ pub fn persist_to(profile: &UserProfile, path: &std::path::Path) -> std::io::Res
     }
     let json = serde_json::to_string_pretty(profile)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, json)
+    // Tmp + rename: a crash mid-write must not corrupt the profile file
+    // (a corrupt file silently resets the profile to defaults on load).
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Encode uploaded file bytes as the profile's avatar. Rejects anything over
 /// the size cap or that doesn't look like an image by magic bytes.
-pub fn set_avatar(profile: &mut UserProfile, mime: Option<String>, bytes: &[u8]) -> Result<(), String> {
+pub fn set_avatar(
+    profile: &mut UserProfile,
+    mime: Option<String>,
+    bytes: &[u8],
+) -> Result<(), String> {
     if bytes.len() > MAX_AVATAR_BYTES {
         return Err("Image too large (max 4 MB)".into());
     }
     if !looks_like_image(bytes) {
         return Err("Selected file is not an image".into());
     }
-    profile.avatar_mime = Some(mime.unwrap_or_else(|| "image/png".into()));
+    profile.avatar_mime = Some(match mime {
+        Some(m) if m.starts_with("image/") => m,
+        _ => "image/png".into(),
+    });
     profile.avatar_b64 = Some(base64_encode(bytes));
     Ok(())
 }
@@ -162,10 +174,29 @@ pub fn clear_avatar(profile: &mut UserProfile) {
 }
 
 fn looks_like_image(bytes: &[u8]) -> bool {
-    matches!(
-        &bytes[..bytes.len().min(12)],
-        [0x89, b'P', b'N', b'G', ..] | [0xFF, 0xD8, 0xFF, ..] | b"GIF8" | b"RIFF" // WEBP
-    )
+    // Magic-byte allowlist. RIFF alone proves nothing (WAV/AVI share it),
+    // so WEBP requires the full RIFF....WEBP header; ISO-BMFF images
+    // (AVIF/HEIC) carry an `ftyp` box with a known brand.
+    if bytes.len() < 4 {
+        return false;
+    }
+    match &bytes[..4] {
+        [0x89, b'P', b'N', b'G'] | [0xFF, 0xD8, 0xFF, _] | [b'B', b'M', _, _] => return true,
+        _ => {}
+    }
+    if bytes.starts_with(b"GIF8") {
+        return true;
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return true;
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return matches!(
+            &bytes[8..12],
+            b"avif" | b"avis" | b"heic" | b"heix" | b"hevc" | b"heim" | b"mif1" | b"msf1"
+        );
+    }
+    false
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

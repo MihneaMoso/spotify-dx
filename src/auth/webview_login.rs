@@ -512,7 +512,10 @@ thread_local! {
 /// second wry WebView would clobber the dioxus base view's protocol handlers.
 pub fn start(tx: tokio::sync::oneshot::Sender<WebSessionResult>) -> anyhow::Result<()> {
     if LOGIN.with(|cell| cell.borrow().is_some()) {
-        return Ok(());
+        // A second caller must NOT get Ok with a dead channel: its waiter
+        // would hang forever (the stored tx belongs to the first caller).
+        // Fail loudly so the UI can show retry instead of a stuck spinner.
+        anyhow::bail!("sign-in already in progress");
     }
 
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
@@ -1227,7 +1230,14 @@ async fn wry_refresh_token() -> bool {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    LOGIN.with(|cell| {
+    // Dispatch confirmed only — token arrival itself is confirmed by the
+    // IPC waiter (10s bound + AUTH_STATE re-check in ensure_token). But a
+    // page that died or parked mid-refresh can never answer, so re-verify
+    // liveness after dispatch and fail fast into the SDK fallback instead
+    // of burning the full waiter timeout on a dead IPC. (An eval that
+    // silently no-ops on a missing `_relay` is indistinguishable at
+    // dispatch — evaluate_script reports delivery, not execution.)
+    let dispatched = LOGIN.with(|cell| {
         cell.borrow()
             .as_ref()
             .map(|login| {
@@ -1237,6 +1247,21 @@ async fn wry_refresh_token() -> bool {
                         "window._relay && window._relay.refreshToken && window._relay.refreshToken()",
                     )
                     .is_ok()
+            })
+            .unwrap_or(false)
+    });
+    if !dispatched {
+        return false;
+    }
+    LOGIN.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|login| {
+                login
+                    .webview
+                    .url()
+                    .map(|u| u.starts_with("http"))
+                    .unwrap_or(false)
             })
             .unwrap_or(false)
     })

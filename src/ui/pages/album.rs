@@ -34,9 +34,17 @@ pub fn Album(id: String) -> Element {
                 .next()
                 .unwrap_or(&album.release_date)
                 .to_string();
-            let artist_name = album.artists.first().map(|a| a.name.clone()).unwrap_or_default();
+            let artist_name = album
+                .artists
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
             let meta = format!("{} · {}", year, artist_name);
-            let art_url = album.images.first().map(|i| i.url.clone()).unwrap_or_default();
+            let art_url = album
+                .images
+                .first()
+                .map(|i| i.url.clone())
+                .unwrap_or_default();
 
             let album_for_tracks = album.clone();
             let tracks_resource = use_resource(move || {

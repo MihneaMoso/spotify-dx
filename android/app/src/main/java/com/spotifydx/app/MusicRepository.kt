@@ -98,8 +98,12 @@ object MusicRepository {
      */
     suspend fun resolveStream(track: Track): Result<JSONObject> {
         val artists = org.json.JSONArray()
-        track.artists.forEach {
-            artists.put(org.json.JSONObject().put("id", "").put("name", it))
+        track.artists.forEachIndexed { i, name ->
+            artists.put(
+                org.json.JSONObject()
+                    .put("id", track.artistIds.getOrNull(i) ?: "")
+                    .put("name", name),
+            )
         }
         val images = org.json.JSONArray()
         if (track.coverUrl.isNotEmpty()) {
@@ -114,7 +118,7 @@ object MusicRepository {
                     .put("artists", artists)
                     .put(
                         "album", JSONObject()
-                            .put("id", "")
+                            .put("id", track.albumId)
                             .put("name", track.albumName)
                             .put("images", images),
                     )

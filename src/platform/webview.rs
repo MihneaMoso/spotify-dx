@@ -13,12 +13,12 @@
 //! crate; we just prefer `mobile` for the type/`window()` alias to keep a single
 //! definition.
 
+#[cfg(all(feature = "desktop", not(feature = "mobile")))]
+pub use dioxus::desktop::DesktopContext as WindowContext;
 /// The wry window handle + dioxus webview, as exposed by whichever native
 /// renderer is compiled in.
 #[cfg(feature = "mobile")]
 pub use dioxus::mobile::DesktopContext as WindowContext;
-#[cfg(all(feature = "desktop", not(feature = "mobile")))]
-pub use dioxus::desktop::DesktopContext as WindowContext;
 
 /// The current dioxus window context.
 #[cfg(feature = "mobile")]

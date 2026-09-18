@@ -74,8 +74,9 @@ pub fn session_premium() -> bool {
 const SETTINGS_KEY: &str = "settings.json";
 
 /// Theme selection. Must stay in sync with `[data-theme="…"]` blocks in
-/// `assets/main.css`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// `assets/main.css`. Unknown values (e.g. added by a newer version) fall
+/// back to the default instead of invalidating the whole settings file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
     /// Default dark/deep-blue palette.
@@ -83,6 +84,16 @@ pub enum ThemeName {
     DeepBlue,
     /// Near-black alternative.
     Onyx,
+}
+
+impl<'de> serde::Deserialize<'de> for ThemeName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "onyx" => ThemeName::Onyx,
+            _ => ThemeName::DeepBlue,
+        })
+    }
 }
 
 impl ThemeName {
@@ -96,8 +107,9 @@ impl ThemeName {
 }
 
 /// Which playback engine should drive playback when both are available
-/// (`docs/old/SYSTEM_DESIGN.md` §6.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// (`docs/old/SYSTEM_DESIGN.md` §6.3). Unknown values fall back to `Auto`
+/// (same file-survival rule as [`ThemeName`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EnginePreference {
     /// SDK when the account/device allows it, open engine otherwise.
@@ -107,6 +119,17 @@ pub enum EnginePreference {
     SpotifySdk,
     /// Force the open multi-source engine.
     Open,
+}
+
+impl<'de> serde::Deserialize<'de> for EnginePreference {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "spotify-sdk" => EnginePreference::SpotifySdk,
+            "open" => EnginePreference::Open,
+            _ => EnginePreference::Auto,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,16 +215,22 @@ impl Settings {
     }
 
     /// Persist settings. Best-effort by callers; returns the error for tests.
+    /// A successful persist also syncs the provider mirror (previously only
+    /// bridge paths synced it, so desktop-saved credentials never reached
+    /// providers until an unrelated bridge call).
     pub fn save(&self) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.save_to(&Self::path())
+            self.save_to(&Self::path())?;
+            sync_stream_credentials(self);
+            Ok(())
         }
         #[cfg(target_arch = "wasm32")]
         {
             let json = serde_json::to_string(self)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             crate::platform::storage::set_bytes(SETTINGS_KEY, json.as_bytes());
+            sync_stream_credentials(self);
             Ok(())
         }
     }
@@ -213,14 +242,19 @@ impl Settings {
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)?;
+        // Tmp + rename (not direct write): a crash mid-write must not leave
+        // a corrupt settings.json that resets everything to defaults.
+        // Owner-only from creation (no umask window before chmod).
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, json)?;
         // This file can hold provider secrets (qobuz_auth_token, tidal
         // token, deezer ARL): owner-only, like the token_store fallback.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
         }
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -263,7 +297,10 @@ mod tests {
     fn missing_file_means_defaults() {
         let path = temp_path("missing");
         assert_eq!(Settings::load_from(&path), None);
-        assert_eq!(Settings::default(), Settings::load_from(&path).unwrap_or_default());
+        assert_eq!(
+            Settings::default(),
+            Settings::load_from(&path).unwrap_or_default()
+        );
     }
 
     #[test]

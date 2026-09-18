@@ -51,8 +51,7 @@ mod tests {
 
     #[test]
     fn cache_probe_order_matches_chain() {
-        let chain_names: Vec<&str> =
-            build_provider_chain().iter().map(|p| p.name()).collect();
+        let chain_names: Vec<&str> = build_provider_chain().iter().map(|p| p.name()).collect();
         assert_eq!(chain_names, CACHE_PROBE_ORDER);
     }
 }

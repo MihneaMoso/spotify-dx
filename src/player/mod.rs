@@ -41,8 +41,7 @@ pub fn launch_track(track: crate::spotify::models::Track) {
 fn report_playback_err(err: &AppError) {
     if matches!(err, AppError::PremiumRequired(_)) {
         crate::state::publish_error(AppError::PremiumRequired(
-            "Playback requires Spotify Premium — your account can browse freely."
-                .into(),
+            "Playback requires Spotify Premium — your account can browse freely.".into(),
         ));
     }
 }
@@ -113,9 +112,7 @@ pub fn is_open_engine() -> bool {
 /// Routes to either the SDK (Premium) or the open streaming engine (free/forced)
 /// based on `EnginePreference` in Settings. Resolves track metadata first.
 pub async fn play_uri(uri: &str) -> Result<(), AppError> {
-    let track_id = uri
-        .strip_prefix("spotify:track:")
-        .unwrap_or(uri);
+    let track_id = uri.strip_prefix("spotify:track:").unwrap_or(uri);
     // Look up the track's metadata. Prefer the internal GraphQL API over `/v1`,
     // which is hard rate-limited on free/web tokens.
     let track = crate::spotify::api::get_track(track_id)
@@ -377,6 +374,13 @@ pub async fn seek(ms: u64) -> Result<(), AppError> {
 }
 
 pub async fn volume(v: f32) -> Result<(), AppError> {
+    // Clamp first: NaN/negative/>1.0 must never reach state or the sink
+    // (the sibling set_volume/current_volume paths already do this).
+    let v = if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     if should_use_open_engine() {
         let (tx, _state) = crate::media::sink::global_sink(v);
         let _ = tx.send(crate::media::sink::SinkCommand::Volume(v));
@@ -391,8 +395,7 @@ pub async fn volume(v: f32) -> Result<(), AppError> {
     #[cfg(not(feature = "native"))]
     {
         let device_id = current_device()?;
-        crate::spotify::player_api::set_volume(&device_id, (v.clamp(0.0, 1.0) * 100.0) as u8)
-            .await
+        crate::spotify::player_api::set_volume(&device_id, (v.clamp(0.0, 1.0) * 100.0) as u8).await
     }
 }
 

@@ -14,17 +14,22 @@ pub fn save(access_token: &str, expires_at_ms: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // Best-effort keychain (Entry::new fails without a secret-service
-        // daemon — never panic on a bridge path); the file fallback below
-        // always runs so the session still persists.
-        if let (Ok(kr_token), Ok(kr_expiry)) = (
+        // daemon — never panic on a bridge path). The file fallback runs
+        // ONLY when the keychain path fails, so a live token doesn't sit in
+        // two stores with different security properties.
+        let keychain_ok = if let (Ok(kr_token), Ok(kr_expiry)) = (
             keyring::Entry::new(SERVICE, KEY_TOKEN),
             keyring::Entry::new(SERVICE, KEY_EXPIRY),
         ) {
-            let _ = kr_token.set_password(access_token);
-            let _ = kr_expiry.set_password(&expires_at_ms.to_string());
+            kr_token.set_password(access_token).is_ok()
+                && kr_expiry.set_password(&expires_at_ms.to_string()).is_ok()
+        } else {
+            false
+        };
+        if !keychain_ok {
+            // Headless desktops without a secret-service daemon.
+            save_to_file(access_token, expires_at_ms);
         }
-        // File fallback for headless desktops without a secret-service daemon:
-        save_to_file(access_token, expires_at_ms);
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -34,8 +39,9 @@ pub fn save(access_token: &str, expires_at_ms: u64) {
 }
 
 /// Load the persisted token + expiry, tolerating missing / half-written state.
-/// Tries the OS keychain first, then falls back to the on-disk file (for
-/// headless desktops without a secret-service daemon).
+/// Reads both sources and takes the fresher clock-valid entry: a stale
+/// keychain row must not shadow a fresher file fallback (secret-service
+/// flaps are common on headless desktops).
 pub fn load() -> Option<(String, u64)> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -52,7 +58,12 @@ pub fn load() -> Option<(String, u64)> {
                 .ok()?;
             Some((token, expiry))
         })();
-        keychain.or_else(load_from_file)
+        let file = load_from_file();
+        match (keychain, file) {
+            (Some(k), Some(f)) => Some(if f.1 >= k.1 { f } else { k }),
+            (Some(k), None) => Some(k),
+            (None, f) => f,
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -101,14 +112,23 @@ fn save_to_file(access_token: &str, expires_at_ms: u64) {
         "access_token": access_token,
         "expires_at_ms": expires_at_ms,
     });
-    let _ = std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap_or_default());
-    // The fallback holds a live session token: restrict it to the owner so
-    // other users on the machine can't read it (default umask may allow more).
+    // Never write an empty body: a failed serialization must preserve the
+    // last good file, not clobber it with 0 bytes.
+    let Ok(bytes) = serde_json::to_vec_pretty(&json) else {
+        return;
+    };
+    // Tmp + rename: a crash mid-write must not corrupt the session file.
+    // Owner-only from creation (no umask-dependent window before chmod).
+    let tmp = path.with_extension("tmp");
+    let Ok(_) = std::fs::write(&tmp, &bytes) else {
+        return;
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
+    let _ = std::fs::rename(&tmp, &path);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

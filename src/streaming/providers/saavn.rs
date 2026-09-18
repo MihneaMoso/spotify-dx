@@ -59,8 +59,8 @@ impl SaavnProvider {
     pub fn new() -> Self {
         Self {
             client: {
-                let builder = reqwest::Client::builder()
-                    .user_agent("Mozilla/5.0 (Linux; Android 11)");
+                let builder =
+                    reqwest::Client::builder().user_agent("Mozilla/5.0 (Linux; Android 11)");
                 #[cfg(not(target_arch = "wasm32"))]
                 let builder = builder.timeout(REQUEST_TIMEOUT);
                 builder.build().unwrap_or_default()
@@ -269,7 +269,10 @@ mod tests {
         ] });
         let item = &v["results"][0];
         assert!(playable_item(item));
-        assert_eq!(item["duration"].as_str().unwrap().parse::<u64>().unwrap(), 207);
+        assert_eq!(
+            item["duration"].as_str().unwrap().parse::<u64>().unwrap(),
+            207
+        );
         assert!(decrypt_media_url(item["encrypted_media_url"].as_str().unwrap()).is_some());
     }
 }

@@ -1,9 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::ui::components::AppLayout;
-use crate::ui::pages::{
-    Album, Artist, Home, Library, Liked, Playlist, Queue, Search, Settings,
-};
+use crate::ui::pages::{Album, Artist, Home, Library, Liked, Playlist, Queue, Search, Settings};
 
 /// Router: authenticated pages. Nested layout wraps every page with the
 /// persistent shell (top bar, rail, player bar).

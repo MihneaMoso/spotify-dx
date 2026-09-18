@@ -4,7 +4,7 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{PLAYER_STATE, SHOW_NOW_PLAYING, format_duration};
+use crate::state::{format_duration, PLAYER_STATE, SHOW_NOW_PLAYING};
 use crate::ui::components::AlbumArt;
 use crate::ui::icons::back_arrow;
 

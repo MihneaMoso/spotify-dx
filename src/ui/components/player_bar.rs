@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use futures::channel::mpsc::UnboundedReceiver;
 
 use crate::player;
-use crate::state::{PLAYER_STATE, SHOW_NOW_PLAYING, RepeatMode};
+use crate::state::{RepeatMode, PLAYER_STATE, SHOW_NOW_PLAYING};
 use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 
 /// Persistent bottom bar: artwork, controls, progress and volume. Always lives
@@ -71,7 +71,14 @@ pub fn PlayerBar() -> Element {
             state.position_ms,
             state.duration_ms,
         ),
-        None => (String::new(), String::new(), String::new(), String::new(), 0, 0),
+        None => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            0,
+            0,
+        ),
     };
 
     let _ = playing; // toggling is state-driven from the SDK / connect API.

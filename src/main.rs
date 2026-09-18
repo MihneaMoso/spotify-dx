@@ -102,7 +102,9 @@ fn main() {
         // would only duplicate/replace the in-app chrome.
         .with_menu(None)
         .with_disable_context_menu(true);
-    dioxus::LaunchBuilder::desktop().with_cfg(config).launch(app::App);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(config)
+        .launch(app::App);
 }
 
 /// Mobile renderer: the full app (bootstrap + SDK/open-engine playback via the
@@ -147,7 +149,11 @@ fn main() {
 
     println!(
         "spotify-dx headless (tooling build): adblock={} auth={}",
-        if spotify_dx::state::is_blocker_ready() { "ready" } else { "not-ready" },
+        if spotify_dx::state::is_blocker_ready() {
+            "ready"
+        } else {
+            "not-ready"
+        },
         if has_session { "restored" } else { "none" }
     );
 }

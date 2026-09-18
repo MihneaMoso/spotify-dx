@@ -53,11 +53,14 @@ pub fn App() -> Element {
     // Delayed by 15s so the startup burst (session page load, feed fetches,
     // artwork decoding) isn't contending with a release-metadata fetch.
     // The settings page offers a manual check + an apply button for whatever
-    // this finds.
+    // this finds. The adblock list refresh rides the same once-per-process
+    // gate: init() can't spawn it (the bootstrap runtime dies right after),
+    // so it starts here on the long-lived dioxus runtime instead.
     let mut update_checked = use_signal(|| false);
     use_effect(move || {
         if !*update_checked.peek() {
             update_checked.set(true);
+            crate::adblock::adguard_api::kick_refresh();
             if SETTINGS.read().auto_check_updates {
                 dioxus::prelude::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(15)).await;
@@ -78,10 +81,20 @@ pub fn App() -> Element {
                 crate::player::on_authenticated();
             }
             // Fast-path restores skip the profile fetch when the bootstrap
-            // runtime was dropped mid-flight — backfill it here, once.
+            // runtime was dropped mid-flight — backfill it here. The latch
+            // sets ONLY on success: one transient failure used to leave
+            // user_id=None for the whole process. Retry bounded (3 tries,
+            // 30s apart) instead of hanging on a 429 window.
             if AUTH_STATE.peek().user_id.is_none() && !*profile_backfilled.read() {
-                profile_backfilled.set(true);
-                dioxus::prelude::spawn(crate::auth::refresh_profile());
+                dioxus::prelude::spawn(async move {
+                    for _ in 0..3 {
+                        if crate::auth::refresh_profile().await {
+                            profile_backfilled.set(true);
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    }
+                });
             }
         }
     });

@@ -30,8 +30,7 @@ thread_local! {
 // drained by a dioxus task (which runs inside a `Runtime` context). Touching
 // `Global` signals directly from the IPC handler panics, because that callback
 // runs on the webkit thread with no active dioxus runtime.
-static IPC_QUEUE: OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>> =
-    OnceLock::new();
+static IPC_QUEUE: OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>> = OnceLock::new();
 
 /// Pending token-refresh requests. `request_token_refresh()` pushes its sender
 /// here; the IPC handler answers EVERY pending sender when the JS fetch
@@ -127,12 +126,11 @@ fn ensure_sdk_webview() -> anyhow::Result<()> {
             builder.on_webview_created({
                 let overlay_slot = overlay_slot.clone();
                 move |ctx| {
-                    let overlay =
-                        crate::platform::android_views::install_overlay(
-                            ctx.env,
-                            ctx.activity,
-                            ctx.webview,
-                        )?;
+                    let overlay = crate::platform::android_views::install_overlay(
+                        ctx.env,
+                        ctx.activity,
+                        ctx.webview,
+                    )?;
                     crate::platform::android_views::set_visible_now(ctx.env, ctx.webview, false)?;
                     *overlay_slot.lock().unwrap() = Some(overlay);
                     Ok(())
@@ -233,7 +231,10 @@ fn handle_message(msg: &serde_json::Value) {
             tracing::info!("webview: token debug: {message}");
         }
         "ready" => {
-            let device_id = msg.get("device_id").and_then(|d| d.as_str()).unwrap_or_default();
+            let device_id = msg
+                .get("device_id")
+                .and_then(|d| d.as_str())
+                .unwrap_or_default();
             tracing::info!("webview: sdk ready on device {device_id}");
             PLAYER_STATE.write().device_id = (!device_id.is_empty()).then(|| device_id.to_owned());
         }
@@ -247,7 +248,10 @@ fn handle_message(msg: &serde_json::Value) {
             }
         }
         "auth_error" | "init_error" => {
-            let message = msg.get("message").and_then(|m| m.as_str()).unwrap_or_default();
+            let message = msg
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or_default();
             tracing::warn!("webview: sdk error ({kind}): {message}");
         }
         _ => tracing::trace!("webview: unhandled ipc message {body}"),
@@ -257,7 +261,11 @@ fn handle_message(msg: &serde_json::Value) {
 /// Fold a `token_refresh[_result]` payload into `AUTH_STATE` (and keychain),
 /// and optionally answer the pending `REFRESH_TX` oneshot.
 fn apply_token_msg(msg: &serde_json::Value, answer_refresh: bool) {
-    let token = msg.get("token").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let token = msg
+        .get("token")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
     let expires_ms = msg.get("expiresMs").and_then(|t| t.as_u64()).unwrap_or(0);
     let is_anon = msg.get("isAnon").and_then(|t| t.as_bool()).unwrap_or(true);
 
@@ -294,7 +302,6 @@ fn apply_token_msg(msg: &serde_json::Value, answer_refresh: bool) {
         }
     }
 }
-
 
 /// Apply a player-state-changed payload to `PLAYER_STATE`.
 fn apply_state(payload: &serde_json::Value) {
@@ -393,4 +400,3 @@ pub fn seek(ms: u64) {
 pub fn volume(v: f32) {
     eval(&format!("window._relay.volume({v})"));
 }
-

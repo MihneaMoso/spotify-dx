@@ -59,6 +59,7 @@ object SettingsStore {
                 .toString()
             BridgeClient.setSettings(json).onFailure {
                 _settings.value = prev
+                Theme.apply(prev.theme)
                 ToastBus.error("Could not save settings")
             }
         }

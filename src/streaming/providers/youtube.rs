@@ -42,8 +42,7 @@ const INNERTUBE_API_KEY: &str = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
 /// current `clientVersion` are required — stale versions are rejected with a
 /// 400 `FAILED_PRECONDITION`.
 const CLIENT_VERSION: &str = "20.10.38";
-const USER_AGENT: &str =
-    "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
+const USER_AGENT: &str = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
 
 /// Piped API hosts for ciphered-URL recovery (no key; docs prescribe dynamic
 /// instance discovery — the Phase B pool supersedes this pair).
@@ -196,7 +195,11 @@ fn parse_length_secs(video: &serde_json::Value) -> Option<u64> {
 /// problems) from "abort the chain" (transport problems — retrying more
 /// videos on a dead network only multiplies the timeout).
 enum StreamOutcome {
-    Playable { url: String, format: AudioFormat, quality: Quality },
+    Playable {
+        url: String,
+        format: AudioFormat,
+        quality: Quality,
+    },
     /// Content unusable (region-block, no formats, cipher unrecoverable…).
     NextCandidate(String),
     /// Transport failure (request/parse). Abort, don't burn more timeouts.
@@ -226,9 +229,13 @@ pub(crate) fn format_for_mime(mime: &str) -> AudioFormat {
 /// Best non-video audio stream from a Piped `/streams` payload as
 /// `(url, bitrate, mime)`. Pure (unit-tested).
 pub(crate) fn pick_piped_audio(val: &serde_json::Value) -> Option<(String, u64, String)> {
-    val.get("audioStreams")?.as_array()?.iter()
+    val.get("audioStreams")?
+        .as_array()?
+        .iter()
         .filter(|s| {
-            !s.get("videoOnly").and_then(|v| v.as_bool()).unwrap_or(false)
+            !s.get("videoOnly")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
         })
         .filter_map(|s| {
             let url = s.get("url")?.as_str()?.to_string();
@@ -236,7 +243,11 @@ pub(crate) fn pick_piped_audio(val: &serde_json::Value) -> Option<(String, u64, 
                 return None;
             }
             let bitrate = s.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
-            let mime = s.get("mimeType").and_then(|m| m.as_str()).unwrap_or("").to_string();
+            let mime = s
+                .get("mimeType")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
             Some((url, bitrate, mime))
         })
         .max_by_key(|(_, bitrate, _)| *bitrate)
@@ -311,7 +322,9 @@ impl YoutubeProvider {
         // be fetched. The progressive muxed format has no such restriction —
         // a plain GET returns the entire file. It carries an AAC audio track
         // (128kbps, the 360p muxed container), which rodio decodes fine.
-        if let Some(muxed) = data.get("formats").and_then(|f| f.as_array())
+        if let Some(muxed) = data
+            .get("formats")
+            .and_then(|f| f.as_array())
             .and_then(|f| {
                 f.iter()
                     .filter(|f| {
@@ -320,11 +333,7 @@ impl YoutubeProvider {
                             .map(|m| m.starts_with("video/"))
                             .unwrap_or(false)
                     })
-                    .max_by_key(|f| {
-                        f.get("bitrate")
-                            .and_then(|b| b.as_u64())
-                            .unwrap_or(0)
-                    })
+                    .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
             })
         {
             let url = muxed
@@ -333,10 +342,7 @@ impl YoutubeProvider {
                 .unwrap_or("")
                 .to_string();
             if !url.is_empty() {
-                let bitrate = muxed
-                    .get("bitrate")
-                    .and_then(|b| b.as_u64())
-                    .unwrap_or(0);
+                let bitrate = muxed.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
                 return StreamOutcome::Playable {
                     url,
                     format: AudioFormat::Aac,
@@ -361,11 +367,7 @@ impl YoutubeProvider {
                     .map(|m| m.starts_with("audio/"))
                     .unwrap_or(false)
             })
-            .max_by_key(|f| {
-                f.get("bitrate")
-                    .and_then(|b| b.as_u64())
-                    .unwrap_or(0)
-            });
+            .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0));
         if let Some(fmt) = best_audio {
             let url = fmt
                 .get("url")
@@ -377,14 +379,8 @@ impl YoutubeProvider {
                 // instead of failing (Phase A cipher path).
                 return self.piped_recovery(video_id).await;
             }
-            let mime = fmt
-                .get("mimeType")
-                .and_then(|m| m.as_str())
-                .unwrap_or("");
-            let bitrate = fmt
-                .get("bitrate")
-                .and_then(|b| b.as_u64())
-                .unwrap_or(0);
+            let mime = fmt.get("mimeType").and_then(|m| m.as_str()).unwrap_or("");
+            let bitrate = fmt.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
             return StreamOutcome::Playable {
                 url,
                 format: format_for_mime(mime),
@@ -468,8 +464,16 @@ impl Provider for YoutubeProvider {
                 continue;
             }
             match self.get_stream_url(&video_id).await {
-                StreamOutcome::Playable { url, format, quality } => {
-                    return Resolution::Success { url, format, quality };
+                StreamOutcome::Playable {
+                    url,
+                    format,
+                    quality,
+                } => {
+                    return Resolution::Success {
+                        url,
+                        format,
+                        quality,
+                    };
                 }
                 StreamOutcome::NextCandidate(reason) => {
                     last_reason = reason;
@@ -543,7 +547,10 @@ mod tests {
         assert_eq!(quality_for_bitrate(300_000), Quality::High);
         assert_eq!(quality_for_bitrate(128_000), Quality::Normal);
         assert_eq!(quality_for_bitrate(48_000), Quality::Low);
-        assert_eq!(format_for_mime("audio/webm; codecs=\"opus\""), AudioFormat::Opus);
+        assert_eq!(
+            format_for_mime("audio/webm; codecs=\"opus\""),
+            AudioFormat::Opus
+        );
         assert_eq!(format_for_mime("audio/mp4"), AudioFormat::Aac);
     }
 }

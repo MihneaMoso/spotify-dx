@@ -23,7 +23,11 @@ pub fn Playlist(id: String) -> Element {
         let name = playlist.name.clone();
         let owner = playlist.owner.display_name.clone().unwrap_or_default();
         let meta = format!("{} songs · by {}", playlist.tracks.total, owner);
-        let art_url = playlist.images.first().map(|i| i.url.clone()).unwrap_or_default();
+        let art_url = playlist
+            .images
+            .first()
+            .map(|i| i.url.clone())
+            .unwrap_or_default();
         let first_track = playlist.tracks.items.first().cloned();
         let tracks = playlist.tracks.items.clone();
         let shuffle_tracks = tracks.clone();

@@ -187,7 +187,7 @@ object Models {
         o.optInt("total", fallback)
 
     /** Parallel name+ID lists for `artists`, filtered as one row set so indices stay paired. */
-    private fun namesAndIds(a: JSONArray?): Pair<List<String>, List<String>> {
+    internal fun namesAndIds(a: JSONArray?): Pair<List<String>, List<String>> {
         if (a == null) return emptyList<String>() to emptyList()
         val names = mutableListOf<String>()
         val ids = mutableListOf<String>()

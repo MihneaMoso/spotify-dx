@@ -220,12 +220,13 @@ object BridgeClient {
 
     private fun arg(id: String): String = JSONObject().put("id", id).toString()
 
-    private suspend fun callData(
+    private suspend fun <T> call(
         phase: String = "Phase 2+",
         awaitReady: Boolean = true,
         timeoutMs: Long = CALL_TIMEOUT_MS,
+        parse: (Envelope) -> T,
         block: () -> String,
-    ): Result<JSONObject> =
+    ): Result<T> =
         withContext(Dispatchers.IO) {
             if (awaitReady) {
                 val ready = kotlinx.coroutines.withTimeoutOrNull(READY_TIMEOUT_MS) {
@@ -242,13 +243,7 @@ object BridgeClient {
                     runCatching {
                         val env = parseEnvelope(block())
                         if (!env.ok) throw toException(env, phase)
-                        // Collection legs return bare arrays; normalize to {items}.
-                        val data = env.data ?: "{}"
-                        if (data.trimStart().startsWith("[")) {
-                            JSONObject().put("items", org.json.JSONArray(data))
-                        } else {
-                            JSONObject(data)
-                        }
+                        parse(env)
                     }
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
@@ -264,40 +259,32 @@ object BridgeClient {
             }
         }
 
+    private suspend fun callData(
+        phase: String = "Phase 2+",
+        awaitReady: Boolean = true,
+        timeoutMs: Long = CALL_TIMEOUT_MS,
+        block: () -> String,
+    ): Result<JSONObject> =
+        call(phase, awaitReady, timeoutMs, parse = { env ->
+            // Collection legs return bare arrays; normalize to {items}.
+            val data = env.data ?: "{}"
+            if (data.trimStart().startsWith("[")) {
+                JSONObject().put("items", org.json.JSONArray(data))
+            } else {
+                JSONObject(data)
+            }
+        }, block = block)
+
     private suspend fun callString(
         phase: String = "Phase 2+",
         awaitReady: Boolean = true,
         timeoutMs: Long = CALL_TIMEOUT_MS,
         block: () -> String,
     ): Result<String> =
-        withContext(Dispatchers.IO) {
-            if (awaitReady) {
-                val ready = kotlinx.coroutines.withTimeoutOrNull(READY_TIMEOUT_MS) {
-                    readySignal.await()
-                }
-                if (ready == null) {
-                    return@withContext Result.failure(
-                        BridgeException(BridgeError.NotWired("boot", "core init not ready")),
-                    )
-                }
-            }
-            try {
-                kotlinx.coroutines.withTimeout(timeoutMs) {
-                    runCatching {
-                        val env = parseEnvelope(block())
-                        if (!env.ok) throw toException(env, phase)
-                        // `data` may be a JSON string or an object; return it raw.
-                        env.data ?: ""
-                    }
-                }
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                Result.failure(
-                    BridgeException(
-                        BridgeError.Core("TIMEOUT", "bridge call timed out after ${timeoutMs}ms"),
-                    ),
-                )
-            }
-        }
+        call(phase, awaitReady, timeoutMs, parse = { env ->
+            // `data` may be a JSON string or an object; return it raw.
+            env.data ?: ""
+        }, block = block)
 
     /** Shared by MusicRepository: same codes, Phase 3 label. */
     internal fun toException(env: Envelope, phase: String = "Phase 2+"): BridgeException =

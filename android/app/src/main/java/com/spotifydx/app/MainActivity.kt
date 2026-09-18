@@ -57,6 +57,16 @@ class MainActivity : AppCompatActivity() {
     private var toastJob: Job? = null
     private var searchHandoff: String? = null
 
+    // Mini-player view refs, bound once (renderPlayerBar runs on every
+    // 250ms position tick — repeated findViewById would churn per tick).
+    private var barTitle: TextView? = null
+    private var barSubtitle: TextView? = null
+    private var barArt: ImageView? = null
+    private var barPlay: ImageButton? = null
+    private var barScrub: SeekBar? = null
+    private var barPos: TextView? = null
+    private var barDuration: TextView? = null
+
     private var current: Destination = Destination.GATE
 
     /** Last navigation args (copied — fragments must not alias these). */
@@ -118,6 +128,16 @@ class MainActivity : AppCompatActivity() {
         bindTopBar()
         bindNav()
         bindPlayerBar()
+        // Cache the per-tick mini-player refs once (see fields).
+        findViewById<View>(R.id.player_bar)?.let { bar ->
+            barTitle = bar.findViewById(R.id.player_title)
+            barSubtitle = bar.findViewById(R.id.player_subtitle)
+            barArt = bar.findViewById(R.id.mini_art)
+            barPlay = bar.findViewById(R.id.btn_play)
+            barScrub = bar.findViewById(R.id.scrub)
+            barPos = bar.findViewById(R.id.player_pos)
+            barDuration = bar.findViewById(R.id.player_duration)
+        }
         collectRepos()
         // System back (gesture or button) mirrors the top-left back button:
         // sub-screens land on HOME instead of exiting the app. On HOME/GATE
@@ -670,16 +690,17 @@ class MainActivity : AppCompatActivity() {
         // exists (restored or playing). The old gated-only toggling left it
         // hidden after cold starts that never passed a second syncNav.
         bar.visibility = if (s.track != null) View.VISIBLE else View.GONE
-        // Compare-before-write discipline extends to views: skip identical binds.
-        bar.findViewById<TextView>(R.id.player_title)?.text =
-            s.track?.name?.ifEmpty { "Not playing" } ?: "Not playing"
-        bar.findViewById<TextView>(R.id.player_subtitle)?.text =
-            s.track?.artistNames ?: ""
+        // Compare-before-write throughout: this runs on every position tick,
+        // so identical binds must not touch views (each write re-renders).
+        val title = s.track?.name?.ifEmpty { "Not playing" } ?: "Not playing"
+        if (barTitle?.text?.toString() != title) barTitle?.text = title
+        val subtitle = s.track?.artistNames ?: ""
+        if (barSubtitle?.text?.toString() != subtitle) barSubtitle?.text = subtitle
         // Mini artwork: tag-guarded so position ticks don't restart the
         // Coil request every emission; PLAYER rounding (12dp) matches the
         // pill's rounded language at thumbnail scale (the pill's own 28dp
         // would render a 48dp thumb fully circular).
-        val art = bar.findViewById<ImageView>(R.id.mini_art)
+        val art = barArt
         if (art != null) {
             val url = s.track?.coverUrl ?: ""
             if (art.getTag(R.id.mini_art) != url) {
@@ -687,20 +708,27 @@ class MainActivity : AppCompatActivity() {
                 ArtworkLoader.load(art, url, ArtworkLoader.Art.PLAYER)
             }
         }
-        bar.findViewById<ImageButton>(R.id.btn_play)?.setImageResource(
-            if (s.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-        )
+        barPlay?.let {
+            // Same-resource sets still invalidate; gate on last state.
+            if (it.getTag(R.id.btn_play) != s.isPlaying) {
+                it.setTag(R.id.btn_play, s.isPlaying)
+                it.setImageResource(
+                    if (s.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                )
+            }
+        }
         // Transport is core-driven; until Phase 4 wires it the buttons show
         // state but issue no fake commands (PlayerRepository reverts).
-        val scrub = bar.findViewById<SeekBar>(R.id.scrub)
+        val scrub = barScrub
         if (scrub != null && s.durationMs > 0) {
-            scrub.max = s.durationMs.toInt()
+            val max = s.durationMs.toInt()
+            if (scrub.max != max) scrub.max = max
             if (!scrub.isPressed) scrub.progress = s.positionMs.toInt()
         }
-        bar.findViewById<TextView>(R.id.player_pos)?.text =
-            TrackAdapter.formatDuration(s.positionMs)
-        bar.findViewById<TextView>(R.id.player_duration)?.text =
-            TrackAdapter.formatDuration(s.durationMs)
+        val pos = TrackAdapter.formatDuration(s.positionMs)
+        if (barPos?.text?.toString() != pos) barPos?.text = pos
+        val duration = TrackAdapter.formatDuration(s.durationMs)
+        if (barDuration?.text?.toString() != duration) barDuration?.text = duration
     }
 
     // -- Toast (generation-guarded auto-dismiss) --------------------------------------------

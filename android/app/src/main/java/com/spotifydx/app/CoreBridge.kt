@@ -78,8 +78,6 @@ class CoreBridge private constructor() {
         @JvmStatic external fun setVolume(arg: String): String
         @JvmStatic external fun enqueue(arg: String): String
         @JvmStatic external fun clearQueue(arg: String): String
-        @JvmStatic external fun setShuffle(arg: String): String
-        @JvmStatic external fun setRepeat(arg: String): String
         @JvmStatic external fun resolveStream(arg: String): String
 
         // -- SDK path (Phase 5, §9.2): Connect transport against the

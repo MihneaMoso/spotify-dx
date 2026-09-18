@@ -150,13 +150,13 @@ class ContextMenuSheet : BottomSheetDialogFragment() {
             }
             val artists = t.artistNav()
             if (artists.isNotEmpty()) {
-                add(Row.Section("Artists"))
+                add(Row.Section(requireContext().getString(R.string.menu_artists)))
                 artists.forEach { (name, id) ->
                     add(Row.Nav("", name, "Artist", "artist", id))
                 }
             }
             t.albumNav()?.let { (name, id) ->
-                add(Row.Section("Album"))
+                add(Row.Section(requireContext().getString(R.string.menu_album)))
                 add(Row.Nav(t.header().first, name, "Album", "album", id))
             }
         }

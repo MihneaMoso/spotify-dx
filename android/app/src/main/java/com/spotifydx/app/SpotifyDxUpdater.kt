@@ -74,6 +74,11 @@ object SpotifyDxUpdater {
             throw e
         } catch (e: IllegalStateException) {
             throw e
+        } catch (e: IllegalArgumentException) {
+            // Programming/config errors (bad session params on an OEM ROM):
+            // surface them instead of degrading into the legacy path, whose
+            // silent failure is exactly what the session path replaced.
+            throw e
         } catch (e: Exception) {
             // Session machinery failed (OEM quirk, etc.) — fall back to the
             // legacy VIEW intent over the provider before giving up.

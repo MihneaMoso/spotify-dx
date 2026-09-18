@@ -170,9 +170,7 @@ mod tests {
                     Some(t) => t,
                     None => break,
                 };
-                let end = after_prefix
-                    .find([')', ','])
-                    .unwrap_or(after_prefix.len());
+                let end = after_prefix.find([')', ',']).unwrap_or(after_prefix.len());
                 // A `var(--name, fallback)` binding (e.g. inline-bound shell
                 // variables like --np-width) is self-sufficient; only bare
                 // references must resolve to a stylesheet definition.

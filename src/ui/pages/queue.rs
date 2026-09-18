@@ -4,7 +4,7 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{PLAYER_STATE, format_duration};
+use crate::state::{format_duration, PLAYER_STATE};
 use crate::ui::components::TrackRow;
 
 #[component]

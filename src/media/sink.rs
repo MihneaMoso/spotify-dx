@@ -84,10 +84,7 @@ impl Default for SinkState {
 
 /// Start the audio sink on a background thread. Returns a command sender and
 /// shared state.
-pub fn spawn_sink(initial_volume: f32) -> (
-    std::sync::mpsc::Sender<SinkCommand>,
-    Arc<SinkState>,
-) {
+pub fn spawn_sink(initial_volume: f32) -> (std::sync::mpsc::Sender<SinkCommand>, Arc<SinkState>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let state = Arc::new(SinkState::default());
     let state_clone = state.clone();
@@ -121,7 +118,9 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
         // thread, so when nothing is playing there is no position to publish.
         if let Some(p) = current_player.as_ref() {
             if state.is_playing.load(Ordering::Relaxed) {
-                state.position_ms.store(p.get_pos().as_millis() as u64, Ordering::Relaxed);
+                state
+                    .position_ms
+                    .store(p.get_pos().as_millis() as u64, Ordering::Relaxed);
                 state.position_changed.notify_waiters();
             }
         }
@@ -247,10 +246,7 @@ fn fetch_audio_bytes(url: &str) -> Result<Vec<u8>, String> {
         if !resp.status().is_success() {
             return Err(format!("download: HTTP {}", resp.status()));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("download: {e}"))?;
+        let bytes = resp.bytes().await.map_err(|e| format!("download: {e}"))?;
         Ok(bytes.to_vec())
     })
 }

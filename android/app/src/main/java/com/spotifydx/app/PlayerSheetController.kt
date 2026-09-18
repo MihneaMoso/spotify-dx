@@ -212,7 +212,13 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     lyricsUi = LyricsUi.IDLE
                     renderLyrics()
                 } else {
-                    ArtworkLoader.load(art, t.coverUrl, ArtworkLoader.Art.PLAYER)
+                    // Tag-guarded like the mini player: this collector runs
+                    // on every position tick, and an unguarded load()
+                    // restarts the Coil request continuously.
+                    if (art.getTag(R.id.sheet_art) != t.coverUrl) {
+                        art.setTag(R.id.sheet_art, t.coverUrl)
+                        ArtworkLoader.load(art, t.coverUrl, ArtworkLoader.Art.PLAYER)
+                    }
                     if (lyricsTrackId != t.id) {
                         lyricsTrackId = t.id
                         line.visibility = View.GONE
@@ -220,10 +226,13 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     }
                     updateHighlight(st.positionMs)
                 }
-                play.setImageResource(
-                    if (st.isPlaying) android.R.drawable.ic_media_pause
-                    else android.R.drawable.ic_media_play,
-                )
+                if (play.getTag(R.id.sheet_play) != st.isPlaying) {
+                    play.setTag(R.id.sheet_play, st.isPlaying)
+                    play.setImageResource(
+                        if (st.isPlaying) android.R.drawable.ic_media_pause
+                        else android.R.drawable.ic_media_play,
+                    )
+                }
                 if (st.durationMs > 0) {
                     scrub.max = st.durationMs.toInt()
                     if (!scrub.isPressed) scrub.progress = st.positionMs.toInt()
@@ -235,7 +244,10 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 qTitle.text = t?.name ?: "Not playing"
                 qSub.text = t?.artistNames ?: ""
                 qCount.text = "${st.queue.size} songs"
-                if (t != null) ArtworkLoader.load(qThumb, t.coverUrl)
+                if (t != null && qThumb.getTag(R.id.sheet_queue_thumb) != t.coverUrl) {
+                    qThumb.setTag(R.id.sheet_queue_thumb, t.coverUrl)
+                    ArtworkLoader.load(qThumb, t.coverUrl)
+                }
             }
         }
     }
@@ -435,7 +447,12 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         lyricsIndex = idx
         if (prev >= 0) lyricsAdapter.notifyItemChanged(prev)
         lyricsAdapter.notifyItemChanged(idx)
-        lyricsList.scrollToPosition(idx)
+        // Auto-scroll only while the user isn't reading elsewhere: a reader
+        // who dragged the list (non-idle scroll state) keeps their viewport
+        // and still gets the highlight + one-liner updates.
+        if (lyricsList.scrollState == RecyclerView.SCROLL_STATE_IDLE) {
+            lyricsList.scrollToPosition(idx)
+        }
         // Echo synced one-liner under the artwork.
         if (idx in lyricsLines.indices) {
             line.text = lyricsLines[idx].text

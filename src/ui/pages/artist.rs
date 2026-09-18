@@ -47,7 +47,11 @@ pub fn Artist(id: String) -> Element {
     let followers = artist.followers.total;
     let genres = artist.genres.join(" · ");
     let meta = format!("{} followers · {}", format_count(followers), genres);
-    let art_url = artist.images.first().map(|i| i.url.clone()).unwrap_or_default();
+    let art_url = artist
+        .images
+        .first()
+        .map(|i| i.url.clone())
+        .unwrap_or_default();
     let seed = artist.id.clone();
     let shown = if *expanded.peek() {
         top.clone()

@@ -14,9 +14,9 @@
 //! Sits after `saavn`: keyless and reliable, but catalog-first for indie
 //! rather than mainstream backfill.
 
+use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 
@@ -180,10 +180,18 @@ impl AudiusProvider {
 /// Pure (unit-tested).
 fn pick_track(items: &[serde_json::Value], track_ms: u64) -> Option<String> {
     for item in items {
-        if item.get("is_delete").and_then(|d| d.as_bool()).unwrap_or(false) {
+        if item
+            .get("is_delete")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
-        if item.get("is_unlisted").and_then(|u| u.as_bool()).unwrap_or(false) {
+        if item
+            .get("is_unlisted")
+            .and_then(|u| u.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
         let id = match item.get("id").and_then(|i| i.as_str()) {
@@ -208,7 +216,10 @@ impl Provider for AudiusProvider {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cooling = self.cooling_until.lock().unwrap_or_else(|e| e.into_inner());
-            if cooling.map(|u| std::time::Instant::now() < u).unwrap_or(false) {
+            if cooling
+                .map(|u| std::time::Instant::now() < u)
+                .unwrap_or(false)
+            {
                 return false;
             }
         }

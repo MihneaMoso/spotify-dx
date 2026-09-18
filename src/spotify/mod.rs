@@ -68,7 +68,10 @@ mod tests {
         assert_eq!(track.duration_ms, 267111);
         assert_eq!(track.artists[0].name, "Kanye West");
         assert!(track.explicit);
-        assert_eq!(track.preview_url.as_deref(), Some("https://p.scdn.co/mp3-preview/x"));
+        assert_eq!(
+            track.preview_url.as_deref(),
+            Some("https://p.scdn.co/mp3-preview/x")
+        );
     }
 
     #[test]
@@ -83,16 +86,21 @@ mod tests {
     fn test_models_deserialize_artist() {
         let artist: Artist = serde_json::from_str(SAMPLE_ARTIST).expect("artist parses");
         assert_eq!(artist.name, "Kanye West");
-        assert_eq!(artist.genres, vec!["chicago rap".to_string(), "rap".to_string()]);
+        assert_eq!(
+            artist.genres,
+            vec!["chicago rap".to_string(), "rap".to_string()]
+        );
         assert_eq!(artist.followers.total, 40_000_000);
     }
 
     #[test]
     fn test_models_deserialize_partial() {
         // Missing optional fields (e.g. `preview_url`/`images`) must not break.
-        let track: Track = serde_json::from_str(r#"{
+        let track: Track = serde_json::from_str(
+            r#"{
             "id": "x", "name": "n", "uri": "spotify:track:x"
-        }"#)
+        }"#,
+        )
         .expect("partial track parses");
         assert_eq!(track.name, "n");
         assert_eq!(track.duration_ms, 0);
@@ -103,8 +111,7 @@ mod tests {
         let value: serde_json::Value = serde_json::json!({
             "tracks": { "items": [], "total": 0, "limit": 20, "offset": 0 },
         });
-        let results: SearchResults =
-            serde_json::from_value(value).expect("search results parse");
+        let results: SearchResults = serde_json::from_value(value).expect("search results parse");
         assert!(results.albums.is_none());
         assert!(results.tracks.is_some());
     }

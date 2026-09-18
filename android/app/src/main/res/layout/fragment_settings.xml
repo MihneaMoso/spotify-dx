@@ -20,7 +20,7 @@
             android:id="@+id/profile_name"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Display name"
+            android:hint="@string/profile_name_hint"
             android:inputType="textPersonName"
             android:singleLine="true" />
 
@@ -39,21 +39,21 @@
                 android:id="@+id/profile_save"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Save" />
+                android:text="@string/action_save" />
 
             <Button
                 android:id="@+id/profile_avatar"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Avatar…" />
+                android:text="@string/action_avatar" />
 
             <Button
                 android:id="@+id/profile_avatar_clear"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Remove" />
+                android:text="@string/action_remove" />
         </LinearLayout>
 
         <Button
@@ -61,7 +61,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/pad_half"
-            android:text="Sign out" />
+            android:text="@string/action_sign_out" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -81,13 +81,13 @@
                 android:id="@+id/theme_deep"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Deep blue" />
+                android:text="@string/theme_deep_blue" />
 
             <RadioButton
                 android:id="@+id/theme_onyx"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Onyx" />
+                android:text="@string/theme_onyx" />
         </RadioGroup>
 
         <TextView
@@ -107,19 +107,19 @@
                 android:id="@+id/engine_auto"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Automatic" />
+                android:text="@string/engine_automatic" />
 
             <RadioButton
                 android:id="@+id/engine_sdk"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Spotify SDK" />
+                android:text="@string/engine_sdk" />
 
             <RadioButton
                 android:id="@+id/engine_open"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Open engine" />
+                android:text="@string/engine_open" />
         </RadioGroup>
 
         <Button
@@ -127,7 +127,7 @@
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Toggle upsell hiding" />
+            android:text="@string/action_toggle_upsell" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -186,7 +186,7 @@
                 android:id="@+id/cred_save"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/cred_save" />
+                android:text="@string/action_save_keys" />
 
             <TextView
                 android:id="@+id/cred_status"
@@ -215,7 +215,7 @@
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Refresh lists" />
+            android:text="@string/action_refresh_lists" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -240,20 +240,20 @@
                 android:id="@+id/update_check"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Check" />
+                android:text="@string/action_check" />
 
             <Button
                 android:id="@+id/update_download"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Download" />
+                android:text="@string/action_download" />
 
             <Button
                 android:id="@+id/update_apply"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Install"
+                android:text="@string/action_install"
                 android:visibility="gone" />
         </LinearLayout>
 

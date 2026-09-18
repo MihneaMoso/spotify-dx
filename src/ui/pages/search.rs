@@ -94,9 +94,20 @@ pub fn Search() -> Element {
     // Top result priority: artist > album > track, materialized as owned data.
     #[allow(dead_code)]
     enum Top {
-        Artist { id: String, name: String, img: String },
-        Album { id: String, name: String, img: String },
-        Track { uri: String, name: String },
+        Artist {
+            id: String,
+            name: String,
+            img: String,
+        },
+        Album {
+            id: String,
+            name: String,
+            img: String,
+        },
+        Track {
+            uri: String,
+            name: String,
+        },
     }
     let top: Option<Top> = if let Some(a) = artists_list.first() {
         Some(Top::Artist {
@@ -141,7 +152,10 @@ pub fn Search() -> Element {
             (
                 al.id.clone(),
                 al.name.clone(),
-                al.artists.first().map(|x| x.name.clone()).unwrap_or_default(),
+                al.artists
+                    .first()
+                    .map(|x| x.name.clone())
+                    .unwrap_or_default(),
                 al.images.first().map(|i| i.url.clone()).unwrap_or_default(),
             )
         })
@@ -258,5 +272,3 @@ pub fn Search() -> Element {
         }
     }
 }
-
-

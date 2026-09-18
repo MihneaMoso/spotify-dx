@@ -145,17 +145,7 @@ fun menuTargetFromArg(o: JSONObject): MenuTarget? {
     return when (o.optString("type", "")) {
         "song" -> MenuTarget.Song(Models.track(p))
         "album" -> {
-            val names = mutableListOf<String>()
-            val ids = mutableListOf<String>()
-            p.optJSONArray("artists")?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    val item = arr.optJSONObject(i) ?: continue
-                    val name = item.optString("name", "")
-                    if (name.isEmpty()) continue
-                    names += name
-                    ids += item.optString("id", "")
-                }
-            }
+            val (names, ids) = Models.namesAndIds(p.optJSONArray("artists"))
             MenuTarget.Album(
                 com.spotifydx.app.Album(
                     id = p.optString("id", ""),

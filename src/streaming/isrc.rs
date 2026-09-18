@@ -180,7 +180,12 @@ mod tests {
     fn pick_isrc_matches_strict_title_lenient_artist() {
         let recs = vec![
             rec("Mercy", "Kanye West", 150_000, &[]),
-            rec("Mercy", "Kanye West feat. Someone", 160_000, &["US-AAA-11-11111"]),
+            rec(
+                "Mercy",
+                "Kanye West feat. Someone",
+                160_000,
+                &["US-AAA-11-11111"],
+            ),
             rec("Mercy", "Other Artist", 160_000, &["US-BBB-22-22222"]),
         ];
         // Exact title + featuring artist + in-tolerance length wins.
@@ -189,9 +194,15 @@ mod tests {
             Some("US-AAA-11-11111")
         );
         // Wrong title never matches.
-        assert_eq!(pick_isrc(Some(&recs), "Mercyful", "Kanye West", 165_000), None);
+        assert_eq!(
+            pick_isrc(Some(&recs), "Mercyful", "Kanye West", 165_000),
+            None
+        );
         // Hour-long mismatch rejected.
-        assert_eq!(pick_isrc(Some(&recs), "Mercy", "Kanye West", 3_600_000), None);
+        assert_eq!(
+            pick_isrc(Some(&recs), "Mercy", "Kanye West", 3_600_000),
+            None
+        );
         // Unknown track length skips the length gate.
         assert_eq!(
             pick_isrc(Some(&recs), "Mercy", "Kanye West", 0).as_deref(),

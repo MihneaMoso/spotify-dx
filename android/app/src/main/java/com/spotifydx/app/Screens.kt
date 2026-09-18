@@ -353,6 +353,21 @@ class LibraryFragment : Fragment() {
             vm.setFilter(tv.text.toString())
             true
         }
+        // Live filtering (debounced): waiting for IME-Done left the list
+        // unfiltered with no hint that an extra keypress was required.
+        var filterJob: kotlinx.coroutines.Job? = null
+        filter.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                filterJob?.cancel()
+                val q = s?.toString() ?: ""
+                filterJob = viewLifecycleOwner.lifecycleScope.launch {
+                    kotlinx.coroutines.delay(300)
+                    vm.setFilter(q)
+                }
+            }
+        })
         val list: RecyclerView = v.findViewById(R.id.library_list)
         list.layoutManager = LinearLayoutManager(context)
         val rows = TitleAdapter(onClick = { pos ->

@@ -24,8 +24,7 @@ pub struct ProviderIds {
 
 /// In-memory cache of Spotify track ID → provider IDs.
 /// TTL: session lifetime (Odesli data is stable for released tracks).
-static ODESLI_CACHE: OnceLock<std::sync::Mutex<HashMap<String, ProviderIds>>> =
-    OnceLock::new();
+static ODESLI_CACHE: OnceLock<std::sync::Mutex<HashMap<String, ProviderIds>>> = OnceLock::new();
 
 fn cache() -> &'static std::sync::Mutex<HashMap<String, ProviderIds>> {
     ODESLI_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -86,18 +85,10 @@ pub async fn resolve(spotify_id: &str) -> Option<ProviderIds> {
     let platforms = parsed.links_by_platform?;
 
     let ids = ProviderIds {
-        tidal_url: platforms
-            .get("tidal")
-            .and_then(|p| p.url.clone()),
-        qobuz_url: platforms
-            .get("qobuz")
-            .and_then(|p| p.url.clone()),
-        youtube_url: platforms
-            .get("youtube")
-            .and_then(|p| p.url.clone()),
-        apple_music_url: platforms
-            .get("appleMusic")
-            .and_then(|p| p.url.clone()),
+        tidal_url: platforms.get("tidal").and_then(|p| p.url.clone()),
+        qobuz_url: platforms.get("qobuz").and_then(|p| p.url.clone()),
+        youtube_url: platforms.get("youtube").and_then(|p| p.url.clone()),
+        apple_music_url: platforms.get("appleMusic").and_then(|p| p.url.clone()),
     };
 
     // Cache the result.

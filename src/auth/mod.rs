@@ -1,4 +1,4 @@
-use crate::state::{AUTH_STATE, AuthState};
+use crate::state::{AuthState, AUTH_STATE};
 pub mod token_store;
 
 /// Every native renderer (desktop + mobile) hosts the real `open.spotify.com`
@@ -104,9 +104,7 @@ pub async fn login() -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
         match crate::platform::web_login::capture_session().await {
-            Ok(Some((token, expires_at_ms))) => {
-                on_session_captured(token, expires_at_ms).await
-            }
+            Ok(Some((token, expires_at_ms))) => on_session_captured(token, expires_at_ms).await,
             Ok(None) => {
                 crate::platform::web_login::redirect_to_spotify();
                 anyhow::bail!("no Spotify session yet — opening open.spotify.com to sign in");
@@ -178,9 +176,9 @@ pub fn logout() {
 }
 
 /// Fetch the /v1/me profile and fold it into AUTH_STATE.
-pub async fn refresh_profile() {
+pub async fn refresh_profile() -> bool {
     let Ok(profile) = crate::spotify::api::get_current_user_profile().await else {
-        return;
+        return false;
     };
     let mut s = AUTH_STATE.write();
     s.user_id = Some(profile.id);
@@ -188,4 +186,5 @@ pub async fn refresh_profile() {
     s.user_avatar_url = profile.images.into_iter().next().map(|i| i.url);
     s.product = profile.product;
     s.is_authenticated = true;
+    true
 }

@@ -70,6 +70,10 @@ object SessionRepository {
 
     /** Shared mirror update (refresh + verify paths must agree exactly). */
     private fun applyStatus(json: org.json.JSONObject) {
+        // Bootstrap worker still restoring (see initCore): an empty mirror
+        // now means "not yet known", not "signed out" — settling on it
+        // would flash the gate for valid sessions.
+        if (json.optBoolean("restoring", false)) return
         val user = json.optJSONObject("user")
         val next = Snapshot(
             authenticated = json.optBoolean("authenticated", false),

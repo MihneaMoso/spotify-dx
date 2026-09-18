@@ -18,19 +18,14 @@ fn require_premium() -> Result<(), AppError> {
     let premium = AUTH_STATE.peek().is_premium();
     if !premium {
         return Err(AppError::PremiumRequired(
-            "Playback requires Spotify Premium. Browsing is available for all accounts."
-                .into(),
+            "Playback requires Spotify Premium. Browsing is available for all accounts.".into(),
         ));
     }
     Ok(())
 }
 
 /// Resume playback of a track or context URI on the given Connect device.
-pub async fn play(
-    device_id: &str,
-    uri: &str,
-    position_ms: Option<u64>,
-) -> Result<(), AppError> {
+pub async fn play(device_id: &str, uri: &str, position_ms: Option<u64>) -> Result<(), AppError> {
     require_premium()?;
     let token = session::ensure_token().await?;
     let url = format!("{PLAYER_BASE}/play?device_id={device_id}");
@@ -90,9 +85,7 @@ pub async fn seek(device_id: &str, position_ms: u64) -> Result<(), AppError> {
 pub async fn set_volume(device_id: &str, volume_percent: u8) -> Result<(), AppError> {
     require_premium()?;
     let token = session::ensure_token().await?;
-    let url = format!(
-        "{PLAYER_BASE}/volume?volume_percent={volume_percent}&device_id={device_id}"
-    );
+    let url = format!("{PLAYER_BASE}/volume?volume_percent={volume_percent}&device_id={device_id}");
     let resp = client::filtered_put_auth(&url, &token, serde_json::json!({})).await?;
     match resp.status().as_u16() {
         200 | 204 => Ok(()),

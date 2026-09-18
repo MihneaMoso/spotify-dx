@@ -94,10 +94,7 @@ pub fn AppLayout() -> Element {
 /// leave the handle without losing the interaction. The pointer is also
 /// captured via JS so the drag continues even outside the window.
 #[component]
-pub fn SidebarResizer(
-    resizing: Signal<bool>,
-    onresize: EventHandler<f64>,
-) -> Element {
+pub fn SidebarResizer(resizing: Signal<bool>, onresize: EventHandler<f64>) -> Element {
     rsx! {
         div {
             id: "sidebar-resizer",

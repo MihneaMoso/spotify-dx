@@ -83,7 +83,12 @@ impl QobuzProvider {
             "{API}/track/search?query={}&limit=5&app_id={app_id}&user_auth_token={token}",
             urlencoding::encode(query)
         );
-        let resp = self.client.get(&url).send().await.map_err(|_| SearchError::Other)?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| SearchError::Other)?;
         match resp.status().as_u16() {
             401 | 403 => return Err(SearchError::Auth),
             429 | 503 => return Err(SearchError::Cooldown),
@@ -101,7 +106,11 @@ impl QobuzProvider {
                 Some(id) => id,
                 None => continue,
             };
-            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let title = item
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             // Qobuz reports duration in SECONDS; 0 = unknown.
             let secs = item.get("duration").and_then(|d| d.as_u64()).unwrap_or(0);
             return Ok(Some((id, title, secs)));
@@ -120,7 +129,12 @@ impl QobuzProvider {
             "{API}/track/getFileUrl?format_id={FORMAT_CD_FLAC}\
              &track_id={track_id}&app_id={app_id}&user_auth_token={token}"
         );
-        let resp = self.client.get(&url).send().await.map_err(|_| SearchError::Other)?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| SearchError::Other)?;
         match resp.status().as_u16() {
             401 | 403 => return Err(SearchError::Auth),
             429 | 503 => return Err(SearchError::Cooldown),
@@ -135,12 +149,7 @@ impl QobuzProvider {
             .map(|u| u.to_string()))
     }
 
-    async fn resolve_inner(
-        &self,
-        app_id: &str,
-        token: &str,
-        query: &TrackQuery,
-    ) -> Resolution {
+    async fn resolve_inner(&self, app_id: &str, token: &str, query: &TrackQuery) -> Resolution {
         // ISRC first (exact recording match), then text fallback.
         let mut attempts = Vec::new();
         if let Some(ref isrc) = query.isrc {
@@ -154,7 +163,9 @@ impl QobuzProvider {
                     return Resolution::Error("qobuz credentials rejected".into())
                 }
                 Err(SearchError::Cooldown) => {
-                    return Resolution::Cooldown { retry_after_secs: 60 }
+                    return Resolution::Cooldown {
+                        retry_after_secs: 60,
+                    }
                 }
                 Err(SearchError::Other) => continue,
             };
@@ -177,7 +188,9 @@ impl QobuzProvider {
                     return Resolution::Error("qobuz credentials rejected".into())
                 }
                 Err(SearchError::Cooldown) => {
-                    return Resolution::Cooldown { retry_after_secs: 60 }
+                    return Resolution::Cooldown {
+                        retry_after_secs: 60,
+                    }
                 }
                 Err(SearchError::Other) => continue,
             }

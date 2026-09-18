@@ -20,9 +20,7 @@ pub enum Resolution {
     },
     /// Provider is temporarily unavailable (503 / rate-limited).
     /// `retry_after_secs` is the minimum wait before retrying this provider.
-    Cooldown {
-        retry_after_secs: u64,
-    },
+    Cooldown { retry_after_secs: u64 },
     /// Track not found on this provider (wrong region, missing catalog).
     NotFound,
     /// Unexpected error (network failure, parse error, etc.).
@@ -139,7 +137,10 @@ mod tests {
         .is_success());
         assert!(!Resolution::NotFound.is_success());
         assert!(!Resolution::Error("boom".into()).is_success());
-        assert!(!Resolution::Cooldown { retry_after_secs: 30 }.is_success());
+        assert!(!Resolution::Cooldown {
+            retry_after_secs: 30
+        }
+        .is_success());
     }
 
     #[test]

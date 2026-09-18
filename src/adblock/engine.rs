@@ -33,6 +33,8 @@ const WILDCARD_ALLOW: &[&str] = &["spotify.com", "spotifycdn.com", "scdn.co"];
 #[cfg(target_arch = "wasm32")]
 const ENGINE_CACHE_FILE: &str = "adblock://engine";
 #[cfg(target_arch = "wasm32")]
+const ENGINE_COUNT_KEY: &str = "adblock://engine_count";
+#[cfg(target_arch = "wasm32")]
 const BLOCKLIST_CACHE_KEY: &str = "adblock://blocklist";
 
 /// Source hostname assumed for all outbound requests when constructing
@@ -52,8 +54,18 @@ struct CheckRequest {
     reply: std::sync::mpsc::SyncSender<bool>,
 }
 
+/// Native engine-thread mailbox. `Engine` itself is `!Send`, so a rebuilt
+/// engine can never cross into the thread — instead `Reload` tells the
+/// thread to re-run `build_or_load_engine()` (cheap deserialize of the
+/// just-persisted cache) after a background refresh.
 #[cfg(not(target_arch = "wasm32"))]
-static ENGINE_TX: OnceLock<std::sync::mpsc::SyncSender<CheckRequest>> = OnceLock::new();
+enum EngineMsg {
+    Check(CheckRequest),
+    Reload,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static ENGINE_TX: OnceLock<std::sync::mpsc::SyncSender<EngineMsg>> = OnceLock::new();
 
 static BLOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -66,6 +78,15 @@ fn build_or_load_engine() -> Option<Engine> {
         let mut engine = Engine::default();
         if engine.deserialize(&bytes).is_ok() {
             tracing::info!("adblock: loaded cached engine");
+            // The count travels in a sidecar: without it a cache-hit
+            // restart reports 0 rules despite a loaded engine.
+            if let Ok(raw) = std::fs::read(count_path()) {
+                if let Ok(s) = String::from_utf8(raw) {
+                    if let Ok(n) = s.trim().parse::<usize>() {
+                        BLOCK_COUNT.store(n, Ordering::Relaxed);
+                    }
+                }
+            }
             return Some(engine);
         }
         tracing::warn!("adblock: cached engine corrupted, rebuilding");
@@ -75,6 +96,13 @@ fn build_or_load_engine() -> Option<Engine> {
         let mut engine = Engine::default();
         if engine.deserialize(&bytes).is_ok() {
             tracing::info!("adblock: loaded cached engine from storage");
+            if let Some(raw) = crate::platform::storage::get_bytes(ENGINE_COUNT_KEY) {
+                if let Ok(s) = String::from_utf8(raw) {
+                    if let Ok(n) = s.trim().parse::<usize>() {
+                        BLOCK_COUNT.store(n, Ordering::Relaxed);
+                    }
+                }
+            }
             return Some(engine);
         }
         tracing::warn!("adblock: cached engine corrupted, rebuilding");
@@ -105,9 +133,9 @@ fn build_or_load_engine() -> Option<Engine> {
     tracing::info!("adblock: compiled engine with {rule_count} rules from blocklist");
 
     #[cfg(not(target_arch = "wasm32"))]
-    save_engine_cache(&engine);
+    save_engine_cache(&engine, rule_count);
     #[cfg(target_arch = "wasm32")]
-    save_engine_cache_to_storage(&engine);
+    save_engine_cache_to_storage(&engine, rule_count);
     Some(engine)
 }
 
@@ -118,6 +146,12 @@ fn build_or_load_engine() -> Option<Engine> {
 /// and processes URL check requests over an `mpsc` channel. No-op on wasm.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_engine_thread() {
+    // Idempotent: refresh paths re-run init, and a second spawn used to
+    // panic on the OnceLock — killing the refresh task instead of
+    // refreshing.
+    if ENGINE_TX.get().is_some() {
+        return;
+    }
     let (tx, rx) = std::sync::mpsc::sync_channel(64);
 
     std::thread::Builder::new()
@@ -125,7 +159,7 @@ pub fn spawn_engine_thread() {
         .spawn(move || engine_thread(rx))
         .expect("failed to spawn adblock engine thread");
 
-    ENGINE_TX.set(tx).expect("adblock engine thread already spawned");
+    let _ = ENGINE_TX.set(tx);
     tracing::info!("adblock: engine thread spawned");
 }
 
@@ -137,24 +171,36 @@ pub fn spawn_engine_thread() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn engine_thread(rx: std::sync::mpsc::Receiver<CheckRequest>) {
+fn engine_thread(rx: std::sync::mpsc::Receiver<EngineMsg>) {
     let mut engine: Option<Engine> = None;
 
-    for req in rx {
-        if engine.is_none() {
-            engine = build_or_load_engine();
+    for msg in rx {
+        match msg {
+            EngineMsg::Reload => {
+                // Background refresh persisted a new cache: pick it up live
+                // (cheap deserialize) instead of waiting for a restart.
+                engine = build_or_load_engine();
+                continue;
+            }
+            EngineMsg::Check(req) => {
+                if engine.is_none() {
+                    engine = build_or_load_engine();
+                }
+                let Some(ref eng) = engine else {
+                    let _ = req.reply.send(false);
+                    continue;
+                };
+
+                let Ok(request) = Request::new(&req.url, SOURCE_HOSTNAME, "xhr", "GET") else {
+                    let _ = req.reply.send(false);
+                    continue;
+                };
+
+                let _ = req
+                    .reply
+                    .send(eng.check_network_request(&request).should_block());
+            }
         }
-        let Some(ref eng) = engine else {
-            let _ = req.reply.send(false);
-            continue;
-        };
-
-        let Ok(request) = Request::new(&req.url, SOURCE_HOSTNAME, "xhr", "GET") else {
-            let _ = req.reply.send(false);
-            continue;
-        };
-
-        let _ = req.reply.send(eng.check_network_request(&request).should_block());
     }
 }
 
@@ -176,7 +222,13 @@ fn build_engine_with_count(blocklist_text: &str) -> (Engine, usize) {
     //    drops the non-matching format.
     let (adguard_text, hosts_text) = split_blocklist_formats(blocklist_text);
     if !hosts_text.is_empty() {
-        filter_set.add_filter_list(hosts_text, ParseOptions { format: FilterFormat::Hosts, ..Default::default() });
+        filter_set.add_filter_list(
+            hosts_text,
+            ParseOptions {
+                format: FilterFormat::Hosts,
+                ..Default::default()
+            },
+        );
     }
     if !adguard_text.is_empty() {
         filter_set.add_filter_list(adguard_text, ParseOptions::default());
@@ -270,7 +322,7 @@ fn cache_path() -> std::path::PathBuf {
 
 /// Save the engine binary cache to disk (native).
 #[cfg(not(target_arch = "wasm32"))]
-fn save_engine_cache(engine: &Engine) {
+fn save_engine_cache(engine: &Engine, rule_count: usize) {
     let path = engine_path();
     let Some(dir) = path.parent() else {
         tracing::error!("adblock: engine cache path has no parent directory");
@@ -284,16 +336,26 @@ fn save_engine_cache(engine: &Engine) {
     let tmp = path.with_extension("tmp");
     let result = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &path));
     if let Err(err) = result {
-        tracing::warn!("adblock: failed to persist engine cache: {err}");
-        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!("adblock: cannot write engine cache: {err}");
+        return;
     }
+    // Rule-count sidecar (see build_or_load_engine): keeps the reported
+    // count correct across cache-hit restarts.
+    let _ = std::fs::write(count_path(), rule_count.to_string());
+}
+
+/// Sidecar holding the compiled rule count next to the engine cache.
+#[cfg(not(target_arch = "wasm32"))]
+fn count_path() -> std::path::PathBuf {
+    engine_path().with_extension("count")
 }
 
 /// Save the engine binary cache to storage (wasm).
 #[cfg(target_arch = "wasm32")]
-fn save_engine_cache_to_storage(engine: &Engine) {
+fn save_engine_cache_to_storage(engine: &Engine, rule_count: usize) {
     let bytes = engine.serialize();
     crate::platform::storage::set_bytes(ENGINE_CACHE_FILE, &bytes);
+    crate::platform::storage::set_bytes(ENGINE_COUNT_KEY, rule_count.to_string().as_bytes());
 }
 
 // ── In-line engine (wasm) ───────────────────────────────────────────────────
@@ -319,7 +381,10 @@ pub fn should_block_url(url: &str) -> bool {
         };
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
         if tx
-            .send(CheckRequest { url: url.to_owned(), reply: reply_tx })
+            .send(EngineMsg::Check(CheckRequest {
+                url: url.to_owned(),
+                reply: reply_tx,
+            }))
             .is_err()
         {
             return false;
@@ -363,23 +428,33 @@ pub fn block_count() -> usize {
 }
 
 /// Rebuild the engine from fresh blocklist text (called by `adguard_api` after
-/// a background refresh).  Builds and caches for next boot; the running engine
-/// picks up the new rules on its next lazy init.
+/// a background refresh). Persists for next boot AND delivers to the running
+/// engine: native signals the engine thread to reload (cheap deserialize of
+/// the just-written cache — the `!Send` engine itself can never cross
+/// threads); wasm rebuilds its thread-local inline.
 pub fn rebuild_engine(blocklist_text: &str) {
     let (engine, rule_count) = build_engine_with_count(blocklist_text);
     BLOCK_COUNT.store(rule_count, Ordering::Relaxed);
     #[cfg(not(target_arch = "wasm32"))]
-    save_engine_cache(&engine);
+    {
+        save_engine_cache(&engine, rule_count);
+        if let Some(tx) = ENGINE_TX.get() {
+            let _ = tx.send(EngineMsg::Reload);
+        }
+    }
     #[cfg(target_arch = "wasm32")]
-    save_engine_cache_to_storage(&engine);
-    tracing::info!("adblock: engine rebuilt with {rule_count} rules, cached for next boot");
+    {
+        save_engine_cache_to_storage(&engine, rule_count);
+        WASM_ENGINE.with(|cell| {
+            *cell.borrow_mut() = Some(engine);
+        });
+    }
+    tracing::info!("adblock: engine rebuilt with {rule_count} rules, live now");
 }
 
 /// DNS-over-HTTPS resolver using Cloudflare (`1.1.1.1/dns-query`). Native only.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn dns_resolve(
-    host: &str,
-) -> Result<Vec<std::net::IpAddr>, anyhow::Error> {
+pub async fn dns_resolve(host: &str) -> Result<Vec<std::net::IpAddr>, anyhow::Error> {
     use hickory_resolver::config::{ResolverConfig, ResolverOpts};
     use hickory_resolver::TokioAsyncResolver;
 

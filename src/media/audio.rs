@@ -117,7 +117,11 @@ impl TrackDecoder {
         let track = format_reader
             .tracks()
             .iter()
-            .find(|t| t.codec_params.as_ref().is_some_and(CodecParameters::is_audio))
+            .find(|t| {
+                t.codec_params
+                    .as_ref()
+                    .is_some_and(CodecParameters::is_audio)
+            })
             .ok_or(AudioError::NoTrack)?;
 
         let track_id = track.id;
@@ -149,8 +153,13 @@ impl TrackDecoder {
 
     /// Total duration in milliseconds, from container metadata when present.
     pub fn duration_ms(&self) -> Option<u64> {
+        let rate = u64::from(self.sample_rate);
+        if rate == 0 {
+            return None;
+        }
         self.total_frames
-            .map(|frames| frames * 1000 / u64::from(self.sample_rate))
+            .and_then(|frames| frames.checked_mul(1000))
+            .map(|millis_frames| millis_frames / rate)
     }
 
     /// Accurate seek to `ms` on the decoded timeline.
@@ -353,6 +362,3 @@ mod tests {
         assert_eq!(p.display_position_ms(50_000, 180_000), 50_000);
     }
 }
-
-
-

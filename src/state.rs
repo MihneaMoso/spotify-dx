@@ -5,8 +5,7 @@ use crate::app_error::AppError;
 use crate::spotify::models::*;
 
 /// The page currently visible in the UI router.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
     #[default]
     Home,
@@ -17,7 +16,6 @@ pub enum Page {
     Playlist,
     NowPlaying,
 }
-
 
 /// Playback repeat mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -157,8 +155,7 @@ impl PlayerState {
     }
 
     fn restore_order(&mut self, original_ids: &[String]) {
-        let mut pool: std::collections::HashMap<String, Track> =
-            std::collections::HashMap::new();
+        let mut pool: std::collections::HashMap<String, Track> = std::collections::HashMap::new();
         for t in self.queue.drain(..) {
             pool.insert(t.id.clone(), t);
         }
@@ -266,16 +263,29 @@ pub fn format_duration(ms: u64) -> String {
 /// Mix entropy into a u64 -- used only to seed a local queue shuffle.
 fn shuffle_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0x9e3779b9)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0x9e3779b9)
 }
 
 /// In-place Fisher-Yates using a seeded PRNG. O(n), no allocations.
 fn seeded_shuffle<T>(items: &mut [T], seed: u64) {
     let n = items.len();
-    if n < 2 { return; }
+    if n < 2 {
+        return;
+    }
     let mut state = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut rand = || { state ^= state >> 13; state ^= state << 7; state ^= state >> 17; state };
-    for i in (1..n).rev() { let j = (rand() % (i as u64 + 1)) as usize; items.swap(i, j); }
+    let mut rand = || {
+        state ^= state >> 13;
+        state ^= state << 7;
+        state ^= state >> 17;
+        state
+    };
+    for i in (1..n).rev() {
+        let j = (rand() % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
 }
 
 #[cfg(test)]
@@ -336,9 +346,21 @@ mod tests {
                 name: "album".into(),
                 uri: "spotify:album:a".into(),
                 images: vec![
-                    SpotifyImage { url: "small".into(), width: Some(64), height: Some(64) },
-                    SpotifyImage { url: "large".into(), width: Some(640), height: Some(640) },
-                    SpotifyImage { url: "mid".into(), width: Some(300), height: Some(300) },
+                    SpotifyImage {
+                        url: "small".into(),
+                        width: Some(64),
+                        height: Some(64),
+                    },
+                    SpotifyImage {
+                        url: "large".into(),
+                        width: Some(640),
+                        height: Some(640),
+                    },
+                    SpotifyImage {
+                        url: "mid".into(),
+                        width: Some(300),
+                        height: Some(300),
+                    },
                 ],
                 album_type: None,
                 release_date: None,
@@ -378,7 +400,12 @@ mod tests {
     #[test]
     fn shuffle_then_unshuffle_restores_original_order() {
         let mut ps = PlayerState::default();
-        ps.enqueue_many(vec![mk_track("a"), mk_track("b"), mk_track("c"), mk_track("d")]);
+        ps.enqueue_many(vec![
+            mk_track("a"),
+            mk_track("b"),
+            mk_track("c"),
+            mk_track("d"),
+        ]);
         let original = ids(&ps.queue).to_vec();
         ps.set_shuffle(true);
         assert!(ps.shuffle);

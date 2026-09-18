@@ -15,16 +15,14 @@ const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
 /// `PersistedQueryNotFound` (412), the hash is stale and must be refreshed.
 #[allow(dead_code)] // some hashes are reserved for upcoming endpoints
 mod hashes {
-    pub const LIBRARY_V3: &str =
-        "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3";
+    pub const LIBRARY_V3: &str = "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3";
     pub const FETCH_LIBRARY_TRACKS: &str =
         "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240";
     pub const FETCH_PLAYLIST: &str =
         "346811f856fb0b7e4f6c59f8ebea78dd081c6e2fb01b77c954b26259d5fc6763";
     pub const SEARCH_DESKTOP: &str =
         "4801118d4a100f756e833d33984436a3899cff359c532f8fd3aaf174b60b3b49";
-    pub const GET_ALBUM: &str =
-        "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10";
+    pub const GET_ALBUM: &str = "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10";
     pub const QUERY_ARTIST_OVERVIEW: &str =
         "ae0e2958a4ab645b35ca19ac04d0495ae12d9c5d7b7286217674801a9aab281a";
     pub const QUERY_ARTIST_RELATED: &str =
@@ -79,7 +77,10 @@ async fn graphql_post(
         )));
     }
 
-    let value: Value = resp.json().await.map_err(|e| AppError::Spotify(e.to_string()))?;
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Spotify(e.to_string()))?;
     if let Some(errors) = value.get("errors").and_then(|e| e.as_array()) {
         if !errors.is_empty() {
             return Err(AppError::Spotify(format!(
@@ -97,7 +98,8 @@ fn str(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn uri_part(v: &Value) -> String {
+/// Last `:`-separated segment of a Spotify URI (`spotify:track:X` → `X`).
+pub(crate) fn uri_part(v: &Value) -> String {
     str(v).rsplit(':').next().unwrap_or_default().to_string()
 }
 
@@ -133,7 +135,10 @@ fn parse_artists(track_data: &Value) -> Vec<crate::spotify::models::ArtistRef> {
             }
             Some(crate::spotify::models::ArtistRef {
                 id: uri_part(&artist["uri"]),
-                name: artist["profile"]["name"].as_str().unwrap_or_default().to_string(),
+                name: artist["profile"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
                 uri,
             })
         })
@@ -142,7 +147,10 @@ fn parse_artists(track_data: &Value) -> Vec<crate::spotify::models::ArtistRef> {
 
 /// Parse a GQL track node (the `data` inside a `{ track: { _uri, data } }` or
 /// wrapper with `_uri`).
-fn parse_gql_track(track_data: &Value, uri_override: Option<&str>) -> Option<crate::spotify::models::Track> {
+fn parse_gql_track(
+    track_data: &Value,
+    uri_override: Option<&str>,
+) -> Option<crate::spotify::models::Track> {
     let uri = match uri_override {
         Some(u) => u.to_string(),
         None => {
@@ -216,7 +224,10 @@ fn parse_playlist_track_total(inner: &Value) -> u32 {
 }
 
 /// User playlists via `libraryV3` (filter=Playlists, flattened).
-pub async fn gql_user_playlists(limit: u32, offset: u32) -> Result<Vec<crate::spotify::models::Playlist>, AppError> {
+pub async fn gql_user_playlists(
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<crate::spotify::models::Playlist>, AppError> {
     let vars = json!({
         "filters": ["Playlists"],
         "order": null,
@@ -268,7 +279,10 @@ pub async fn gql_user_playlists(limit: u32, offset: u32) -> Result<Vec<crate::sp
 }
 
 /// Liked songs via `fetchLibraryTracks`.
-pub async fn gql_user_liked_tracks(limit: u32, offset: u32) -> Result<Vec<crate::spotify::models::Track>, AppError> {
+pub async fn gql_user_liked_tracks(
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<crate::spotify::models::Track>, AppError> {
     let vars = json!({ "offset": offset, "limit": limit });
     let data = graphql_post("fetchLibraryTracks", hashes::FETCH_LIBRARY_TRACKS, vars).await?;
     let tracks_data = &data["me"]["library"]["tracks"];
@@ -287,7 +301,10 @@ pub async fn gql_user_liked_tracks(limit: u32, offset: u32) -> Result<Vec<crate:
     Ok(tracks)
 }
 
-fn parse_gql_album(data: &Value, uri_override: Option<&str>) -> Option<crate::spotify::models::Album> {
+fn parse_gql_album(
+    data: &Value,
+    uri_override: Option<&str>,
+) -> Option<crate::spotify::models::Album> {
     let uri = match uri_override {
         Some(u) => u.to_string(),
         None => str(&data["uri"]),
@@ -348,7 +365,10 @@ fn parse_gql_artist(data: &Value) -> Option<crate::spotify::models::Artist> {
     }
     Some(crate::spotify::models::Artist {
         id,
-        name: data["profile"]["name"].as_str().unwrap_or_default().to_string(),
+        name: data["profile"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         images: parse_images(&data["visuals"]["avatarImage"]),
         ..crate::spotify::models::Artist::default()
     })
@@ -356,7 +376,10 @@ fn parse_gql_artist(data: &Value) -> Option<crate::spotify::models::Artist> {
 
 /// Saved albums via `libraryV3` (filter=Albums). Mirrors `/me/albums` in
 /// shape without the hard `/v1` rate limit.
-pub async fn gql_user_albums(limit: u32, offset: u32) -> Result<Vec<crate::spotify::models::Album>, AppError> {
+pub async fn gql_user_albums(
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<crate::spotify::models::Album>, AppError> {
     let vars = json!({
         "filters": ["Albums"],
         "order": null,
@@ -448,7 +471,10 @@ pub async fn gql_playlist(id: &str) -> Result<crate::spotify::models::Playlist, 
             id: uri_part(&owner_v2["uri"]),
             display_name: Some(str(&owner_v2["name"])).filter(|s| !s.is_empty()),
         },
-        tracks: crate::spotify::models::TracksMeta { total, items: tracks },
+        tracks: crate::spotify::models::TracksMeta {
+            total,
+            items: tracks,
+        },
         uri,
         description: str(&playlist_data["description"]),
     })
@@ -467,7 +493,9 @@ async fn fetch_playlist_page(id: &str, offset: u32) -> Result<Value, AppError> {
     let data = graphql_post("fetchPlaylist", hashes::FETCH_PLAYLIST, vars).await?;
     let playlist_data = &data["playlistV2"];
     if playlist_data.is_null() {
-        return Err(AppError::Spotify(format!("gql fetchPlaylist: no playlistV2 for {id}")));
+        return Err(AppError::Spotify(format!(
+            "gql fetchPlaylist: no playlistV2 for {id}"
+        )));
     }
     Ok(playlist_data.clone())
 }
@@ -692,7 +720,10 @@ fn parse_album_items(album_union: &Value) -> Vec<crate::spotify::models::Track> 
     if let Some(items) = album_union["tracksV2"]["items"].as_array() {
         for elem in items {
             let track_data = &elem["track"];
-            if track_data["__typename"].as_str().is_some_and(|t| t != "Track") {
+            if track_data["__typename"]
+                .as_str()
+                .is_some_and(|t| t != "Track")
+            {
                 continue;
             }
             if let Some(t) = parse_gql_track(track_data, None) {
@@ -730,7 +761,10 @@ fn parse_gql_artist_hero(data: &Value) -> Option<crate::spotify::models::Artist>
     }
     Some(crate::spotify::models::Artist {
         id,
-        name: data["profile"]["name"].as_str().unwrap_or_default().to_string(),
+        name: data["profile"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         images: parse_images(&data["visuals"]["avatarImage"]),
         followers: crate::spotify::models::Followers {
             total: data["stats"]["followers"].as_u64().unwrap_or(0),
@@ -781,7 +815,12 @@ pub async fn gql_artist_page(
 > {
     let vars = json!({ "uri": format!("spotify:artist:{id}") });
 
-    let data = graphql_post("queryArtistOverview", hashes::QUERY_ARTIST_OVERVIEW, vars.clone()).await?;
+    let data = graphql_post(
+        "queryArtistOverview",
+        hashes::QUERY_ARTIST_OVERVIEW,
+        vars.clone(),
+    )
+    .await?;
     let artist = &data["artistUnion"];
     if artist["__typename"].as_str() != Some("Artist") {
         return Err(AppError::Spotify(format!("artist {id} not found via GQL")));
@@ -813,7 +852,8 @@ pub async fn gql_artist_related(id: &str) -> Result<Vec<crate::spotify::models::
     });
     let data = graphql_post("queryArtistRelated", hashes::QUERY_ARTIST_RELATED, vars).await?;
     let mut artists = Vec::new();
-    if let Some(items) = data["artistUnion"]["relatedContent"]["relatedArtists"]["items"].as_array() {
+    if let Some(items) = data["artistUnion"]["relatedContent"]["relatedArtists"]["items"].as_array()
+    {
         for node in items {
             if let Some(a) = parse_gql_artist(node) {
                 artists.push(a);

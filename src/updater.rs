@@ -15,11 +15,11 @@
 use dioxus::prelude::*;
 
 #[cfg(target_os = "android")]
-use std::sync::OnceLock;
-#[cfg(target_os = "android")]
 use jni::objects::JObject;
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
 
 /// Human-readable outcome of the last update check, shown in settings.
 pub static UPDATE_STATUS: GlobalSignal<Option<String>> = Signal::global(|| None);
@@ -200,7 +200,9 @@ fn platform_token() -> Result<&'static str, String> {
         ("macos", "x86_64") => Ok(MACOS_X86_TOKEN),
         ("windows", "x86_64") => Ok(WINDOWS_TOKEN),
         ("android", _) => Ok(ANDROID_TOKEN),
-        _ => Err(format!("unsupported platform for auto-update ({os}/{arch})")),
+        _ => Err(format!(
+            "unsupported platform for auto-update ({os}/{arch})"
+        )),
     }
 }
 
@@ -211,7 +213,11 @@ fn platform_token() -> Result<&'static str, String> {
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_DOWNLOAD_BYTES: u64 = 150 * 1024 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
-async fn download_to(url: &str, dest: &std::path::Path, sha256: Option<&str>) -> Result<(), String> {
+async fn download_to(
+    url: &str,
+    dest: &std::path::Path,
+    sha256: Option<&str>,
+) -> Result<(), String> {
     use sha2::Digest;
     use tokio::io::AsyncWriteExt;
     use tokio::io::BufWriter;
@@ -259,7 +265,9 @@ async fn download_to(url: &str, dest: &std::path::Path, sha256: Option<&str>) ->
             .await
             .map_err(|e| format!("write failed: {e}"))?;
     }
-    file.flush().await.map_err(|e| format!("flush failed: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("flush failed: {e}"))?;
     drop(file);
 
     if let Some(hex) = sha256 {
@@ -296,8 +304,7 @@ pub async fn fetch_update(info: &ReleaseInfo) -> Result<ReadyUpdate, String> {
             return Err("no app files dir".into());
         };
         let dir = dir.join("updates");
-        download_to(&info.asset_url, &dir.join(APK_NAME), info.sha256.as_deref())
-            .await?;
+        download_to(&info.asset_url, &dir.join(APK_NAME), info.sha256.as_deref()).await?;
         Ok(ReadyUpdate {
             version: info.version.clone(),
         })
@@ -375,8 +382,20 @@ async fn android_files_dir() -> Option<std::path::PathBuf> {
 
 /// Headless-core (Kotlin app) variant: no wry `dispatch` exists there, so the
 /// files dir must have been pinned via [`set_bridge_files_dir`] first.
+/// initCore pins it before any update can run, but a tap racing init still
+/// sees `None` — so wait boundedly for the pin instead of failing outright.
 #[cfg(all(target_os = "android", not(feature = "native")))]
 async fn android_files_dir() -> Option<std::path::PathBuf> {
+    if let Some(p) = cached_files_dir() {
+        return Some(p);
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if let Some(p) = cached_files_dir() {
+            return Some(p);
+        }
+    }
     cached_files_dir()
 }
 
@@ -384,7 +403,10 @@ async fn android_files_dir() -> Option<std::path::PathBuf> {
 /// context wry `dispatch` provides. Dioxus renderers only; the Kotlin bridge
 /// receives `filesDir` as a JNI string and pins it via `set_bridge_files_dir`.
 #[cfg(all(target_os = "android", feature = "native"))]
-fn resolve_files_dir(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<std::path::PathBuf> {
+fn resolve_files_dir(
+    env: &mut JNIEnv,
+    activity: &JObject,
+) -> jni::errors::Result<std::path::PathBuf> {
     let file = env
         .call_method(activity, "getFilesDir", "()Ljava/io/File;", &[])?
         .l()?;
@@ -437,6 +459,19 @@ fn stage_desktop_binary(dir: &std::path::Path, archive: &std::path::Path) -> Res
             .map_err(|e| format!("read entry: {e}"))?;
         if buf.len() as u64 > MAX_BINARY_BYTES {
             return Err("archive entry exceeds size limit".into());
+        }
+        // Executable magic check: the staged file gets swapped over the
+        // running binary, so a README (or any non-binary) landing first in
+        // the tarball must be skipped, not staged. ELF / Mach-O / MZ cover
+        // every platform we ship.
+        let is_binary = buf.starts_with(b"\x7fELF")
+            || buf.starts_with(b"\xcf\xfa\xed\xfe")
+            || buf.starts_with(b"\xcf\xfa\xcf\xfa")
+            || buf.starts_with(b"\xfe\xed\xfa\xce")
+            || buf.starts_with(b"\xfe\xed\xfa\xcf")
+            || buf.starts_with(b"MZ");
+        if !is_binary {
+            continue;
         }
         std::fs::write(&staged, &buf).map_err(|e| format!("write staged: {e}"))?;
         found = true;

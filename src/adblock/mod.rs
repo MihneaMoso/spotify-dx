@@ -114,7 +114,8 @@ mod tests {
             "https://audio-ak.spotifycdn.com/track.mp4",
         ];
         for url in &urls {
-            let req = adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
+            let req =
+                adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
             assert!(
                 !engine.check_network_request(&req).should_block(),
                 "must not block {url}"
@@ -133,7 +134,8 @@ mod tests {
             "https://audio-ak.spotifycdn.com/track.mp4",
         ];
         for url in &urls {
-            let req = adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
+            let req =
+                adblock::request::Request::new(url, "open.spotify.com", "xhr", "GET").unwrap();
             assert!(
                 !engine.check_network_request(&req).should_block(),
                 "must not block {url}"
@@ -143,7 +145,10 @@ mod tests {
 
     #[test]
     fn test_extract_host_normalizes() {
-        assert_eq!(extract_host("https://Example.COM/path"), Some("example.com".into()));
+        assert_eq!(
+            extract_host("https://Example.COM/path"),
+            Some("example.com".into())
+        );
         assert_eq!(extract_host("not a url"), None);
     }
 

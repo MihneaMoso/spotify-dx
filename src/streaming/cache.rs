@@ -131,7 +131,9 @@ pub fn load_from_disk() {
     let Some(raw) = crate::platform::storage::get_bytes(DISK_KEY) else {
         return;
     };
-    let Ok(raw) = String::from_utf8(raw) else { return };
+    let Ok(raw) = String::from_utf8(raw) else {
+        return;
+    };
     let Ok(entries): Result<Vec<(CacheKey, CachedUrl)>, _> = serde_json::from_str(&raw) else {
         return;
     };

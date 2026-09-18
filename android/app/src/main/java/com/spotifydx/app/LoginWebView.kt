@@ -110,7 +110,12 @@ class LoginWebViewManager(
     /** Build + show the fullscreen login page. Idempotent (re-entry guard). */
     @SuppressLint("SetJavaScriptEnabled")
     fun show(url: String = SIGN_IN_URL) {
-        if (webView != null) {
+        val existing = webView
+        if (existing != null) {
+            // A live page may be showing a stale step (e.g. post-expiry
+            // re-login landing on the player instead of sign-in): navigate
+            // when the caller asked for a different URL.
+            if (existing.url != url) existing.loadUrl(url)
             container.visibility = android.view.View.VISIBLE
             return
         }

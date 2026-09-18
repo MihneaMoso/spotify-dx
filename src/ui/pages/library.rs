@@ -56,7 +56,9 @@ pub fn Library() -> Element {
                     err,
                     p.as_ref().cloned().unwrap_or_default(),
                     a.as_ref().cloned().unwrap_or_default(),
-                    l.as_ref().map(|page| page.items.clone()).unwrap_or_default(),
+                    l.as_ref()
+                        .map(|page| page.items.clone())
+                        .unwrap_or_default(),
                 )
             }
         }
@@ -75,35 +77,38 @@ pub fn Library() -> Element {
     let show_albums = matches!(*tab.read(), Tab::All | Tab::Albums);
     let show_liked = matches!(*tab.read(), Tab::All | Tab::Liked);
 
-// Owned card tuples so closures are 'static.
-let playlist_cards: Vec<(String, String, String, String)> = pl
-    .into_iter()
-    .map(|p| {
-        (
-            p.id.clone(),
-            p.name.clone(),
-            format!("by {}", p.owner.display_name.clone().unwrap_or_default()),
-            p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
-        )
-    })
-    .collect();
-let album_cards: Vec<(String, String, String, String)> = al
-    .into_iter()
-    .map(|a| {
-        (
-            a.id.clone(),
-            a.name.clone(),
-            a.artists.first().map(|x| x.name.clone()).unwrap_or_default(),
-            a.images.first().map(|i| i.url.clone()).unwrap_or_default(),
-        )
-    })
-    .collect();
-// Playable liked tracks as owned (id, track) rows.
-let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
-    .iter()
-    .filter_map(|s| s.playable().cloned())
-    .map(|t| (t.id.clone(), t))
-    .collect();
+    // Owned card tuples so closures are 'static.
+    let playlist_cards: Vec<(String, String, String, String)> = pl
+        .into_iter()
+        .map(|p| {
+            (
+                p.id.clone(),
+                p.name.clone(),
+                format!("by {}", p.owner.display_name.clone().unwrap_or_default()),
+                p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    let album_cards: Vec<(String, String, String, String)> = al
+        .into_iter()
+        .map(|a| {
+            (
+                a.id.clone(),
+                a.name.clone(),
+                a.artists
+                    .first()
+                    .map(|x| x.name.clone())
+                    .unwrap_or_default(),
+                a.images.first().map(|i| i.url.clone()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    // Playable liked tracks as owned (id, track) rows.
+    let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
+        .iter()
+        .filter_map(|s| s.playable().cloned())
+        .map(|t| (t.id.clone(), t))
+        .collect();
 
     rsx! {
         div { class: "page library",

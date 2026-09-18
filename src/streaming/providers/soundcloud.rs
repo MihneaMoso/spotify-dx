@@ -15,11 +15,11 @@
 //!
 //! Last in the chain: highest fragility (scraped key), most unique catalog.
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use std::time::Instant;
-use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -182,7 +182,12 @@ impl SoundcloudProvider {
             urlencode(&query.artist),
             urlencode(&query.title)
         );
-        let resp = self.client.get(&url).send().await.map_err(|_| SearchError::Other)?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| SearchError::Other)?;
         if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
             return Err(SearchError::Auth);
         }
@@ -248,7 +253,12 @@ impl SoundcloudProvider {
 
     /// Resolve one transcoding URL to its direct stream URL.
     async fn resolve_transcoding(&self, t_url: &str, cid: &str) -> Transcode {
-        let resp = match self.client.get(format!("{t_url}?client_id={cid}")).send().await {
+        let resp = match self
+            .client
+            .get(format!("{t_url}?client_id={cid}"))
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(_) => return Transcode::Unusable,
         };
@@ -319,7 +329,10 @@ impl Provider for SoundcloudProvider {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cooling = self.cooling_until.lock().unwrap_or_else(|e| e.into_inner());
-            if cooling.map(|u| std::time::Instant::now() < u).unwrap_or(false) {
+            if cooling
+                .map(|u| std::time::Instant::now() < u)
+                .unwrap_or(false)
+            {
                 return false;
             }
         }
@@ -366,9 +379,10 @@ mod tests {
               "format": { "protocol": "progressive", "mime_type": "audio/mpeg" } }
         ] } });
         let arr = v["media"]["transcodings"].as_array().unwrap();
-        let prog = arr.iter().find(|t| {
-            t["format"]["protocol"].as_str() == Some("progressive")
-        }).unwrap();
+        let prog = arr
+            .iter()
+            .find(|t| t["format"]["protocol"].as_str() == Some("progressive"))
+            .unwrap();
         assert_eq!(prog["url"].as_str(), Some("https://x/prog"));
     }
 }

@@ -78,7 +78,12 @@ pub fn capture_base() {
             // nothing of ours has been created yet.
             let frame = content_frame!(env, activity);
             let child = env
-                .call_method(&frame, "getChildAt", "(I)Landroid/view/View;", &[JValue::Int(0)])?
+                .call_method(
+                    &frame,
+                    "getChildAt",
+                    "(I)Landroid/view/View;",
+                    &[JValue::Int(0)],
+                )?
                 .l()?;
             // Fall back to whatever wry passed as its current webview (the
             // dioxus UI) when the content frame is still empty.
@@ -111,11 +116,9 @@ pub fn install_overlay<'local>(
     activity: &JObject<'local>,
     webview: &JObject<'local>,
 ) -> errors::Result<GlobalRef> {
-    let base = BASE_VIEW
-        .get()
-        .ok_or(Error::NullPtr(
-            "no base view captured — call capture_base() before building overlay webviews",
-        ))?;
+    let base = BASE_VIEW.get().ok_or(Error::NullPtr(
+        "no base view captured — call capture_base() before building overlay webviews",
+    ))?;
 
     // 1. Put the dioxus UI back as the content view.
     env.call_method(
@@ -129,18 +132,19 @@ pub fn install_overlay<'local>(
     //    FrameLayout's default layout params (MATCH_PARENT × MATCH_PARENT), so
     //    no LayoutParams need to be constructed.
     let frame = content_frame!(env, activity);
-    env.call_method(&frame, "addView", "(Landroid/view/View;)V", &[JValue::Object(webview)])?;
+    env.call_method(
+        &frame,
+        "addView",
+        "(Landroid/view/View;)V",
+        &[JValue::Object(webview)],
+    )?;
 
     env.new_global_ref(webview)
 }
 
 /// Show or hide an overlay synchronously. Must be called with a live `JNIEnv`
 /// on the UI thread (i.e. inside a wry `on_webview_created` hook or dispatch).
-pub fn set_visible_now(
-    env: &mut JNIEnv,
-    webview: &JObject,
-    visible: bool,
-) -> errors::Result<()> {
+pub fn set_visible_now(env: &mut JNIEnv, webview: &JObject, visible: bool) -> errors::Result<()> {
     env.call_method(
         webview,
         "setVisibility",
@@ -173,6 +177,11 @@ pub fn remove(overlay: GlobalRef) {
 /// Hide and detach an overlay synchronously.
 fn detach(env: &mut JNIEnv, activity: &JObject, webview: &JObject) -> errors::Result<()> {
     let frame = content_frame!(env, activity);
-    env.call_method(&frame, "removeView", "(Landroid/view/View;)V", &[JValue::Object(webview)])?;
+    env.call_method(
+        &frame,
+        "removeView",
+        "(Landroid/view/View;)V",
+        &[JValue::Object(webview)],
+    )?;
     set_visible_now(env, webview, false)
 }

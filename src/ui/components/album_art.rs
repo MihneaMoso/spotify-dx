@@ -26,7 +26,11 @@ fn hsl_to_rgb(h: u64, s: u64, l: u64) -> (u8, u8, u8) {
     if s == 0.0 {
         (r, g, b) = (l, l, l);
     } else {
-        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
         let p = 2.0 * l - q;
         r = hue_to_rgb(p, q, h + 1.0 / 3.0);
         g = hue_to_rgb(p, q, h);
@@ -92,7 +96,9 @@ fn use_artwork(url: String) -> Signal<Artwork> {
 }
 
 async fn load_image_bytes(url: &str) -> Result<Vec<u8>, crate::app_error::AppError> {
-    crate::media::images::load(url).await.map(|bytes| bytes.as_ref().clone())
+    crate::media::images::load(url)
+        .await
+        .map(|bytes| bytes.as_ref().clone())
 }
 
 /// Build the blur-up (32px, heavy quality loss) and full (< 512px) JPEG data URIs.
@@ -116,10 +122,7 @@ fn encode_blur_and_full(bytes: &[u8]) -> (String, String) {
 
     let full_image = img.resize(512, 512, image::imageops::FilterType::Triangle);
     let blur_image = img.resize(24, 24, image::imageops::FilterType::Triangle);
-    (
-        encode_jpeg(&blur_image),
-        encode_jpeg(&full_image),
-    )
+    (encode_jpeg(&blur_image), encode_jpeg(&full_image))
 }
 
 fn encode_jpeg(img: &image::DynamicImage) -> String {

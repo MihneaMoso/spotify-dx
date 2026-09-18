@@ -46,14 +46,12 @@ pub async fn fetch_lyrics(
             .clone()
             .resolve(key.clone(), true, move |_| async move {
                 let result = fetch_live(&artist, &title, &album, duration_ms).await?;
-                serde_json::to_vec(&result).map_err(|e| {
-                    crate::app_error::AppError::Spotify(format!("lyrics encode: {e}"))
-                })
+                serde_json::to_vec(&result)
+                    .map_err(|e| crate::app_error::AppError::Spotify(format!("lyrics encode: {e}")))
             })
             .await?;
-        serde_json::from_slice::<LyricsResult>(&bytes).map_err(|e| {
-            crate::app_error::AppError::Spotify(format!("lyrics decode: {e}"))
-        })
+        serde_json::from_slice::<LyricsResult>(&bytes)
+            .map_err(|e| crate::app_error::AppError::Spotify(format!("lyrics decode: {e}")))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -153,7 +151,10 @@ async fn search_fallback(
 fn from_api_object(v: &serde_json::Value) -> LyricsResult {
     let synced = v.get("syncedLyrics").and_then(|s| s.as_str()).unwrap_or("");
     let plain = v.get("plainLyrics").and_then(|s| s.as_str()).unwrap_or("");
-    let instrumental = v.get("instrumental").and_then(|b| b.as_bool()).unwrap_or(false);
+    let instrumental = v
+        .get("instrumental")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
     LyricsResult {
         found: instrumental || !synced.is_empty() || !plain.is_empty(),
         synced: synced.to_string(),

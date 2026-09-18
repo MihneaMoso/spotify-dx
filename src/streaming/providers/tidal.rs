@@ -19,7 +19,7 @@ use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, Tra
 
 /// Static fallback TIDAL proxy instances (used when the uptime list is stale).
 const FALLBACK_INSTANCES: &[&str] = &[
-    "https://monochrome.nyc",     // Spotufi's primary
+    "https://monochrome.nyc", // Spotufi's primary
     "https://monochrome.us.to",
     "https://quack.wtf",
 ];

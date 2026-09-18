@@ -27,6 +27,23 @@
     <string name="sort_recent">Sort: Recently added</string>
     <string name="shuffle">Shuffle</string>
     <string name="clear">Clear</string>
+    <string name="menu_artists">Artists</string>
+    <string name="menu_album">Album</string>
+    <string name="action_save">Save</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_avatar">Avatar…</string>
+    <string name="action_sign_out">Sign out</string>
+    <string name="engine_automatic">Automatic</string>
+    <string name="engine_sdk">Spotify SDK</string>
+    <string name="engine_open">Open engine</string>
+    <string name="theme_deep_blue">Deep blue</string>
+    <string name="theme_onyx">Onyx</string>
+    <string name="action_toggle_upsell">Toggle upsell hiding</string>
+    <string name="action_refresh_lists">Refresh lists</string>
+    <string name="action_check">Check</string>
+    <string name="action_download">Download</string>
+    <string name="action_install">Install</string>
+    <string name="action_save_keys">Save keys</string>
     <string name="settings_profile">Profile</string>
     <string name="settings_appearance">Appearance</string>
     <string name="settings_engine">Playback engine</string>
@@ -38,5 +55,5 @@
     <string name="cred_qobuz_token">Qobuz user auth token</string>
     <string name="cred_tidal">Tidal token (reserved)</string>
     <string name="cred_deezer">Deezer ARL (reserved)</string>
-    <string name="cred_save">Save keys</string>
+    <string name="profile_name_hint">Display name</string>
 </resources>

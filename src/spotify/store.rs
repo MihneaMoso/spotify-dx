@@ -160,7 +160,9 @@ impl Store {
     /// SHA-256 URL-safe keyed snapshot path (deterministic — tested). Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn path_for(&self, key: &str) -> PathBuf {
-        self.root.join("api").join(format!("{}.json", self.snap_key(key)))
+        self.root
+            .join("api")
+            .join(format!("{}.json", self.snap_key(key)))
     }
 
     fn inflight_has(&self, key: &str) -> bool {
@@ -213,7 +215,6 @@ impl Store {
 
         self.leader(&key, load).await
     }
-
 
     /// Leader path: claim the inflight slot under one lock (loser becomes a
     /// follower on the same sender), run the loader inline, publish caches,
@@ -311,7 +312,8 @@ impl Store {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let blob = crate::platform::storage::get_bytes(&format!("api://{}", self.snap_key(key)))?;
+            let blob =
+                crate::platform::storage::get_bytes(&format!("api://{}", self.snap_key(key)))?;
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -374,8 +376,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("spotify-dx-store-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("spotify-dx-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -435,13 +437,17 @@ mod tests {
             .unwrap();
         // Pure memory hit: the second loader must never run.
         let c2 = calls.clone();
-        let r2 = store.clone().resolve(key, false, move |k| {
-            let c = c2.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok::<Vec<u8>, AppError>(format!("v2-{k}").into_bytes())
-            }
-        }).await.unwrap();
+        let r2 = store
+            .clone()
+            .resolve(key, false, move |k| {
+                let c = c2.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok::<Vec<u8>, AppError>(format!("v2-{k}").into_bytes())
+                }
+            })
+            .await
+            .unwrap();
         assert_eq!(r1, r2);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -451,16 +457,19 @@ mod tests {
         let store = Store::new(temp_root("errors"));
         let attempt = Arc::new(AtomicUsize::new(0));
         let a = attempt.clone();
-        let r = store.clone().resolve("e".into(), false, move |_| {
-            let a = a.clone();
-            async move {
-                if a.fetch_add(1, Ordering::SeqCst) == 0 {
-                    Err(AppError::RateLimited)
-                } else {
-                    Ok::<Vec<u8>, AppError>(b"recovered".to_vec())
+        let r = store
+            .clone()
+            .resolve("e".into(), false, move |_| {
+                let a = a.clone();
+                async move {
+                    if a.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Err(AppError::RateLimited)
+                    } else {
+                        Ok::<Vec<u8>, AppError>(b"recovered".to_vec())
+                    }
                 }
-            }
-        }).await;
+            })
+            .await;
         assert!(matches!(r, Err(AppError::RateLimited)));
         let r2 = store
             .clone()
@@ -533,7 +542,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res, b"STALE-BYTES");
-        assert!(t0.elapsed() < Duration::from_millis(40), "SWR must not block");
+        assert!(
+            t0.elapsed() < Duration::from_millis(40),
+            "SWR must not block"
+        );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         let fresh = store

@@ -21,22 +21,23 @@ pub async fn get_current_user_profile() -> Result<UserProfile, AppError> {
 
 pub async fn get_home() -> Result<HomeData, AppError> {
     tracing::info!("api: get_home start -- fanning out (GQL pathfinder)");
-    let (playlists_res, liked_res) = tokio::join!(
-        get_user_playlists(),
-        get_user_saved_tracks(20, 0),
-    );
+    let (playlists_res, liked_res) =
+        tokio::join!(get_user_playlists(), get_user_saved_tracks(20, 0),);
     let playlists = playlists_res.unwrap_or_default();
     let liked_tracks: Vec<Track> = liked_res
         .map(|p| p.items.into_iter().filter_map(|st| st.track).collect())
         .unwrap_or_default();
-    tracing::info!("api: get_home done -- playlists={} liked={}", playlists.len(), liked_tracks.len());
-    Ok(HomeData { playlists, liked_tracks })
+    tracing::info!(
+        "api: get_home done -- playlists={} liked={}",
+        playlists.len(),
+        liked_tracks.len()
+    );
+    Ok(HomeData {
+        playlists,
+        liked_tracks,
+    })
 }
-pub async fn search(
-    q: &str,
-    _types: &[&str],
-    limit: u32,
-) -> Result<SearchResults, AppError> {
+pub async fn search(q: &str, _types: &[&str], limit: u32) -> Result<SearchResults, AppError> {
     // Full-text search goes through the internal GraphQL API (pathfinder), not
     // the hard-rate-limited `/v1/search`.
     gql::gql_search(q, limit).await
@@ -45,12 +46,7 @@ pub async fn search(
 pub async fn search_tracks(q: &str, limit: u32) -> Result<Vec<Track>, AppError> {
     search(q, &["track"], limit)
         .await
-        .map(|results| {
-            results
-                .tracks
-                .map(|page| page.items)
-                .unwrap_or_default()
-        })
+        .map(|results| results.tracks.map(|page| page.items).unwrap_or_default())
 }
 
 pub async fn get_album(id: &str) -> Result<Album, AppError> {
@@ -121,10 +117,7 @@ pub async fn get_user_albums(limit: u32, offset: u32) -> Result<Vec<Album>, AppE
 
 pub async fn get_album_tracks(id: &str) -> Result<Vec<Track>, AppError> {
     let album = get_album(id).await?;
-    Ok(album
-        .tracks
-        .map(|page| page.items)
-        .unwrap_or_default())
+    Ok(album.tracks.map(|page| page.items).unwrap_or_default())
 }
 
 /// Fetch a single track by ID.

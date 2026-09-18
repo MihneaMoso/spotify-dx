@@ -21,12 +21,17 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestInit, RequestMode, Window};
 
 /// Redirect the entire tab to the Spotify sign-in page.
-pub fn redirect_to_spotify() {
-    let window: Window = web_sys::window().expect("no window in wasm");
+/// Returns `false` instead of panicking when there is no window or the
+/// navigation is blocked — the login gate surfaces that as a retryable
+/// error rather than crashing the wasm app.
+pub fn redirect_to_spotify() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
     window
         .location()
         .set_href("https://open.spotify.com/")
-        .expect("failed to set window.location");
+        .is_ok()
 }
 
 /// Try to capture a live web-player session from the browser's Spotify cookies.
@@ -51,20 +56,26 @@ pub async fn capture_session() -> anyhow::Result<Option<(String, u64)>> {
     .map_err(|e| anyhow::anyhow!("build request: {e:?}"))?;
 
     let resp_promise = window.fetch_with_request(&request);
-    let resp: web_sys::Response =
-        JsFuture::from(resp_promise).await.map_err(|e| anyhow::anyhow!("fetch error: {e:?}"))?
-            .dyn_into()
-            .map_err(|e| anyhow::anyhow!("cast response: {e:?}"))?;
+    let resp: web_sys::Response = JsFuture::from(resp_promise)
+        .await
+        .map_err(|e| anyhow::anyhow!("fetch error: {e:?}"))?
+        .dyn_into()
+        .map_err(|e| anyhow::anyhow!("cast response: {e:?}"))?;
 
     if !resp.ok() {
         // 401 => not signed in at open.spotify.com in this browser.
         if resp.status() == 401 {
             return Ok(None);
         }
-        return Err(anyhow::anyhow!("get_access_token returned {}", resp.status()));
+        return Err(anyhow::anyhow!(
+            "get_access_token returned {}",
+            resp.status()
+        ));
     }
 
-    let text_promise = resp.text().map_err(|e| anyhow::anyhow!("read body: {e:?}"))?;
+    let text_promise = resp
+        .text()
+        .map_err(|e| anyhow::anyhow!("read body: {e:?}"))?;
     let text: String = JsFuture::from(text_promise)
         .await
         .map_err(|e| anyhow::anyhow!("body future: {e:?}"))?

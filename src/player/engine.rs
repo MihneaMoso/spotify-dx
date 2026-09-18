@@ -27,7 +27,8 @@ pub trait PlaybackEngine: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Start playing a Spotify track URI.
-    fn play_uri(&self, uri: &str) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
+    fn play_uri(&self, uri: &str)
+        -> impl std::future::Future<Output = Result<(), AppError>> + Send;
 
     /// Pause playback.
     fn pause(&self) -> impl std::future::Future<Output = Result<(), AppError>> + Send;

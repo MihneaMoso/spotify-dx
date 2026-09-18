@@ -17,15 +17,9 @@ static CLIENT: Lazy<Client> = Lazy::new(build_client);
 /// Build a `reqwest::Client` that mimics an up-to-date Chrome desktop install.
 pub fn build_client() -> Client {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static(CHROME_UA),
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_static(CHROME_UA));
     headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let builder = Client::builder()
         .default_headers(headers)
         .user_agent(CHROME_UA);
@@ -45,24 +39,24 @@ pub fn build_client() -> Client {
 /// Perform a GET through the ad-filter. Every outgoing request in the spotify
 /// module must go through this gate — network I/O must not bypass it.
 pub async fn filtered_get(url: &str) -> Result<Response, AppError> {
-    if adblock::should_block(url) {
-        adblock::record_drop();
-        tracing::debug!("ad-block: dropped {url}");
-        return Err(AppError::AdBlock(url.to_owned()));
-    }
+    gate(url)?;
     CLIENT.get(url).send().await.map_err(AppError::from)
 }
 
-/// GET with a Bearer token attached, still through the ad-filter.
-pub async fn filtered_get_auth(
-    url: &str,
-    access_token: &str,
-) -> Result<Response, AppError> {
+/// Shared ad-filter gate: every verb funnels through here so logging,
+/// metrics, and allow-list semantics change in exactly one place.
+fn gate(url: &str) -> Result<(), AppError> {
     if adblock::should_block(url) {
         adblock::record_drop();
         tracing::debug!("ad-block: dropped {url}");
         return Err(AppError::AdBlock(url.to_owned()));
     }
+    Ok(())
+}
+
+/// GET with a Bearer token attached, still through the ad-filter.
+pub async fn filtered_get_auth(url: &str, access_token: &str) -> Result<Response, AppError> {
+    gate(url)?;
     CLIENT
         .get(url)
         .header(AUTHORIZATION, format!("Bearer {access_token}"))
@@ -77,11 +71,7 @@ pub async fn filtered_put_auth(
     access_token: &str,
     body: serde_json::Value,
 ) -> Result<Response, AppError> {
-    if adblock::should_block(url) {
-        adblock::record_drop();
-        tracing::debug!("ad-block: dropped {url}");
-        return Err(AppError::AdBlock(url.to_owned()));
-    }
+    gate(url)?;
     CLIENT
         .put(url)
         .header(AUTHORIZATION, format!("Bearer {access_token}"))
@@ -97,11 +87,7 @@ pub async fn filtered_post_auth(
     access_token: &str,
     body: serde_json::Value,
 ) -> Result<Response, AppError> {
-    if adblock::should_block(url) {
-        adblock::record_drop();
-        tracing::debug!("ad-block: dropped {url}");
-        return Err(AppError::AdBlock(url.to_owned()));
-    }
+    gate(url)?;
     CLIENT
         .post(url)
         .header(AUTHORIZATION, format!("Bearer {access_token}"))
@@ -119,11 +105,7 @@ pub async fn filtered_post_pathfinder(
     access_token: &str,
     body: serde_json::Value,
 ) -> Result<Response, AppError> {
-    if adblock::should_block(url) {
-        adblock::record_drop();
-        tracing::debug!("ad-block: dropped {url}");
-        return Err(AppError::AdBlock(url.to_owned()));
-    }
+    gate(url)?;
     CLIENT
         .post(url)
         .header(AUTHORIZATION, format!("Bearer {access_token}"))

@@ -50,13 +50,26 @@ pub async fn init() -> anyhow::Result<()> {
         tracing::debug!("adblock: api.spotify.com resolves to {ips:?}");
     }
 
-    // Background refresh — never blocks UI startup. Native uses a tokio task;
-    // wasm's reqwest futures are !Send so `spawn` won't do — use spawn_local.
+    // Background refresh — never blocks startup. It MUST be spawned on a
+    // runtime that outlives the caller: the desktop bootstrap runtime is
+    // dropped right after init (spawning here meant the refresh was
+    // near-always cancelled), so init no longer spawns it — the owner
+    // kicks it via kick_refresh() on its own long-lived runtime
+    // (dioxus App effect on desktop, bridge rt on Android; wasm keeps
+    // spawn_local here since its runtime persists).
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(refresh_lists());
+    Ok(())
+}
+
+/// Start the background blocklist refresh on the caller's runtime.
+/// Call once from a long-lived context (not a temporary bootstrap
+/// runtime — the task would die with it).
+pub fn kick_refresh() {
     #[cfg(not(target_arch = "wasm32"))]
     tokio::spawn(refresh_lists());
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(refresh_lists());
-    Ok(())
 }
 
 /// Fetch every list, rebuild the engine, and atomically rewrite the cache.
@@ -88,7 +101,10 @@ async fn refresh_lists() {
         stats.cached_entries = engine::block_count();
     }
     STATS_CHANGED.notify_waiters();
-    tracing::info!("adblock: refreshed blocklist, engine now has {} rules", engine::block_count());
+    tracing::info!(
+        "adblock: refreshed blocklist, engine now has {} rules",
+        engine::block_count()
+    );
 
     // Store the merged text for version-change detection on next boot.
     if let Ok(mut current) = engine::FRESH_LIST.write() {

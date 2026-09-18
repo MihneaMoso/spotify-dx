@@ -24,7 +24,9 @@ pub struct ResolvedStream {
 ///
 /// Checks the cache first, then tries the provider chain in order.
 /// Returns `Err` only on hard failure; `Ok(None)` means "not found anywhere".
-pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<ResolvedStream>, String> {
+pub async fn resolve(
+    track: &crate::spotify::models::Track,
+) -> Result<Option<ResolvedStream>, String> {
     let track_id = &track.id;
 
     // Step 1: Check cache (every chain provider — see CACHE_PROBE_ORDER;
@@ -32,9 +34,7 @@ pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<Res
     for provider_name in providers::CACHE_PROBE_ORDER {
         if let Some(cached) = cache::get(track_id, provider_name) {
             if !cached.is_expired() {
-                tracing::debug!(
-                    "stream cache hit for {track_id} on {provider_name}"
-                );
+                tracing::debug!("stream cache hit for {track_id} on {provider_name}");
                 let format = match cached.format.as_str() {
                     "flac" => crate::streaming::provider::AudioFormat::Flac,
                     "mp3" => crate::streaming::provider::AudioFormat::Mp3,
@@ -64,7 +64,11 @@ pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<Res
         }
         tracing::debug!("trying provider: {}", provider.name());
         match provider.resolve(&query).await {
-            Resolution::Success { url, format, quality } => {
+            Resolution::Success {
+                url,
+                format,
+                quality,
+            } => {
                 tracing::info!(
                     "resolved {track_id} via {} → {format:?} {quality:?}",
                     provider.name()
@@ -103,14 +107,18 @@ pub async fn resolve(track: &crate::spotify::models::Track) -> Result<Option<Res
     // providers can't use an ISRC, so a full second pass would just burn
     // timeouts for nothing.
     if query.isrc.is_none() && providers::qobuz::is_configured() {
-        if let Some(isrc) = super::isrc::lookup_isrc(&query.title, &query.artist, query.duration_ms).await
+        if let Some(isrc) =
+            super::isrc::lookup_isrc(&query.title, &query.artist, query.duration_ms).await
         {
             tracing::info!("enriched {track_id} with ISRC, retrying ISRC consumers");
             let mut enriched = query.clone();
             enriched.isrc = Some(isrc);
             let qobuz = providers::qobuz::QobuzProvider::new();
-            if let Resolution::Success { url, format, quality } =
-                qobuz.resolve(&enriched).await
+            if let Resolution::Success {
+                url,
+                format,
+                quality,
+            } = qobuz.resolve(&enriched).await
             {
                 tracing::info!("resolved {track_id} via qobuz (ISRC) → {format:?} {quality:?}");
                 cache::put(track_id, qobuz.name(), &url, &format.to_string());

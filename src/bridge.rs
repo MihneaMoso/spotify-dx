@@ -34,8 +34,8 @@ use jni::JNIEnv;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Mutex, OnceLock};
 
-use crate::{adblock, auth, profile, settings, updater, util};
 use crate::spotify::{client, models};
+use crate::{adblock, auth, profile, settings, updater, util};
 
 /// Bridge schema version, negotiated at startup (`initCore` refuses nothing —
 /// Kotlin checks this FIRST via `bridgeVersion` and aborts with a diagnostic
@@ -95,10 +95,22 @@ fn events() -> &'static Mutex<Vec<String>> {
     EVENTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// True while the initCore bootstrap worker (adblock/auth restore) is still
+/// running. `sessionStatus` reports it so the Kotlin settled-gate can tell
+/// "not yet restored" apart from "signed out".
+static BOOTSTRAP_RESTORING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn set_bootstrap_restoring(v: bool) {
+    BOOTSTRAP_RESTORING.store(v, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn push_event(kind: &str, payload_json: &str) {
     let mut q = events().lock().unwrap_or_else(|e| e.into_inner());
     if q.len() < 64 {
-        q.push(format!("{{\"kind\":\"{kind}\",\"payload\":{payload_json}}}"));
+        q.push(format!(
+            "{{\"kind\":\"{kind}\",\"payload\":{payload_json}}}"
+        ));
     }
 }
 
@@ -169,22 +181,23 @@ fn java_str<'x, 'a>(env: &'x JNIEnv<'a>, s: &str) -> JString<'a> {
 /// Takes `env` by value: `JString` is a raw-pointer wrapper (its lifetime is
 /// the JNI frame's, not a borrow of `env`), so moving `env` is sound.
 fn guarded<'a>(mut env: JNIEnv<'a>, f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a> {
-    let out = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut env))).unwrap_or_else(|payload| {
-        // Extract the panic message (String / &str / unknown) so the envelope
-        // — and logcat — name the culprit instead of a bare "panicked".
-        let msg = payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_else(|| "unknown panic payload".to_string());
-        let location = std::panic::Location::caller();
-        // Full backtrace goes to logcat only (too long for a toast); the
-        // envelope carries the message.
-        let bt = std::backtrace::Backtrace::capture();
-        tracing::error!("bridge panic at {location}: {msg}\n{bt}");
-        let short = msg.chars().take(300).collect::<String>();
-        err("BRIDGE_PANIC", format!("native bridge panicked: {short}"))
-    });
+    let out =
+        std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut env))).unwrap_or_else(|payload| {
+            // Extract the panic message (String / &str / unknown) so the envelope
+            // — and logcat — name the culprit instead of a bare "panicked".
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            let location = std::panic::Location::caller();
+            // Full backtrace goes to logcat only (too long for a toast); the
+            // envelope carries the message.
+            let bt = std::backtrace::Backtrace::capture();
+            tracing::error!("bridge panic at {location}: {msg}\n{bt}");
+            let short = msg.chars().take(300).collect::<String>();
+            err("BRIDGE_PANIC", format!("native bridge panicked: {short}"))
+        });
     java_str(&env, &out)
 }
 
@@ -202,9 +215,17 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_bridgeVersion(
     BRIDGE_VERSION
 }
 
-/// `initCore(filesDir, cacheDir) -> envelope`. Pins base directories, starts
-/// the adblock engine (idempotent), and reports any restorable session.
-/// Must be called once from `Application.onCreate` (core outlives the UI).
+/// `initCore(filesDir, cacheDir) -> envelope`. Pins base directories and
+/// kicks off bootstrap (adblock engine, auth restore) on the bridge runtime.
+///
+/// Returns immediately: directory pinning is synchronous (fast), while the
+/// network/filesystem bootstrap previously `block_on`'d here — stalling the
+/// calling thread (usually the main thread: ANR/startup jank). Kotlin learns
+/// the outcome through the normal channels: the `session` event plus
+/// `sessionStatus`, whose envelope carries `restoring` until the worker
+/// lands, so the settled-gate never mistakes "not yet restored" for
+/// "signed out". Must be called once from `Application.onCreate` (core
+/// outlives the UI); re-entry returns at once.
 #[allow(unsafe_code)]
 #[no_mangle]
 pub extern "C" fn Java_com_spotifydx_app_CoreBridge_initCore<'a>(
@@ -229,32 +250,46 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_initCore<'a>(
         }
         util::set_dir_overrides(files.into(), cache.into());
         updater::set_bridge_files_dir(util::data_dir());
-        if let Err(e) = rt().block_on(adblock::init()) {
-            tracing::warn!("bridge: adblock init failed ({e:#}); continuing unfiltered");
+        // Once-only bootstrap (activity recreations re-enter here): the
+        // worker owns adblock/auth init exactly once.
+        static BOOTSTRAP_STARTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if BOOTSTRAP_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return ok_data("{\"bridge\":1,\"session_restored\":false,\"started\":true}");
         }
-        let restored = rt().block_on(auth::init());
-        // Seed the mirror from the persisted token WITHOUT authenticating:
-        // clock-validity is unproven until `currentUser` verifies it or the
-        // login page captures (same rule as the dioxus gate — a stale stored
-        // token must never skip login).
-        if let Some((token, expires)) = auth::token_store::load() {
-            *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession {
-                authenticated: false,
-                access_token: Some(token.clone()),
-                expires_at_ms: expires,
-                user_json: None,
-            };
-            // Parked for fetchers too: a clock-valid stored token is usable
-            // until proven otherwise (same rule as the mirror seeding above).
-            crate::spotify::session::set_headless_token(token, expires);
-        }
-        if restored {
-            push_event("session", "{\"restored\":true}");
-        }
-        ok_data(&format!(
-            "{{\"bridge\":{},\"session_restored\":{restored}}}",
-            BRIDGE_VERSION
-        ))
+        set_bootstrap_restoring(true);
+        rt().spawn(async {
+            if let Err(e) = adblock::init().await {
+                tracing::warn!("bridge: adblock init failed ({e:#}); continuing unfiltered");
+            }
+            // Background list refresh on the long-lived bridge runtime (init()
+            // no longer spawns it — see adguard_api::kick_refresh).
+            crate::adblock::adguard_api::kick_refresh();
+            let restored = auth::init().await;
+            // Seed the mirror from the persisted token WITHOUT authenticating:
+            // clock-validity is unproven until `currentUser` verifies it or the
+            // login page captures (same rule as the dioxus gate — a stale stored
+            // token must never skip login).
+            if let Some((token, expires)) = auth::token_store::load() {
+                *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession {
+                    authenticated: false,
+                    access_token: Some(token.clone()),
+                    expires_at_ms: expires,
+                    user_json: None,
+                };
+                // Parked for fetchers too: a clock-valid stored token is usable
+                // until proven otherwise (same rule as the mirror seeding above).
+                crate::spotify::session::set_headless_token(token, expires);
+            }
+            if restored {
+                push_event("session", "{\"restored\":true}");
+            }
+            set_bootstrap_restoring(false);
+            // Wake the Kotlin mirror either way: success lands via the event
+            // above; the settled-gate must also release on a clean miss.
+            push_event("session", "{\"bootstrap\":true}");
+        });
+        ok_data("{\"bridge\":1,\"session_restored\":false,\"started\":true}")
     })
 }
 
@@ -311,11 +346,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getProfile<'a>(
     env: JNIEnv<'a>,
     _cls: JClass<'a>,
 ) -> JString<'a> {
-    guarded(env, |_env| {
-        match serde_json::to_string(&profile::load()) {
-            Ok(json) => ok_data(&json),
-            Err(e) => err("IO", e),
-        }
+    guarded(env, |_env| match serde_json::to_string(&profile::load()) {
+        Ok(json) => ok_data(&json),
+        Err(e) => err("IO", e),
     })
 }
 
@@ -332,7 +365,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_setProfileName<'a>(
         let mut p = profile::load();
         p.username = name;
         match profile::persist_to(&p, &profile::path()) {
-            Ok(()) => serde_json::to_string(&p).map(|j| ok_data(&j)).unwrap_or_else(|e| err("IO", e)),
+            Ok(()) => serde_json::to_string(&p)
+                .map(|j| ok_data(&j))
+                .unwrap_or_else(|e| err("IO", e)),
             Err(e) => err("IO", e),
         }
     })
@@ -356,7 +391,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_setAvatar<'a>(
             return err("INVALID_ARGS", e);
         }
         match profile::persist_to(&p, &profile::path()) {
-            Ok(()) => serde_json::to_string(&p).map(|j| ok_data(&j)).unwrap_or_else(|e| err("IO", e)),
+            Ok(()) => serde_json::to_string(&p)
+                .map(|j| ok_data(&j))
+                .unwrap_or_else(|e| err("IO", e)),
             Err(e) => err("IO", e),
         }
     })
@@ -373,7 +410,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_clearAvatar<'a>(
         let mut p = profile::load();
         profile::clear_avatar(&mut p);
         match profile::persist_to(&p, &profile::path()) {
-            Ok(()) => serde_json::to_string(&p).map(|j| ok_data(&j)).unwrap_or_else(|e| err("IO", e)),
+            Ok(()) => serde_json::to_string(&p)
+                .map(|j| ok_data(&j))
+                .unwrap_or_else(|e| err("IO", e)),
             Err(e) => err("IO", e),
         }
     })
@@ -474,14 +513,23 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_downloadUpdate<'a>(
     _cls: JClass<'a>,
 ) -> JString<'a> {
     guarded(env, |_env| {
-        let info = last_check().lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let info = last_check()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let Some(info) = info else {
-            return err("INVALID_ARGS", "no checked release — call checkForUpdates first");
+            return err(
+                "INVALID_ARGS",
+                "no checked release — call checkForUpdates first",
+            );
         };
         let outcome = rt().block_on(updater::fetch_update(&info));
         match outcome {
             Ok(ready) => {
-                set_update_status(format!("Update ready: v{} — apply to install", ready.version));
+                set_update_status(format!(
+                    "Update ready: v{} — apply to install",
+                    ready.version
+                ));
                 push_event(
                     "update",
                     &format!("{{\"staged\":true,\"version\":\"{}\"}}", ready.version),
@@ -505,12 +553,14 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_applyUpdate<'a>(
     _cls: JClass<'a>,
     activity: JObject<'a>,
 ) -> JString<'a> {
-    guarded(env, |env| match updater::request_android_install_with(env, &activity) {
-        Ok(()) => {
-            set_update_status("Installing update…".into());
-            ok_str("installer-launched")
+    guarded(env, |env| {
+        match updater::request_android_install_with(env, &activity) {
+            Ok(()) => {
+                set_update_status("Installing update…".into());
+                ok_str("installer-launched")
+            }
+            Err(e) => err("IO", e),
         }
-        Err(e) => err("IO", e),
     })
 }
 
@@ -523,7 +573,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_updateStatus<'a>(
     _cls: JClass<'a>,
 ) -> JString<'a> {
     guarded(env, |_env| {
-        let s = update_status().lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let s = update_status()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         ok_data(&serde_json::Value::String(s).to_string())
     })
 }
@@ -542,6 +595,7 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sessionStatus<'a>(
             "authenticated": s.authenticated,
             "has_token": s.access_token.is_some(),
             "expires_at_ms": s.expires_at_ms,
+            "restoring": BOOTSTRAP_RESTORING.load(std::sync::atomic::Ordering::SeqCst),
             "user": s.user_json.map(|u| serde_json::from_str::<serde_json::Value>(&u).unwrap_or(serde_json::Value::Null)).unwrap_or(serde_json::Value::Null),
         }).to_string())
     })
@@ -564,11 +618,17 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_notifySession<'a>(
             Ok(v) => v,
             Err(e) => return err("INVALID_ARGS", format!("bad session JSON: {e}")),
         };
-        let token = v.get("access_token").and_then(|t| t.as_str()).unwrap_or_default();
+        let token = v
+            .get("access_token")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
         if token.is_empty() {
             return err("INVALID_ARGS", "session has no access_token");
         }
-        if v.get("is_anonymous").and_then(|a| a.as_bool()).unwrap_or(false) {
+        if v.get("is_anonymous")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(false)
+        {
             return err("INVALID_ARGS", "anonymous sessions do not authenticate");
         }
         let expires_at_ms = v.get("expires_at_ms").and_then(|e| e.as_u64()).unwrap_or(0);
@@ -640,10 +700,16 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_pollEvents<'a>(
 /// revives the session page through `SessionRefresher` and retries) instead
 /// of a doomed network call.
 fn need_fresh_token() -> Result<String, String> {
-    let s = session().lock().unwrap_or_else(|e| e.into_inner()).clone();
-    match s.access_token {
-        Some(t) if s.expires_at_ms > now_ms() + TOKEN_SKEW_MS => Ok(t),
-        _ => Err(err("NEEDS_PAGE", "token stale or missing — revive the session page")),
+    // Read only the two compared fields under the lock — cloning the whole
+    // session (including the user_json blob) on every data call was pure
+    // waste at this call volume.
+    let guard = session().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.access_token.clone() {
+        Some(t) if guard.expires_at_ms > now_ms() + TOKEN_SKEW_MS => Ok(t),
+        _ => Err(err(
+            "NEEDS_PAGE",
+            "token stale or missing — revive the session page",
+        )),
     }
 }
 
@@ -658,7 +724,10 @@ fn map_data_err(e: crate::app_error::AppError) -> String {
     // call would reuse the dead token and 401-loop. Kotlin gates on the code
     // and finishes the transition with a store+mirror logout of its own.
     if matches!(e, crate::app_error::AppError::Auth(_)) {
-        session().lock().unwrap_or_else(|e| e.into_inner()).authenticated = false;
+        session()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .authenticated = false;
         crate::spotify::session::clear_headless_token();
         push_event("session", "{\"authenticated\":false}");
     }
@@ -673,9 +742,7 @@ fn map_data_err(e: crate::app_error::AppError) -> String {
         // Surfaced typed (not NET) so the Kotlin engine router can tell
         // "not Premium" apart from a transport failure and fall back to the
         // open engine / show the upsell instead of a generic error.
-        crate::app_error::AppError::PremiumRequired(_) => {
-            err("PREMIUM_REQUIRED", e.to_string())
-        }
+        crate::app_error::AppError::PremiumRequired(_) => err("PREMIUM_REQUIRED", e.to_string()),
         _ => err("NET", e.to_string()),
     }
 }
@@ -700,7 +767,12 @@ fn arg_id(raw: &str) -> Result<String, String> {
 fn arg_page(raw: &str) -> Result<(u32, u32), String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| err("INVALID_ARGS", format!("bad arg JSON: {e}")))?;
-    let limit = v.get("limit").and_then(|l| l.as_u64()).unwrap_or(20).min(50).max(1) as u32;
+    let limit = v
+        .get("limit")
+        .and_then(|l| l.as_u64())
+        .unwrap_or(20)
+        .min(50)
+        .max(1) as u32;
     let offset = v.get("offset").and_then(|o| o.as_u64()).unwrap_or(0) as u32;
     Ok((limit, offset))
 }
@@ -747,8 +819,17 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_search<'a>(
         if q.is_empty() {
             return err("INVALID_ARGS", "arg.query must be non-empty");
         }
-        let limit = v.get("limit").and_then(|l| l.as_u64()).unwrap_or(20).min(50).max(1) as u32;
-        match rt().block_on(crate::spotify::api::search(q, &["track", "album", "artist"], limit)) {
+        let limit = v
+            .get("limit")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(20)
+            .min(50)
+            .max(1) as u32;
+        match rt().block_on(crate::spotify::api::search(
+            q,
+            &["track", "album", "artist"],
+            limit,
+        )) {
             Ok(results) => to_json(&results),
             Err(e) => map_data_err(e),
         }
@@ -802,7 +883,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getAlbum<'a>(
             let album = crate::spotify::api::get_album(&id).await?;
             // Tracks are best-effort: a failing leg yields the header with an
             // empty listing, never a crash (partial-failure tolerance).
-            let tracks = crate::spotify::api::get_album_tracks(&id).await.unwrap_or_default();
+            let tracks = crate::spotify::api::get_album_tracks(&id)
+                .await
+                .unwrap_or_default();
             Ok::<_, crate::app_error::AppError>((album, tracks))
         });
         match outcome {
@@ -938,8 +1021,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_fetchArtwork<'a>(
             Ok(bytes) => {
                 use base64::Engine;
                 ok_data(
-                    &serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()))
-                        .to_string(),
+                    &serde_json::Value::String(
+                        base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()),
+                    )
+                    .to_string(),
                 )
             }
             Err(e) => err("NET", e.to_string()),
@@ -962,7 +1047,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_beginLogin<'a>(
     _arg: JString<'a>,
 ) -> JString<'a> {
     guarded(env, |_env| {
-        let authenticated = session().lock().unwrap_or_else(|e| e.into_inner()).authenticated;
+        let authenticated = session()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .authenticated;
         if authenticated {
             ok_data("{\"authenticated\":true}")
         } else {
@@ -989,10 +1077,11 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_refreshToken<'a>(
     guarded(env, |_env| {
         let s = session().lock().unwrap_or_else(|e| e.into_inner()).clone();
         match s.access_token {
-            Some(_) if s.expires_at_ms > now_ms() + TOKEN_SKEW_MS => {
-                ok_data("{\"fresh\":true}")
-            }
-            _ => err("NEEDS_PAGE", "token stale or missing — revive the session page"),
+            Some(_) if s.expires_at_ms > now_ms() + TOKEN_SKEW_MS => ok_data("{\"fresh\":true}"),
+            _ => err(
+                "NEEDS_PAGE",
+                "token stale or missing — revive the session page",
+            ),
         }
     })
 }
@@ -1011,22 +1100,37 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
 ) -> JString<'a> {
     guarded(env, |_env| {
         let token = {
-            let s = session().lock().unwrap_or_else(|e| e.into_inner()).clone();
-            match s.access_token {
-                Some(t) if s.expires_at_ms > now_ms() + TOKEN_SKEW_MS => t,
-                _ => return err("NEEDS_PAGE", "token stale or missing — revive the session page"),
+            let guard = session().lock().unwrap_or_else(|e| e.into_inner());
+            match guard.access_token.clone() {
+                Some(t) if guard.expires_at_ms > now_ms() + TOKEN_SKEW_MS => t,
+                _ => {
+                    return err(
+                        "NEEDS_PAGE",
+                        "token stale or missing — revive the session page",
+                    )
+                }
             }
         };
-        let outcome: Result<models::UserProfile, crate::app_error::AppError> = rt().block_on(async {
-            let resp = client::filtered_get_auth("https://api.spotify.com/v1/me", &token).await?;
-            let profile: models::UserProfile = resp
-                .error_for_status()
-                .map_err(crate::app_error::AppError::from)?
-                .json()
-                .await
-                .map_err(crate::app_error::AppError::from)?;
-            Ok(profile)
-        });
+        let outcome: Result<models::UserProfile, crate::app_error::AppError> =
+            rt().block_on(async {
+                let resp =
+                    client::filtered_get_auth("https://api.spotify.com/v1/me", &token).await?;
+                // Typed expiry: a 401 here is a rejected token, not a generic
+                // network failure. (The old `msg.contains("401")` substring
+                // match worked only because reqwest renders the status into the
+                // message — fragile next to the typed `SessionExpired` the rest
+                // of the auth flow uses.)
+                if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    return Err(crate::app_error::AppError::SessionExpired);
+                }
+                let profile: models::UserProfile = resp
+                    .error_for_status()
+                    .map_err(crate::app_error::AppError::from)?
+                    .json()
+                    .await
+                    .map_err(crate::app_error::AppError::from)?;
+                Ok(profile)
+            });
         match outcome {
             Ok(p) => {
                 let user_json = serde_json::json!({
@@ -1048,20 +1152,21 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
                 ok_data(&user_json)
             }
             Err(e) => {
-                let msg = e.to_string();
                 // A rejected token is a first-class expiry transition: drop
                 // the authenticated flag so the gate returns (cookies usually
                 // re-authenticate silently there).
-                let expired = matches!(e, crate::app_error::AppError::SessionExpired)
-                    || msg.contains("401");
+                let expired = matches!(e, crate::app_error::AppError::SessionExpired);
                 if expired {
-                    session().lock().unwrap_or_else(|e| e.into_inner()).authenticated = false;
+                    session()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .authenticated = false;
                     push_event("session", "{\"authenticated\":false}");
                     err("SESSION_EXPIRED", "session rejected — please sign in again")
                 } else if matches!(e, crate::app_error::AppError::RateLimited) {
-                    err("RATE_LIMITED", msg)
+                    err("RATE_LIMITED", e.to_string())
                 } else {
-                    err("NET", msg)
+                    err("NET", e.to_string())
                 }
             }
         }
@@ -1079,7 +1184,11 @@ macro_rules! phase_stub {
     ($java:ident) => {
         #[allow(unsafe_code)]
         #[no_mangle]
-        pub extern "C" fn $java<'a>(env: JNIEnv<'a>, _cls: JClass<'a>, _arg: JString<'a>) -> JString<'a> {
+        pub extern "C" fn $java<'a>(
+            env: JNIEnv<'a>,
+            _cls: JClass<'a>,
+            _arg: JString<'a>,
+        ) -> JString<'a> {
             guarded(env, |_| err(PHASE_CODE, PHASE_MSG))
         }
     };
@@ -1161,7 +1270,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkDocument<'a>(
     _arg: JString<'a>,
 ) -> JString<'a> {
     guarded(env, |_| {
-        ok_data(&serde_json::Value::String(crate::player::playback_sdk::SDK_HTML.to_owned()).to_string())
+        ok_data(
+            &serde_json::Value::String(crate::player::playback_sdk::SDK_HTML.to_owned())
+                .to_string(),
+        )
     })
 }
 
@@ -1234,7 +1346,11 @@ async fn sdk_do_volume(
     device: &str,
     v: &serde_json::Value,
 ) -> Result<(), crate::app_error::AppError> {
-    let pct = v.get("volume").and_then(|n| n.as_u64()).unwrap_or(80).min(100) as u8;
+    let pct = v
+        .get("volume")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(80)
+        .min(100) as u8;
     crate::spotify::player_api::set_volume(device, pct).await
 }
 
@@ -1283,7 +1399,10 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_fetchLyrics<'a>(
             Err(e) => return e,
         };
         let str_field = |key: &str| {
-            v.get(key).and_then(|s| s.as_str()).unwrap_or_default().to_string()
+            v.get(key)
+                .and_then(|s| s.as_str())
+                .unwrap_or_default()
+                .to_string()
         };
         let artist = str_field("artist");
         let title = str_field("title");
@@ -1316,7 +1435,3 @@ phase_stub!(Java_com_spotifydx_app_CoreBridge_prev);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_seek);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_setVolume);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_enqueue);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_clearQueue);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_setShuffle);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_setRepeat);
-

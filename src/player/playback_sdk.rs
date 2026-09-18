@@ -115,17 +115,32 @@ pub fn parse_sdk_state(payload: &serde_json::Value) -> SdkState {
     state
 }
 
+/// Bare Spotify ID from a full URI (`spotify:artist:X` → `X`), matching the
+/// GQL path contract: id-keyed logic (dedup, detail fetch) must agree
+/// across backends, so the SDK path strips here instead of storing URIs.
+fn bare_spotify_id(uri: &str) -> &str {
+    uri.rsplit(':').next().unwrap_or_default()
+}
+
 /// Map an SDK `current_track` object onto the app's `Track` model.
 fn track_from_sdk(value: &serde_json::Value) -> Option<Track> {
     let id = value.get("id").and_then(|v| v.as_str())?.to_owned();
     Some(Track {
         id,
-        name: value.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
+        name: value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned(),
         duration_ms: value
             .get("duration_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or_default(),
-        uri: value.get("uri").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
+        uri: value
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned(),
         explicit: value
             .get("explicit")
             .and_then(|v| v.as_bool())
@@ -139,28 +154,41 @@ fn track_from_sdk(value: &serde_json::Value) -> Option<Track> {
             .map(|artists| {
                 artists
                     .iter()
-                    .map(|artist| ArtistRef {
-                            id: artist.get("uri").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
-                            name: artist.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
-                            uri: artist.get("uri").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
-                        })
+                    .map(|artist| {
+                        let uri = artist
+                            .get("uri")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        ArtistRef {
+                            // Same bare-ID contract as the GQL path (which
+                            // strips via uri_part): id-keyed logic (dedup,
+                            // detail fetch) must match across backends.
+                            id: bare_spotify_id(uri).to_owned(),
+                            name: artist
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_owned(),
+                            uri: uri.to_owned(),
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default(),
         album: {
             let album = value.get("album");
+            let album_uri = album
+                .and_then(|a| a.get("uri"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             AlbumRef {
-                id: album
-                    .and_then(|a| a.get("uri"))
+                id: bare_spotify_id(album_uri).to_owned(),
+                name: album
+                    .and_then(|a| a.get("name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_owned(),
-                name: album.and_then(|a| a.get("name")).and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
-                uri: album
-                    .and_then(|a| a.get("uri"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
+                uri: album_uri.to_owned(),
                 images: album
                     .and_then(|a| a.get("images"))
                     .and_then(|imgs| imgs.as_array())
@@ -169,8 +197,14 @@ fn track_from_sdk(value: &serde_json::Value) -> Option<Track> {
                             .filter_map(|img| {
                                 Some(crate::spotify::models::SpotifyImage {
                                     url: img.get("url").and_then(|v| v.as_str())?.to_owned(),
-                                    width: img.get("width").and_then(|v| v.as_u64()).map(|w| w as u32),
-                                    height: img.get("height").and_then(|v| v.as_u64()).map(|h| h as u32),
+                                    width: img
+                                        .get("width")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|w| w as u32),
+                                    height: img
+                                        .get("height")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|h| h as u32),
                                 })
                             })
                             .collect()

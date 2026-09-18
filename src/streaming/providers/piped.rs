@@ -146,16 +146,18 @@ impl PipedProvider {
             None => return SearchOutcome::TransportFail,
         };
         for item in items {
-            let id = match item.get("url").and_then(|u| u.as_str()).and_then(video_id_from_url) {
+            let id = match item
+                .get("url")
+                .and_then(|u| u.as_str())
+                .and_then(video_id_from_url)
+            {
                 Some(id) => id,
                 None => continue,
             };
             // Piped reports duration in seconds; -1/negative = live/upcoming.
             match item.get("duration").and_then(|d| d.as_i64()) {
                 Some(secs) if secs < 0 => continue,
-                Some(secs)
-                    if !youtube::duration_accepts(query.duration_ms, Some(secs as u64)) =>
-                {
+                Some(secs) if !youtube::duration_accepts(query.duration_ms, Some(secs as u64)) => {
                     continue;
                 }
                 _ => return SearchOutcome::Hit(id),

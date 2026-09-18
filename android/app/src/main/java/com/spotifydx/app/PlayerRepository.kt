@@ -14,20 +14,17 @@ import kotlinx.coroutines.withContext
 
 /**
  * Playback state (§6, §9.1 migration). Owns the explicit local play queue:
- * dedup-by-identifier ingestion, queue-first next-track, snapshot-restore
- * unshuffle, no-network queue screen — all carried over verbatim from the
- * current build. Open-engine transport (§9.6) resolves URLs through the core
+ * dedup-by-identifier ingestion, queue-first next-track, no-network queue
+ * screen — all carried over verbatim from the current build. Open-engine transport (§9.6) resolves URLs through the core
  * and plays them on the platform stack here; SDK relay driving lands in
  * Phase 5.
  */
 object PlayerRepository {
     private const val TAG = "SpotifyDxPlayer"
-    enum class Repeat { OFF, CONTEXT, TRACK }
 
     data class State(
         val track: Track? = null,
         val queue: List<Track> = emptyList(),
-        val queueOriginal: List<String> = emptyList(),
         /**
          * Played history, oldest→newest (Echo-style past songs; the queue
          * itself holds UPCOMING only). Jump-back truncates at the tapped
@@ -38,8 +35,6 @@ object PlayerRepository {
         val positionMs: Long = 0,
         val durationMs: Long = 0,
         val volume: Float = 0.8f,
-        val shuffle: Boolean = false,
-        val repeat: Repeat = Repeat.OFF,
         val transportReady: Boolean = false,
         /** True while the SDK device (not the platform player) owns audio. */
         val sdkActive: Boolean = false,
@@ -99,7 +94,7 @@ object PlayerRepository {
     fun playNext(track: Track) = playNext(listOf(track))
 
     fun clearQueue() {
-        update { s -> s.copy(queue = emptyList(), queueOriginal = emptyList()) }
+        update { s -> s.copy(queue = emptyList()) }
         PlaybackStore.saveQueueSoon(emptyList())
     }
 
@@ -320,21 +315,6 @@ object PlayerRepository {
         tl.add(globalPos.coerceIn(0, tl.size), entry)
         commitTimeline(tl)
     }
-
-    fun setShuffle(on: Boolean) = update { s ->
-        if (on == s.shuffle) return@update s
-        if (on) {
-            val snap = s.queue.map { it.id }
-            val shuffled = s.queue.shuffled()
-            s.copy(shuffle = true, queueOriginal = snap, queue = shuffled)
-        } else {
-            val order = s.queueOriginal.withIndex().associate { it.value to it.index }
-            val restored = s.queue.sortedBy { order[it.id] ?: Int.MAX_VALUE }
-            s.copy(shuffle = false, queueOriginal = emptyList(), queue = restored)
-        }
-    }.also { PlaybackStore.saveQueueSoon(_state.value.queue) }
-
-    fun setRepeat(mode: Repeat) = update { s -> s.copy(repeat = mode) }
 
     /** Queue-first next-track (prefers the queue head over device skip). */
     fun advance(): Track? {

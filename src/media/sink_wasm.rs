@@ -93,10 +93,7 @@ fn current_ms(el: &HtmlAudioElement) -> u64 {
 /// Native-identical `spawn_sink` API: returns a command sender + shared state.
 /// The returned sender drives a lazily-created element owned by an async driver
 /// task running on the single wasm thread.
-pub fn spawn_sink(initial_volume: f32) -> (
-    std::sync::mpsc::Sender<SinkCommand>,
-    Arc<SinkState>,
-) {
+pub fn spawn_sink(initial_volume: f32) -> (std::sync::mpsc::Sender<SinkCommand>, Arc<SinkState>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let state = Arc::new(SinkState::default());
     let driver_state = state.clone();
@@ -113,12 +110,16 @@ pub fn spawn_sink(initial_volume: f32) -> (
         while !shutting_down {
             // Publish position while "playing".
             if driver_state.is_playing.load(Ordering::Relaxed) {
-                driver_state.position_ms.store(current_ms(&el), Ordering::Relaxed);
+                driver_state
+                    .position_ms
+                    .store(current_ms(&el), Ordering::Relaxed);
                 driver_state.position_changed.notify_waiters();
             }
             let duration_s = el.duration();
             if duration_s.is_finite() && duration_s > 0.0 {
-                driver_state.duration_ms.store((duration_s * 1000.0) as u64, Ordering::Relaxed);
+                driver_state
+                    .duration_ms
+                    .store((duration_s * 1000.0) as u64, Ordering::Relaxed);
             }
 
             // Drain all queued commands.
