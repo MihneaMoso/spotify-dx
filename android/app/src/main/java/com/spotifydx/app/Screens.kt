@@ -6,6 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.fragment.app.Fragment
@@ -224,6 +225,7 @@ class SearchFragment : Fragment() {
 
     override fun onViewCreated(v: View, s: Bundle?) {
         val box: EditText = v.findViewById(R.id.search_box)
+        val clear: ImageButton = v.findViewById(R.id.search_clear)
         // Unified results (songs → artists → albums, API order kept): one
         // list, track rows playable + swipeable, title rows drill down.
         val list: RecyclerView = v.findViewById(R.id.search_results)
@@ -282,8 +284,24 @@ class SearchFragment : Fragment() {
         box.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) = refreshHistory()
+            override fun afterTextChanged(s: android.text.Editable?) {
+                // X mirrors the top bar's close affordance: present exactly
+                // while there is text to clear.
+                clear.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                if (s.isNullOrEmpty()) {
+                    // Empty box (backspaced or X-cleared) drops stale
+                    // results and returns to recent searches — the blank
+                    // path clears synchronously, no fetch involved.
+                    vm.submit("")
+                }
+                refreshHistory()
+            }
         })
+        // Programmatic clear routes through the watcher above (visibility,
+        // result reset, history) — never duplicated here.
+        clear.setOnClickListener { box.setText("") }
+        // View recreation can restore box text without firing the watcher.
+        clear.visibility = if (box.text.isNullOrEmpty()) View.GONE else View.VISIBLE
         viewLifecycleOwner.lifecycleScope.launch {
             vm.recent.collect {
                 recentCache = it
