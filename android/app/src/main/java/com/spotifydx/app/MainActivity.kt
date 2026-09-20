@@ -162,7 +162,12 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 val settledInTime = SessionRepository.awaitSettled(3_000)
                 if (SessionRepository.snapshot().authenticated) return@launch
-                if (settledInTime || !PlaybackStore.hasPersistedState()) {
+                // Same hasToken rule as the settled collector: a stored
+                // (unverified) token stays shell-first; only tokenless
+                // boots take the fast GATE lane.
+                if ((settledInTime || !PlaybackStore.hasPersistedState()) &&
+                    !SessionRepository.snapshot().hasToken
+                ) {
                     if (current != Destination.GATE) go(Destination.GATE, null, true)
                 }
                 // Else: probable valid session on a slow core — stay on
@@ -178,6 +183,7 @@ class MainActivity : AppCompatActivity() {
                 kotlinx.coroutines.delay(15_000)
                 bootGateArmed = true
                 if (!SessionRepository.snapshot().authenticated &&
+                    !SessionRepository.snapshot().hasToken &&
                     current != Destination.GATE
                 ) {
                     go(Destination.GATE, null, true)
@@ -477,12 +483,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun collectRepos() {
         lifecycleScope.launch {
-            SessionRepository.state.collect { s ->
+            // Gate on state AND settle: the mirror often doesn't change when
+            // settle lands (empty stays empty, StateFlow conflates), so
+            // observing state alone never re-evaluated (stranded-on-HOME).
+            kotlinx.coroutines.flow.combine(
+                SessionRepository.state,
+                SessionRepository.settledFlow,
+            ) { s, settled -> s to settled }.collect { (s, settled) ->
                 if (s.authenticated) {
                     loginManager.hide()
                     if (current == Destination.GATE) go(Destination.HOME, null, true)
                 } else {
-                    if ((SessionRepository.isSettled() || bootGateArmed) &&
+                    // GATE only on definitively signed-OUT (settled AND no
+                    // token at all): a present-but-unverified token stays on
+                    // the shell while verification/capture proves it (the
+                    // old conflated flow never re-fired here — that silence
+                    // WAS the no-flash behavior; the settle flow exists so
+                    // the genuinely empty case still routes).
+                    if ((settled || bootGateArmed) && !s.hasToken &&
                         current != Destination.GATE
                     ) {
                         go(Destination.GATE, null, true)

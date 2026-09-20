@@ -205,6 +205,24 @@ class HomeFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             vm.liked.collect { liked.submitList(it) }
         }
+        // Self-heal after a boot-time session failure: Home loads once,
+        // eagerly, so a NEEDS_PAGE/expired-token error lands before the
+        // session refresher heals the mirror — and nothing retried it
+        // (library/search only work because they load lazily, after the
+        // heal). Reload on the false→true heal transition, but ONLY from
+        // the Error state: reloading over healthy content would flash a
+        // spinner on every token refresh, and refiring on every
+        // authenticated emission would loop a persistently failing fetch.
+        viewLifecycleOwner.lifecycleScope.launch {
+            var wasAuthed = SessionRepository.snapshot().authenticated
+            SessionRepository.state.collect { s ->
+                val healed = s.authenticated && !wasAuthed
+                wasAuthed = s.authenticated
+                if (healed && vm.state.value is ScreenState.Error) {
+                    vm.load()
+                }
+            }
+        }
         // Cached screens re-attach with ViewModel (data) intact: load once
         // per instance, never per view. Rotation/rotation-death creates a
         // new instance (loaded=false) and loads correctly.

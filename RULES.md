@@ -1795,6 +1795,19 @@ dioxus-mobile Rust code is untouched and still builds.
   thundering herd — `leader()` dedupes via the inflight map
   (`calls==1` test proves it). `cargo test` 112/112, clippy 0, gradle
   `assembleDebug` green.
+- **Review-fix regressions (2026-09-20, both fixed):** (1) async `initCore`
+  returned before the mirror was seeded while shell-first screens fired
+  data calls within ms → every call failed `NEEDS_PAGE` against a healthy
+  but empty mirror (stuck "signing you back in" + dead retry). Fixed at
+  the choke point: `need_fresh_token()` parks boundedly (15s, Binder/IO
+  threads only — never main) for the bootstrap worker, which now runs
+  auth+adblock concurrently and clears `restoring` via a Drop guard so a
+  dead worker can't wedge boot forever. (2)
+  `ForegroundServiceDidNotStartInTimeException` crash: `playViaOpen`'s
+  `startForegroundService` + single 500ms window stranded
+  started-but-never-foregrounded services on slow starts. Now plain
+  `startService` (playUrl foregrounds itself) with a 5s poll. Rule: never
+  `startForegroundService` without a guaranteed prompt `startForeground`.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

@@ -55,10 +55,15 @@ echo "==> stripped staged lib ($(stat -c%s "$JNILIBS/libspotify_dx.so") bytes)"
 
 # --- Bridge compat: every Kotlin-declared native symbol must exist in the .so ---
 echo "==> bridge symbol check"
-syms="$(grep -rhoE "Java_com_spotifydx_app_CoreBridge_[A-Za-z0-9_]+" android/app/src/main/java/ | sort -u)"
-test -n "$syms" || { echo "bridge compat FAILED: no Kotlin-declared symbols found (moved sources?)" >&2; exit 1; }
+# Derive JNI names from CoreBridge.kt's `external fun` declarations (the old
+# pattern grep'd for literal JNI names that never appear in Kotlin, so the
+# check passed vacuously on zero symbols — then `set -o pipefail` made even
+# that fatal). A zero count still fails loudly (moved/renamed sources).
+names="$(grep -hoE "external fun [A-Za-z0-9_]+" android/app/src/main/java/com/spotifydx/app/CoreBridge.kt | sed 's/^external fun //' | sort -u || true)"
+test -n "$names" || { echo "bridge compat FAILED: no native decls found in CoreBridge.kt" >&2; exit 1; }
 missing=0
-for sym in $syms; do
+for name in $names; do
+  sym="Java_com_spotifydx_app_CoreBridge_$name"
   if ! nm -D --defined-only "$SO" | grep -q " $sym\$"; then
     echo "MISSING symbol in libspotify_dx.so: $sym" >&2
     missing=1

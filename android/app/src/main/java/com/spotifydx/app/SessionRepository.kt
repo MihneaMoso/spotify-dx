@@ -41,11 +41,21 @@ object SessionRepository {
      * received at least once). The shell-first gate switch uses this: only
      * a settled signed-out mirror may route to GATE, so transient bridge
      * failures at boot can never flash gate copy for valid sessions.
+     *
+     * A STATE FLOW, not just a flag: the mirror value often doesn't change
+     * when settle lands (empty stays empty), and StateFlow conflates equal
+     * values — a plain boolean flip would emit nothing and the gate would
+     * never re-evaluate (stranded-on-HOME boot bug). Collectors observe
+     * [settledFlow], never the bare value alone.
      */
-    @Volatile
-    private var settled: Boolean = false
+    private val _settledFlow = MutableStateFlow(false)
+    val settledFlow: StateFlow<Boolean> = _settledFlow.asStateFlow()
 
-    fun isSettled(): Boolean = settled
+    fun isSettled(): Boolean = _settledFlow.value
+
+    private fun setSettled() {
+        _settledFlow.value = true
+    }
 
     /**
      * Awaits the first definitive core answer, bounded. Lets callers
@@ -54,7 +64,7 @@ object SessionRepository {
      */
     suspend fun awaitSettled(timeoutMs: Long): Boolean {
         val end = android.os.SystemClock.uptimeMillis() + timeoutMs
-        while (!settled) {
+        while (!_settledFlow.value) {
             if (android.os.SystemClock.uptimeMillis() >= end) return false
             kotlinx.coroutines.delay(100)
         }
@@ -83,7 +93,11 @@ object SessionRepository {
         )
         // Compare-before-write: touching the store re-renders subscribers.
         if (_state.value != next) _state.value = next
-        settled = true
+        // Settle LOUDLY: an unchanged mirror (empty stays empty) emits
+        // nothing on _state, so the gate must observe the settle flip
+        // itself (see settledFlow) — a bare flag here stranded boot on
+        // HOME with settled=true and no re-evaluation.
+        setSettled()
     }
 
     /** Kotlin login page reports a captured web-player session (§8.4). */

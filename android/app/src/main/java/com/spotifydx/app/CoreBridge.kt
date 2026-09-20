@@ -77,7 +77,10 @@ class CoreBridge private constructor() {
         @JvmStatic external fun seek(arg: String): String
         @JvmStatic external fun setVolume(arg: String): String
         @JvmStatic external fun enqueue(arg: String): String
-        @JvmStatic external fun clearQueue(arg: String): String
+        // NOTE: no clearQueue here by design — the native side never
+        // implemented it, and the declaration alone was an
+        // UnsatisfiedLinkError trap for any future caller (caught by the
+        // bridge-compat gate). Queue clearing is local-only.
         @JvmStatic external fun resolveStream(arg: String): String
 
         // -- SDK path (Phase 5, §9.2): Connect transport against the

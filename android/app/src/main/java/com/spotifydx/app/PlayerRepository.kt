@@ -453,14 +453,24 @@ object PlayerRepository {
             var svc = PlaybackService.instance
             if (svc == null) {
                 // Service dead/restarting is NOT a network problem: (re)start
-                // it and give it one window instead of failing instantly.
+                // it instead of failing instantly. Plain startService —
+                // NEVER startForegroundService here: that obligates the
+                // service to foreground within seconds, and a slow start
+                // (or a start with no playUrl following) then kills the
+                // whole app (ForegroundServiceDidNotStartInTimeException).
+                // playUrl foregrounds itself once it has audio to show.
                 runCatching {
-                    androidx.core.content.ContextCompat.startForegroundService(
-                        AppState.ctx(), PlaybackService.intentOf(AppState.ctx()),
-                    )
+                    AppState.ctx().startService(PlaybackService.intentOf(AppState.ctx()))
                 }
-                delay(500)
-                svc = PlaybackService.instance
+                // Poll for the instance: one fixed 500ms window missed slow
+                // cold starts and stranded the play (or worse, a started
+                // service with no foreground to follow).
+                var waited = 0
+                while (svc == null && waited < 10) {
+                    delay(500)
+                    svc = PlaybackService.instance
+                    waited += 1
+                }
             }
             if (!url.isNullOrEmpty() && svc != null) {
                 val format = json?.optString("format", "") ?: ""

@@ -259,32 +259,61 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_initCore<'a>(
         }
         set_bootstrap_restoring(true);
         rt().spawn(async {
-            if let Err(e) = adblock::init().await {
-                tracing::warn!("bridge: adblock init failed ({e:#}); continuing unfiltered");
+            // Panic-proof the flag: if this task ever dies early, the
+            // restoring flag must still clear — otherwise every data call
+            // parks the full 15s and the gate never settles (stuck boot).
+            struct ClearOnDrop;
+            impl Drop for ClearOnDrop {
+                fn drop(&mut self) {
+                    set_bootstrap_restoring(false);
+                }
             }
-            // Background list refresh on the long-lived bridge runtime (init()
-            // no longer spawns it — see adguard_api::kick_refresh).
-            crate::adblock::adguard_api::kick_refresh();
-            let restored = auth::init().await;
-            // Seed the mirror from the persisted token WITHOUT authenticating:
-            // clock-validity is unproven until `currentUser` verifies it or the
-            // login page captures (same rule as the dioxus gate — a stale stored
-            // token must never skip login).
-            if let Some((token, expires)) = auth::token_store::load() {
-                *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession {
-                    authenticated: false,
-                    access_token: Some(token.clone()),
-                    expires_at_ms: expires,
-                    user_json: None,
-                };
-                // Parked for fetchers too: a clock-valid stored token is usable
-                // until proven otherwise (same rule as the mirror seeding above).
-                crate::spotify::session::set_headless_token(token, expires);
-            }
-            if restored {
+            let _guard = ClearOnDrop;
+            // Auth and adblock are independent: restore the session mirror
+            // first (data calls unblock on it) while the engine builds.
+            let (auth_res, adblock_res) = tokio::join!(
+                async {
+                    let restored = auth::init().await;
+                    // Seed the mirror from the persisted token WITHOUT authenticating:
+                    // clock-validity is unproven until `currentUser` verifies it or the
+                    // login page captures (same rule as the dioxus gate — a stale stored
+                    // token must never skip login).
+                    if let Some((token, expires)) = auth::token_store::load() {
+                        *session().lock().unwrap_or_else(|e| e.into_inner()) = BridgeSession {
+                            authenticated: false,
+                            access_token: Some(token.clone()),
+                            expires_at_ms: expires,
+                            user_json: None,
+                        };
+                        // Parked for fetchers too: a clock-valid stored token is usable
+                        // until proven otherwise (same rule as the mirror seeding above).
+                        crate::spotify::session::set_headless_token(token, expires);
+                    }
+                    restored
+                },
+                async {
+                    if let Err(e) = adblock::init().await {
+                        tracing::warn!(
+                            "bridge: adblock init failed ({e:#}); continuing unfiltered"
+                        );
+                    }
+                    // Background list refresh on the long-lived bridge runtime (init()
+                    // no longer spawns it — see adguard_api::kick_refresh).
+                    crate::adblock::adguard_api::kick_refresh();
+                }
+            );
+            let _ = adblock_res;
+            if auth_res {
                 push_event("session", "{\"restored\":true}");
             }
-            set_bootstrap_restoring(false);
+            tracing::info!(
+                "bridge: bootstrap done (auth_restored={auth_res}, token_seeded={})",
+                session()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .access_token
+                    .is_some()
+            );
             // Wake the Kotlin mirror either way: success lands via the event
             // above; the settled-gate must also release on a clean miss.
             push_event("session", "{\"bootstrap\":true}");
@@ -700,6 +729,14 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_pollEvents<'a>(
 /// revives the session page through `SessionRefresher` and retries) instead
 /// of a doomed network call.
 fn need_fresh_token() -> Result<String, String> {
+    // Cold-start ordering: initCore returns before the bootstrap worker
+    // seeds the mirror, but shell-first screens fire data calls within ms.
+    // Without this wait they all fail NEEDS_PAGE against an empty-but-
+    // healthy mirror (stuck "signing you back in" + dead retry). Park
+    // boundedly for the worker — data calls run on Binder/IO threads,
+    // never the main thread, so this restores the old ordering with no
+    // ANR risk. A hung worker still degrades to NEEDS_PAGE after 15s.
+    await_bootstrap_blocking();
     // Read only the two compared fields under the lock — cloning the whole
     // session (including the user_json blob) on every data call was pure
     // waste at this call volume.
@@ -710,6 +747,22 @@ fn need_fresh_token() -> Result<String, String> {
             "NEEDS_PAGE",
             "token stale or missing — revive the session page",
         )),
+    }
+}
+
+/// Bounded park for the initCore bootstrap worker (see `need_fresh_token`).
+/// Fast path (worker done) costs one atomic load.
+fn await_bootstrap_blocking() {
+    if !BOOTSTRAP_RESTORING.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while BOOTSTRAP_RESTORING.load(std::sync::atomic::Ordering::SeqCst) {
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!("bridge: bootstrap wait timed out; proceeding unseeded");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 

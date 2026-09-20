@@ -14,22 +14,21 @@ pub fn save(access_token: &str, expires_at_ms: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // Best-effort keychain (Entry::new fails without a secret-service
-        // daemon — never panic on a bridge path). The file fallback runs
-        // ONLY when the keychain path fails, so a live token doesn't sit in
-        // two stores with different security properties.
-        let keychain_ok = if let (Ok(kr_token), Ok(kr_expiry)) = (
+        // daemon — never panic on a bridge path).
+        if let (Ok(kr_token), Ok(kr_expiry)) = (
             keyring::Entry::new(SERVICE, KEY_TOKEN),
             keyring::Entry::new(SERVICE, KEY_EXPIRY),
         ) {
-            kr_token.set_password(access_token).is_ok()
-                && kr_expiry.set_password(&expires_at_ms.to_string()).is_ok()
-        } else {
-            false
-        };
-        if !keychain_ok {
-            // Headless desktops without a secret-service daemon.
-            save_to_file(access_token, expires_at_ms);
+            let _ = kr_token.set_password(access_token);
+            let _ = kr_expiry.set_password(&expires_at_ms.to_string());
         }
+        // The file fallback ALWAYS runs, even when the keychain reports
+        // success: on some Android devices the keyring backend accepts
+        // writes it never persists, and the file is the only store that
+        // provably survives process death there (verified on-device: no
+        // session.json ever appeared with keychain-only saves). Belt and
+        // suspenders beats a lost session.
+        save_to_file(access_token, expires_at_ms);
     }
     #[cfg(target_arch = "wasm32")]
     {
