@@ -5,11 +5,48 @@
     android:orientation="vertical"
     android:padding="@dimen/pad">
 
-    <TextView
-        android:id="@+id/home_greeting"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        style="@style/EchoHeadline" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/home_greeting"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            style="@style/EchoHeadline" />
+
+        <LinearLayout
+            android:id="@+id/btn_avatar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="@dimen/pad_half"
+            android:contentDescription="Profile and settings">
+
+            <TextView
+                android:id="@+id/avatar_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="@dimen/pad_half"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:maxWidth="140dp"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="14sp" />
+
+            <ImageView
+                android:id="@+id/avatar_photo"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="Profile photo"
+                android:src="@android:drawable/ic_menu_myplaces" />
+        </LinearLayout>
+    </LinearLayout>
 
     <TextView
         android:id="@+id/home_banner"

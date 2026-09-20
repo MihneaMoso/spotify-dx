@@ -15,7 +15,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Binds the shared (content/message/retry) state triple of a screen layout. */
 private fun Fragment.bindState(
@@ -153,6 +155,13 @@ class HomeFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         val greeting: TextView = v.findViewById(R.id.home_greeting)
         greeting.text = vm.greeting
+        // Profile badge lives in the Home header (the global top bar is
+        // gone): name + photo open Settings.
+        v.findViewById<View>(R.id.btn_avatar)?.setOnClickListener {
+            (activity as? MainActivity)?.goSettings()
+        }
+        v.findViewById<View>(R.id.avatar_photo)?.let { Design.clipCircle(it) }
+        refreshProfileBadge(v)
         val banner: TextView = v.findViewById(R.id.home_banner)
         val list: RecyclerView = v.findViewById(R.id.home_list)
         // Playlist shelf scrolls horizontally (desktop .shelf-row parity:
@@ -231,6 +240,47 @@ class HomeFragment : Fragment() {
             vm.load()
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Profile may have changed in Settings (name save, avatar set or
+        // cleared) — re-read on every return.
+        view?.let { refreshProfileBadge(it) }
+    }
+
+    /** Home header profile badge: username + circular avatar photo. */
+    private fun refreshProfileBadge(v: View) {
+        val name: TextView = v.findViewById(R.id.avatar_name) ?: return
+        val photo: ImageView = v.findViewById(R.id.avatar_photo) ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            val json = withContext(Dispatchers.IO) {
+                BridgeClient.getProfile().getOrNull()
+            }
+            name.text = json?.optString("username", "").orEmpty()
+            val b64 = json?.optString("avatar_b64", "").orEmpty()
+            if (b64.isEmpty()) {
+                photo.setImageResource(android.R.drawable.ic_menu_myplaces)
+                return@launch
+            }
+            val bmp = withContext(Dispatchers.IO) { decodeAvatar(b64) }
+            if (bmp != null) photo.setImageBitmap(bmp)
+            else photo.setImageResource(android.R.drawable.ic_menu_myplaces)
+        }
+    }
+
+    /** Downsamples avatar bytes to badge size (cheap, no cache needed). */
+    private fun decodeAvatar(b64: String): android.graphics.Bitmap? = runCatching {
+        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+        if (bytes.isEmpty()) return null
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 96 && bounds.outHeight / (sample * 2) >= 96) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    }.getOrNull()
 
     /** View state is rebuilt; instance state (ViewModel) survives hides. */
     private var loaded = false

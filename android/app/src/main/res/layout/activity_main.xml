@@ -12,61 +12,6 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <LinearLayout
-            android:id="@+id/top_bar"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/topbar_height"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingHorizontal="@dimen/pad_half"
-            android:background="?attr/colorSurface">
-
-            <ImageButton
-                android:id="@+id/btn_back"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_media_previous"
-                android:contentDescription="Back" />
-
-            <SearchView
-                android:id="@+id/search_view"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:queryHint="@string/search_hint"
-                android:iconifiedByDefault="false" />
-
-            <LinearLayout
-                android:id="@+id/btn_avatar"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:padding="@dimen/pad_half"
-                android:contentDescription="Profile and settings">
-
-                <TextView
-                    android:id="@+id/avatar_name"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="@dimen/pad_half"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:maxWidth="140dp"
-                    android:textColor="?attr/colorOnSurface"
-                    android:textSize="14sp" />
-
-                <ImageView
-                    android:id="@+id/avatar_photo"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:contentDescription="Profile photo"
-                    android:src="@android:drawable/ic_menu_myplaces" />
-            </LinearLayout>
-        </LinearLayout>
-
         <FrameLayout
             android:id="@+id/content"
             android:layout_width="match_parent"
