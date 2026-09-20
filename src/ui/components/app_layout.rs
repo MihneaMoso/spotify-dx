@@ -39,15 +39,12 @@ pub fn AppLayout() -> Element {
             // changing; a burst of drops lands as at most one render.
             loop {
                 let stats = crate::adblock::stats_snapshot();
-                let prev = *ADBLOCK_STATS.peek();
-                if prev != stats {
-                    ADBLOCK_STATS.write().blocked = stats.blocked;
-                    ADBLOCK_STATS.write().cached_entries = stats.cached_entries;
-                    ADBLOCK_STATS.write().ad_fetch_failures = stats.ad_fetch_failures;
-                    // Snapshot may have changed again while we were writing.
-                    if crate::adblock::stats_snapshot() == *ADBLOCK_STATS.peek() {
-                        break;
-                    }
+                // Single batched write: three separate field writes used to
+                // pulse subscribers up to three times per stats change.
+                // The re-read-until-stable drain stays: a burst may land
+                // mid-write, and its notify already fired with no waiter.
+                if *ADBLOCK_STATS.peek() != stats {
+                    *ADBLOCK_STATS.write() = stats;
                 } else {
                     break;
                 }
@@ -74,10 +71,7 @@ pub fn AppLayout() -> Element {
             onpointerup: move |_| resizing.set(false),
             onpointercancel: move |_| resizing.set(false),
             TopBar {}
-            SideNav {
-                resizing: resizing,
-                onresize: move |w| sidebar_width.set(w),
-            }
+            SideNav { resizing: resizing }
             div { class: "main-content",
                 Outlet::<Route> {}
             }
@@ -93,8 +87,10 @@ pub fn AppLayout() -> Element {
 /// the actual move/up handling happens on the app shell so the pointer can
 /// leave the handle without losing the interaction. The pointer is also
 /// captured via JS so the drag continues even outside the window.
+/// (The old `onresize` prop threaded AppLayout→SideNav→here without ever
+/// being called — the shell's onpointermove owns reporting, so it was cut.)
 #[component]
-pub fn SidebarResizer(resizing: Signal<bool>, onresize: EventHandler<f64>) -> Element {
+pub fn SidebarResizer(resizing: Signal<bool>) -> Element {
     rsx! {
         div {
             id: "sidebar-resizer",

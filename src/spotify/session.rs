@@ -63,11 +63,17 @@ pub async fn ensure_token() -> Result<String> {
     }
 
     // Guard: if we're running outside a Dioxus runtime (e.g. store SWR background
-    // task, tokio::spawn), we can't access AUTH_STATE at all — return an auth
-    // error so the caller can serve stale data or fail gracefully. Headless
-    // builds get the typed variant so the bridge maps it to NEEDS_PAGE
-    // (revive the login page) instead of a generic auth failure.
+    // task, tokio::spawn), AUTH_STATE is unreadable — but the persisted
+    // credential store is runtime-free. A clock-valid persisted token keeps
+    // background refreshes (and headless callers) working instead of failing
+    // every authenticated load with no dioxus runtime available.
     if dioxus::core::Runtime::try_current().is_none() {
+        if let Some((token, expires_at_ms)) = crate::auth::token_store::load() {
+            let now_ms = Utc::now().timestamp_millis() as u64;
+            if expires_at_ms > now_ms + 60_000 {
+                return Ok(token);
+            }
+        }
         tracing::warn!("session: ensure_token called outside Dioxus runtime");
         #[cfg(all(target_os = "android", not(feature = "native")))]
         return Err(AppError::NoBridgeSession);

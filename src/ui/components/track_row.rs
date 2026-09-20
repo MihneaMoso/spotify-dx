@@ -14,17 +14,9 @@ pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<Track>) -
         .collect::<Vec<_>>()
         .join(", ");
     let duration_ms = track.duration_ms;
-    let mins = duration_ms / 60_000;
-    let secs = (duration_ms / 1000) % 60;
+    let duration = crate::state::format_duration(duration_ms);
 
-    let artwork_url = track
-        .album
-        .images
-        .iter()
-        .find(|img| img.width.is_some() && img.width.unwrap_or(0) >= 64)
-        .or_else(|| track.album.images.first())
-        .map(|img| img.url.clone())
-        .unwrap_or_default();
+    let artwork_url = crate::ui::components::pick_artwork(&track.album.images, 64);
 
     let album_art_seed = track.id.clone();
     let played = track.clone();
@@ -34,7 +26,10 @@ pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<Track>) -
         "track-row track-row--noindex"
     };
     rsx! {
-        div {
+        // A real button (not a clickable div): keyboard-focusable and
+        // operable, matching the :focus-within rules the stylesheet
+        // already defines for rows that could never take focus.
+        button {
             class: "{row_class}",
             onclick: move |_| onplay.call(played.clone()),
             if let Some(index) = index {
@@ -45,7 +40,7 @@ pub fn TrackRow(track: Track, index: Option<u32>, onplay: EventHandler<Track>) -
                 div { class: "track-name", title: "{name}", "{name}" }
                 div { class: "track-artists", title: "{artist_line}", "{artist_line}" }
             }
-            div { class: "track-duration", "{mins}:{secs:02}" }
+            div { class: "track-duration", "{duration}" }
         }
     }
 }

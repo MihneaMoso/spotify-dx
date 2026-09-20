@@ -188,8 +188,11 @@ Spotify HTTP → models → global signals → back to UI.**
 
 ## 4. How free accounts get full-track playback
 
-The app requests the `streaming` OAuth scope (`src/auth/mod.rs`, `SCOPE`). The
-Web Playback SDK and Connect `/me/player` endpoints are Premium-only — so on a
+> Historical note: this section once described an OAuth PKCE flow requesting
+> a `streaming` scope. That flow was deleted — there is no OAuth app, no
+> scopes, no redirect URIs. Auth is the `open.spotify.com` web session
+> (HttpOnly cookies + `/api/token` TOTP capture); see RULES.md §6.7–6.8.
+> The Web Playback SDK and Connect `/me/player` endpoints are Premium-only — so on a
 free account the SDK engine cannot initialize and the Connect API returns `403
 Forbidden`. The solution is the **open multi-source engine**, which bypasses
 Spotify's gated stream entirely.
@@ -269,7 +272,8 @@ playback.
 
 ## 5. End-to-end request/playback sequence (quick reference)
 
-1. `Login` → OAuth PKCE (`auth::login`) → token + `streaming` scope in `AUTH_STATE`.
+1. `Login` → in-window web session (`auth::login`) → web-player token in
+   `AUTH_STATE` (no OAuth scopes — see §4 note above).
    Profile fetch populates `AuthState.product` (`"premium"` / `"free"`).
 2. `App` sees `is_authenticated()` → renders `Router::<Route>` shell.
 3. Page mounts → `use_resource(api::get_* )` → `session::ensure_token()` →

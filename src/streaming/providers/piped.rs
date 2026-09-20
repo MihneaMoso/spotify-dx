@@ -30,7 +30,8 @@ use crate::streaming::provider::{Provider, Resolution, TrackQuery};
 /// Pinned Piped API hosts. The docs prescribe dynamic instance discovery;
 /// absent a stable machine-readable list, pinned hosts + health gating give
 /// the same robustness with zero parsing fragility (Phase B scope).
-const INSTANCES: &[&str] = &[
+/// Shared with the YouTube cipher-recovery path (single source).
+pub(crate) const INSTANCES: &[&str] = &[
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
     "https://pipedapi.reallyaweso.me",
@@ -41,6 +42,11 @@ const COOL_AFTER_FAILURES: u32 = 2;
 /// Cooldown for an unhealthy instance.
 #[cfg(not(target_arch = "wasm32"))]
 const COOLDOWN: Duration = Duration::from_secs(5 * 60);
+/// wasm has no `Instant`-based cooldown state (`cooling_until` is
+/// native-only), so recovery rides on call-count probation instead —
+/// without it a twice-failed instance stayed parked until restart.
+#[cfg(target_arch = "wasm32")]
+const PROBATION_CALLS: u64 = 64;
 /// Per-request budget: dead hosts fail fast instead of stalling the chain.
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
@@ -50,6 +56,11 @@ struct InstanceHealth {
     consecutive_failures: u32,
     #[cfg(not(target_arch = "wasm32"))]
     cooling_until: Option<Instant>,
+    /// wasm probation bookkeeping (see PROBATION_CALLS).
+    #[cfg(target_arch = "wasm32")]
+    checks: u64,
+    #[cfg(target_arch = "wasm32")]
+    cooled_at: u64,
 }
 
 pub struct PipedProvider {
@@ -101,7 +112,17 @@ impl PipedProvider {
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
-                        h.consecutive_failures < COOL_AFTER_FAILURES
+                        h.checks = h.checks.saturating_add(1);
+                        if h.consecutive_failures < COOL_AFTER_FAILURES {
+                            true
+                        } else if h.checks.saturating_sub(h.cooled_at) >= PROBATION_CALLS {
+                            // Probation retry: forgive and try again instead
+                            // of parking the instance until process restart.
+                            *h = InstanceHealth::default();
+                            true
+                        } else {
+                            false
+                        }
                     }
                 }
             })
@@ -121,6 +142,10 @@ impl PipedProvider {
             #[cfg(not(target_arch = "wasm32"))]
             if h.consecutive_failures >= COOL_AFTER_FAILURES {
                 h.cooling_until = Some(Instant::now() + COOLDOWN);
+            }
+            #[cfg(target_arch = "wasm32")]
+            if h.consecutive_failures >= COOL_AFTER_FAILURES && h.cooled_at == 0 {
+                h.cooled_at = h.checks;
             }
         }
     }

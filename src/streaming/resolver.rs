@@ -8,7 +8,7 @@
 //! 4. Cache the result.
 
 use crate::streaming::cache;
-use crate::streaming::provider::{Provider, Resolution, TrackQuery};
+use crate::streaming::provider::{Resolution, TrackQuery};
 use crate::streaming::providers;
 
 /// Result of resolving a track to a playable URL.
@@ -40,12 +40,21 @@ pub async fn resolve(
                     "mp3" => crate::streaming::provider::AudioFormat::Mp3,
                     "m4a" | "aac" => crate::streaming::provider::AudioFormat::Aac,
                     "ogg" => crate::streaming::provider::AudioFormat::Ogg,
+                    "opus" => crate::streaming::provider::AudioFormat::Opus,
                     _ => crate::streaming::provider::AudioFormat::Unknown,
+                };
+                // Persisted tier round-trips (pre-quality entries land
+                // Normal = honest unknown, never assumed lossless).
+                let quality = match cached.quality.as_str() {
+                    "low" => crate::streaming::provider::Quality::Low,
+                    "high" => crate::streaming::provider::Quality::High,
+                    "lossless" => crate::streaming::provider::Quality::Lossless,
+                    _ => crate::streaming::provider::Quality::Normal,
                 };
                 return Ok(Some(ResolvedStream {
                     url: cached.url,
                     format,
-                    quality: crate::streaming::provider::Quality::Lossless,
+                    quality,
                     provider: provider_name.to_string(),
                 }));
             }
@@ -73,8 +82,15 @@ pub async fn resolve(
                     "resolved {track_id} via {} → {format:?} {quality:?}",
                     provider.name()
                 );
-                // Cache the result.
-                cache::put(track_id, provider.name(), &url, &format.to_string());
+                // Cache the result (quality rides along — cache hits must
+                // report the real tier, never assumed lossless).
+                cache::put(
+                    track_id,
+                    provider.name(),
+                    &url,
+                    &format.to_string(),
+                    &quality.to_string(),
+                );
                 return Ok(Some(ResolvedStream {
                     url,
                     format,
@@ -113,7 +129,12 @@ pub async fn resolve(
             tracing::info!("enriched {track_id} with ISRC, retrying ISRC consumers");
             let mut enriched = query.clone();
             enriched.isrc = Some(isrc);
-            let qobuz = providers::qobuz::QobuzProvider::new();
+            // Reuse the chain member (shared client, cooldown + credential
+            // state) — never a second throwaway instance.
+            let qobuz = chain.iter().find(|p| p.name() == "qobuz");
+            let Some(qobuz) = qobuz else {
+                return Ok(None);
+            };
             if let Resolution::Success {
                 url,
                 format,
@@ -121,7 +142,13 @@ pub async fn resolve(
             } = qobuz.resolve(&enriched).await
             {
                 tracing::info!("resolved {track_id} via qobuz (ISRC) → {format:?} {quality:?}");
-                cache::put(track_id, qobuz.name(), &url, &format.to_string());
+                cache::put(
+                    track_id,
+                    qobuz.name(),
+                    &url,
+                    &format.to_string(),
+                    &quality.to_string(),
+                );
                 return Ok(Some(ResolvedStream {
                     url,
                     format,
@@ -137,16 +164,21 @@ pub async fn resolve(
 
 /// Build a `TrackQuery` from Spotify track metadata.
 fn build_query(track: &crate::spotify::models::Track) -> TrackQuery {
+    // All artists, not just the first: "A feat. B" searched as "A" alone
+    // misses or misresolves on every provider.
     let artist = track
         .artists
-        .first()
+        .iter()
         .map(|a| a.name.clone())
-        .unwrap_or_default();
+        .filter(|n| !n.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
     let album = track.album.name.clone();
-    let album_isrc = None; // ISRC would come from album detail API if available.
+    // No album-detail ISRC source exists yet: the miss path enriches via
+    // MusicBrainz (see above) instead of forcing it up front.
     TrackQuery {
         spotify_id: track.id.clone(),
-        isrc: album_isrc,
+        isrc: None,
         title: track.name.clone(),
         artist,
         album: if album.is_empty() { None } else { Some(album) },

@@ -28,10 +28,15 @@ pub async fn fetch_lyrics(
     album: &str,
     duration_ms: u64,
 ) -> Result<LyricsResult, crate::app_error::AppError> {
+    // Album + duration bucket join the key: studio/live/remaster variants
+    // sharing artist+title used to collide — first fetch won permanently,
+    // serving the wrong variant (and wrong synced timing) ever after.
     let key = format!(
-        "lyrics:{}:{}",
+        "lyrics:{}:{}:{}:{}",
         artist.trim().to_lowercase(),
-        title.trim().to_lowercase()
+        title.trim().to_lowercase(),
+        album.trim().to_lowercase(),
+        duration_ms / 15_000,
     );
     // Owned copies: the store loader must be 'static.
     let artist = artist.to_string();
@@ -125,13 +130,29 @@ async fn search_fallback(
         None => return Ok(LyricsResult::default()),
     };
     // Pass 1: duration-matched with synced lines. Pass 2: any lyrics.
+    // Duration-less hits can never win outright (they can't be validated)
+    // but serve as a last resort when nothing duration-matched exists.
+    let mut fallback: Option<LyricsResult> = None;
     for synced_only in [true, false] {
         for item in items {
             if duration_ms != 0 {
-                if let Some(d) = item.get("duration").and_then(|d| d.as_f64()) {
-                    if (d * 1000.0 - duration_ms as f64).abs() > SEARCH_TOLERANCE_SECS * 1000.0 {
+                match item.get("duration").and_then(|d| d.as_f64()) {
+                    Some(d)
+                        if (d * 1000.0 - duration_ms as f64).abs()
+                            > SEARCH_TOLERANCE_SECS * 1000.0 =>
+                    {
                         continue;
                     }
+                    None => {
+                        if fallback.is_none() {
+                            let r = from_api_object(item);
+                            if r.found && (!synced_only || !r.synced.is_empty()) {
+                                fallback = Some(r);
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
                 }
             }
             let r = from_api_object(item);
@@ -144,7 +165,7 @@ async fn search_fallback(
             return Ok(r);
         }
     }
-    Ok(LyricsResult::default())
+    Ok(fallback.unwrap_or_default())
 }
 
 /// Map one LRCLIB track object onto the result. Pure (unit-tested).
@@ -167,19 +188,10 @@ fn other_err(e: impl std::fmt::Display) -> crate::app_error::AppError {
     crate::app_error::AppError::Spotify(format!("lyrics: {e}"))
 }
 
-/// Minimal percent-encoding for query params (mirrors providers).
+/// Minimal percent-encoding for query params. Single-sourced from the
+/// providers' shared helper (a fifth copy lived here and drifted).
 fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else if b == b' ' {
-            out.push('+');
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    super::providers::common::urlencode(s)
 }
 
 #[cfg(test)]

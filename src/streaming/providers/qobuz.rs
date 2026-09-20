@@ -71,14 +71,16 @@ impl QobuzProvider {
         }
     }
 
-    /// Search tracks (ISRC string or `title artist` text); first hit's
-    /// numeric track id + title for duration gating.
+    /// Search tracks (ISRC string or `title artist` text); ALL numeric-id
+    /// hits with titles for duration gating (the caller picks the first
+    /// duration-accepting one — returning only hit #1 used to burn a whole
+    /// second search when it was the wrong version but #2 was exact).
     async fn search_track_id(
         &self,
         app_id: &str,
         token: &str,
         query: &str,
-    ) -> Result<Option<(u64, String, u64)>, SearchError> {
+    ) -> Result<Vec<(u64, String, u64)>, SearchError> {
         let url = format!(
             "{API}/track/search?query={}&limit=5&app_id={app_id}&user_auth_token={token}",
             urlencoding::encode(query)
@@ -96,26 +98,27 @@ impl QobuzProvider {
             _ => {}
         }
         let val: serde_json::Value = resp.json().await.map_err(|_| SearchError::Other)?;
-        let items = val
+        let mut hits = Vec::new();
+        if let Some(items) = val
             .get("tracks")
             .and_then(|t| t.get("items"))
             .and_then(|i| i.as_array())
-            .ok_or(SearchError::Other)?;
-        for item in items {
-            let id = match item.get("id").and_then(|i| i.as_u64()) {
-                Some(id) => id,
-                None => continue,
-            };
-            let title = item
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            // Qobuz reports duration in SECONDS; 0 = unknown.
-            let secs = item.get("duration").and_then(|d| d.as_u64()).unwrap_or(0);
-            return Ok(Some((id, title, secs)));
+        {
+            for item in items {
+                let Some(id) = item.get("id").and_then(|i| i.as_u64()) else {
+                    continue;
+                };
+                let title = item
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // Qobuz reports duration in SECONDS; 0 = unknown.
+                let secs = item.get("duration").and_then(|d| d.as_u64()).unwrap_or(0);
+                hits.push((id, title, secs));
+            }
         }
-        Ok(None)
+        Ok(hits)
     }
 
     /// Direct file URL for a numeric track id (CD FLAC).
@@ -157,7 +160,7 @@ impl QobuzProvider {
         }
         attempts.push(format!("{} {}", query.title, query.artist));
         for q in attempts {
-            let hit = match self.search_track_id(app_id, token, &q).await {
+            let hits = match self.search_track_id(app_id, token, &q).await {
                 Ok(h) => h,
                 Err(SearchError::Auth) => {
                     return Resolution::Error("qobuz credentials rejected".into())
@@ -169,30 +172,31 @@ impl QobuzProvider {
                 }
                 Err(SearchError::Other) => continue,
             };
-            let Some((id, _title, secs)) = hit else {
-                continue;
-            };
-            if secs != 0 && !youtube::duration_accepts(query.duration_ms, Some(secs)) {
-                continue;
-            }
-            match self.file_url(app_id, token, id).await {
-                Ok(Some(url)) => {
-                    return Resolution::Success {
-                        url,
-                        format: AudioFormat::Flac,
-                        quality: Quality::Lossless,
+            // Scan every hit with the duration gate (a mismatched #1 must
+            // not hide an exact #2 on the same page we already fetched).
+            for (id, _title, secs) in hits {
+                if secs != 0 && !youtube::duration_accepts(query.duration_ms, Some(secs)) {
+                    continue;
+                }
+                match self.file_url(app_id, token, id).await {
+                    Ok(Some(url)) => {
+                        return Resolution::Success {
+                            url,
+                            format: AudioFormat::Flac,
+                            quality: Quality::Lossless,
+                        }
                     }
-                }
-                Ok(None) => continue,
-                Err(SearchError::Auth) => {
-                    return Resolution::Error("qobuz credentials rejected".into())
-                }
-                Err(SearchError::Cooldown) => {
-                    return Resolution::Cooldown {
-                        retry_after_secs: 60,
+                    Ok(None) => continue,
+                    Err(SearchError::Auth) => {
+                        return Resolution::Error("qobuz credentials rejected".into())
                     }
+                    Err(SearchError::Cooldown) => {
+                        return Resolution::Cooldown {
+                            retry_after_secs: 60,
+                        }
+                    }
+                    Err(SearchError::Other) => continue,
                 }
-                Err(SearchError::Other) => continue,
             }
         }
         Resolution::NotFound

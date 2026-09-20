@@ -148,23 +148,41 @@ pub fn Settings() -> Element {
     }
 }
 
+/// Generic settings toggle row (one component for every boolean setting —
+/// UpdateToggle/UpsellToggle were the same ~15 lines differing only in
+/// label/signal).
+#[component]
+fn SettingToggle(
+    label_on: String,
+    label_off: String,
+    is_on: bool,
+    onflip: EventHandler<bool>,
+) -> Element {
+    rsx! {
+        button {
+            class: if is_on { "menu-item radio-row active" } else { "menu-item radio-row" },
+            onclick: move |_| onflip.call(!is_on),
+            span { class: if is_on { "radio-dot on" } else { "radio-dot" } }
+            if is_on { "{label_on}" } else { "{label_off}" }
+        }
+    }
+}
+
 /// Check-for-updates-at-startup toggle. Persisted in settings.json.
 #[component]
 fn UpdateToggle() -> Element {
-    let on = SETTINGS.read().auto_check_updates;
-
     rsx! {
-        button {
-            class: if on { "menu-item radio-row active" } else { "menu-item radio-row" },
-            onclick: move |_| {
-                SETTINGS.write().auto_check_updates = !on;
+        SettingToggle {
+            label_on: "Check for updates at startup: ON".to_string(),
+            label_off: "Check for updates at startup: OFF".to_string(),
+            is_on: SETTINGS.read().auto_check_updates,
+            onflip: move |next: bool| {
+                SETTINGS.write().auto_check_updates = next;
                 let snapshot = SETTINGS.peek().clone();
                 dioxus::prelude::spawn(async move {
                     let _ = snapshot.save();
                 });
             },
-            span { class: if on { "radio-dot on" } else { "radio-dot" } }
-            if on { "Check for updates at startup: ON" } else { "Check for updates at startup: OFF" }
         }
     }
 }
@@ -305,20 +323,18 @@ fn EngineRadio(
 
 #[component]
 fn UpsellToggle() -> Element {
-    let on = SETTINGS.read().hide_upsell;
-
     rsx! {
-        button {
-            class: if on { "menu-item radio-row active" } else { "menu-item radio-row" },
-            onclick: move |_| {
-                SETTINGS.write().hide_upsell = !on;
+        SettingToggle {
+            label_on: "Hide upsell: ON".to_string(),
+            label_off: "Hide upsell: OFF".to_string(),
+            is_on: SETTINGS.read().hide_upsell,
+            onflip: move |next: bool| {
+                SETTINGS.write().hide_upsell = next;
                 let snapshot = SETTINGS.peek().clone();
                 dioxus::prelude::spawn(async move {
                     let _ = snapshot.save();
                 });
             },
-            span { class: if on { "radio-dot on" } else { "radio-dot" } }
-            if on { "Hide upsell: ON" } else { "Hide upsell: OFF" }
         }
     }
 }

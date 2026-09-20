@@ -48,7 +48,7 @@ pub fn Home() -> Element {
         _ => None,
     };
 
-    let playlist_cards: Vec<(Route, String, String, String)> = feed
+    let playlist_cards: Vec<(Route, String, String, String, String)> = feed
         .as_ref()
         .map(|h| {
             h.playlists
@@ -61,6 +61,7 @@ pub fn Home() -> Element {
                     };
                     (
                         Route::Playlist { id: p.id.clone() },
+                        p.id.clone(),
                         p.name.clone(),
                         count_label,
                         p.images.first().map(|i| i.url.clone()).unwrap_or_default(),
@@ -99,13 +100,15 @@ pub fn Home() -> Element {
             if !playlist_cards.is_empty() {
                 SectionHeader { title: "Your playlists".to_string() }
                 div { class: "shelf-row",
-                    for (route, title, subtitle, image) in playlist_cards {
+                    // Keyed + seeded by playlist id (titles/images collide
+                    // across duplicates and renames recolored placeholders).
+                    for (route, pid, title, subtitle, image) in playlist_cards {
                         MediaCard {
-                            key: "{title}-{image}",
+                            key: "{pid}",
                             title: title.clone(),
                             subtitle: subtitle.clone(),
                             image_url: image.clone(),
-                            seed: title.clone(),
+                            seed: pid.clone(),
                             onselect: move |_| { navigator.push(route.clone()); },
                         }
                     }

@@ -2,14 +2,6 @@ use dioxus::prelude::*;
 
 /// Inline SVG icons. Kept in one module so the player bar / nav can share them
 /// without shipping binary assets (SVG-as-data-URI would defeat the file engine).
-pub fn icon(svg: Element, size: i32) -> Element {
-    rsx! {
-        span { class: "icon", width: "{size}", height: "{size}",
-            {svg}
-        }
-    }
-}
-
 pub fn play(size: i32) -> Element {
     rsx! {
         svg { width: "{size}", height: "{size}", view_box: "0 0 24 24", fill: "currentColor",

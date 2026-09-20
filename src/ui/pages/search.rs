@@ -76,10 +76,20 @@ pub fn Search() -> Element {
     let albums_list = albums.read().clone();
     let artists_list = artists.read().clone();
 
-    // Fire a top-bar handed-off query exactly once on mount.
+    // Fire a top-bar handed-off query on mount — and on every later
+    // handoff while mounted. Without the second half, submitting from the
+    // top bar while already on /search (no remount) silently ignored the
+    // query and left stale results.
     let mut seed_fired = use_signal(|| false);
     use_effect(move || {
         if *seed_fired.peek() {
+            // Already mounted: forward only a FRESH seed (differs from the
+            // live box text) so back-nav can't resurrect stale queries.
+            let seed = crate::state::SEARCH_SEED.read().clone();
+            if !seed.is_empty() && seed != *query.peek() {
+                query.set(seed.clone());
+                sender.send(seed);
+            }
             return;
         }
         let q = query.peek().clone();
@@ -145,6 +155,13 @@ pub fn Search() -> Element {
         })
         .collect();
 
+    // Trailing-edge debounce: each keystroke bumps the generation, so only
+    // the latest query survives the sleep — typing "hello" issues ONE
+    // query, not five (the old fire-and-forget spawn per keystroke
+    // multiplied API calls per word — rate-limit fuel on the most-typed
+    // surface in the app).
+    let mut debounce_gen = use_signal(|| 0u64);
+
     // Owned shelf tuples (rsx loops cannot contain `let`).
     let album_cards: Vec<(String, String, String, String)> = albums_list
         .iter()
@@ -183,9 +200,13 @@ pub fn Search() -> Element {
                     oninput: move |evt| {
                         query.set(evt.value());
                         let q = query();
+                        let gen = debounce_gen() + 1;
+                        debounce_gen.set(gen);
                         spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
-                            sender.send(q);
+                            if *debounce_gen.peek() == gen {
+                                sender.send(q);
+                            }
                         });
                     },
                 }

@@ -35,6 +35,16 @@ const SC_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 /// client_id cache TTL (matches the proven 24h pattern).
 #[cfg(not(target_arch = "wasm32"))]
 const KEY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// wasm has no wall clock for the TTL, so the key expires by use-count
+/// instead — without this a rotated key stayed cached for the session and
+/// every resolve 401'd until restart.
+#[cfg(target_arch = "wasm32")]
+const KEY_MAX_USES: u64 = 50;
+/// Overall budget for a key scrape: up to 5 sequential bundle fetches at
+/// the 8s client timeout stalled resolves for tens of seconds (×2 on the
+/// auth-retry path). Native only — on wasm the browser owns fetch timing.
+#[cfg(not(target_arch = "wasm32"))]
+const SCRAPE_BUDGET: Duration = Duration::from_secs(20);
 #[cfg(not(target_arch = "wasm32"))]
 const COOL_AFTER_FAILURES: u32 = 3;
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,8 +54,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct SoundcloudProvider {
     client: reqwest::Client,
-    /// Cached key + fetch time (`None` timestamp on wasm = no expiry there).
+    /// Cached key + fetch time (`None` timestamp on wasm = use-count expiry).
     key: Mutex<Option<(String, Option<Instant>)>>,
+    /// wasm key-use counter (see KEY_MAX_USES); unused on native.
+    #[cfg(target_arch = "wasm32")]
+    key_uses: Mutex<u64>,
     failures: Mutex<u32>,
     #[cfg(not(target_arch = "wasm32"))]
     cooling_until: Mutex<Option<Instant>>,
@@ -67,6 +80,8 @@ impl SoundcloudProvider {
                 builder.build().unwrap_or_default()
             },
             key: Mutex::new(None),
+            #[cfg(target_arch = "wasm32")]
+            key_uses: Mutex::new(0),
             failures: Mutex::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             cooling_until: Mutex::new(None),
@@ -104,11 +119,22 @@ impl SoundcloudProvider {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let _ = at;
-                    return Some(id.clone());
+                    let uses = self
+                        .key_uses
+                        .lock()
+                        .map(|mut u| {
+                            *u += 1;
+                            *u
+                        })
+                        .unwrap_or(0);
+                    if uses < KEY_MAX_USES {
+                        return Some(id.clone());
+                    }
+                    // Use-count expired: fall through to re-scrape.
                 }
             }
         }
-        let fresh = scrape_client_id(&self.client).await?;
+        let fresh = self.scrape_bounded().await?;
         if let Ok(mut guard) = self.key.lock() {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -117,9 +143,27 @@ impl SoundcloudProvider {
             #[cfg(target_arch = "wasm32")]
             {
                 *guard = Some((fresh.clone(), None));
+                if let Ok(mut u) = self.key_uses.lock() {
+                    *u = 0;
+                }
             }
         }
         Some(fresh)
+    }
+
+    /// Key scrape under an overall budget (see SCRAPE_BUDGET).
+    async fn scrape_bounded(&self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            tokio::time::timeout(SCRAPE_BUDGET, scrape_client_id(&self.client))
+                .await
+                .ok()
+                .flatten()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            scrape_client_id(&self.client).await
+        }
     }
 
     /// Forget the key so the next call re-scrapes (401/403 recovery).

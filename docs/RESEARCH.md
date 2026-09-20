@@ -39,9 +39,11 @@ Gathered intel for the spotify-dx rework. Sources:
 **Known constraints (RULES.md §6):**
 
 - `api.spotify.com/v1` gets hard-429'd during outage windows; the real web player browses
-  via `api-partner.spotify.com/pathfinder` (GraphQL) and `spclient.wg.spotify.com`, but
-  **neither accepted our BQA/web-session token in testing** (401/404). Do not bet the
-  data layer on pathfinder.
+  via `api-partner.spotify.com/pathfinder` (GraphQL) and `spclient.wg.spotify.com`.
+  ~~Neither accepted our token in testing — do not bet on pathfinder.~~
+  **Superseded (§2.5 below): the earlier rejection was a transient
+  hardening window / missing `app-platform`+Origin headers. Pathfinder with
+  the plain web-player token is the adopted data layer since 2026-08.**
 - Never reparent a realized WebView; never touch signals from the wry IPC thread
   (queue + drain).
 - `/v1/me/player*` endpoints are Premium-gated (403).

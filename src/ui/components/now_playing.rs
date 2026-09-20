@@ -10,6 +10,7 @@ use crate::ui::icons::back_arrow;
 
 #[component]
 pub fn NowPlayingView() -> Element {
+    let navigator = use_navigator();
     let state = PLAYER_STATE.read();
     let show = *SHOW_NOW_PLAYING.read();
 
@@ -34,6 +35,7 @@ pub fn NowPlayingView() -> Element {
     let title = track.name.clone();
     let artists = state.subtitle();
     let album = track.album.name.clone();
+    let album_id = track.album.id.clone();
     let art_url = state.large_art_url();
     let seed = track.id.clone();
 
@@ -57,10 +59,13 @@ pub fn NowPlayingView() -> Element {
             div {
                 div { class: "np-title", "{title}" }
                 div { class: "np-artists", "{artists}" }
-                a {
+                button {
                     class: "np-album",
-                    href: "#",
-                    onclick: move |evt| evt.stop_propagation(),
+                    onclick: move |_| {
+                        // Router push, not an href="#": the old anchor
+                        // pushed a junk history entry and went nowhere.
+                        navigator.push(crate::ui::router::Route::Album { id: album_id.clone() });
+                    },
                     "{album}"
                 }
             }

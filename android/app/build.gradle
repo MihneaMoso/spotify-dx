@@ -22,7 +22,10 @@ android {
         // Real application ID (the dx template default leaked a placeholder).
         applicationId 'com.spotifydx.app'
         // MUST stay >= 30 (Android 11): the windowing APIs the login/page
-        // hosts rely on need API 30+. See Dioxus.toml [mobile] + RULES.md.
+        // hosts rely on need API 30+. NOTE: this value alone sets the
+        // shipped APK's floor — Dioxus.toml [mobile] min_sdk_version only
+        // configures the abandoned dx-generated scaffold and does nothing
+        // to this APK, despite the historical comment claiming coupling.
         minSdk 30
         targetSdk 34
         // CI injects both from the release tag (Phase 7 cutover: updates

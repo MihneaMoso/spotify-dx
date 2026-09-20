@@ -23,10 +23,24 @@ pub async fn get_home() -> Result<HomeData, AppError> {
     tracing::info!("api: get_home start -- fanning out (GQL pathfinder)");
     let (playlists_res, liked_res) =
         tokio::join!(get_user_playlists(), get_user_saved_tracks(20, 0),);
-    let playlists = playlists_res.unwrap_or_default();
-    let liked_tracks: Vec<Track> = liked_res
-        .map(|p| p.items.into_iter().filter_map(|st| st.track).collect())
-        .unwrap_or_default();
+    // A total outage must surface as an error (banner + retry), never as a
+    // silently empty feed. Single-leg failures still degrade to the working
+    // half — logged, so "empty" stays distinguishable from "failed".
+    let (playlists, liked_tracks): (Vec<Playlist>, Vec<Track>) = match (playlists_res, liked_res) {
+        (Ok(p), Ok(l)) => (p, l.items.into_iter().filter_map(|st| st.track).collect()),
+        (Ok(p), Err(e)) => {
+            tracing::warn!("api: get_home liked leg failed ({e:#}); showing playlists only");
+            (p, Vec::new())
+        }
+        (Err(e), Ok(l)) => {
+            tracing::warn!("api: get_home playlists leg failed ({e:#}); showing liked only");
+            (
+                Vec::new(),
+                l.items.into_iter().filter_map(|st| st.track).collect(),
+            )
+        }
+        (Err(e), Err(_)) => return Err(e),
+    };
     tracing::info!(
         "api: get_home done -- playlists={} liked={}",
         playlists.len(),
@@ -91,8 +105,7 @@ pub async fn get_user_playlists() -> Result<Vec<Playlist>, AppError> {
 }
 
 pub async fn get_user_saved_tracks(limit: u32, offset: u32) -> Result<Paged<SavedTrack>, AppError> {
-    let tracks = gql::gql_user_liked_tracks(limit, offset).await?;
-    let total = tracks.len() as u32;
+    let (tracks, total) = gql::gql_user_liked_tracks(limit, offset).await?;
     Ok(Paged {
         items: tracks
             .into_iter()

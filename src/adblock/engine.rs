@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn engine_serialize_roundtrip() {
         let list = "0.0.0.0 ads.example.com\n";
-        let mut engine = build_engine(list);
+        let engine = build_engine(list);
 
         let bytes = engine.serialize();
         let mut restored = Engine::default();

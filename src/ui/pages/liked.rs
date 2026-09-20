@@ -5,7 +5,6 @@ use dioxus::prelude::*;
 use crate::spotify::api;
 use crate::spotify::models::SavedTrack;
 use crate::ui::components::{HeroHeader, TrackRow};
-use crate::ui::icons::heart;
 
 const PAGE_SIZE: u32 = 50;
 
@@ -82,13 +81,7 @@ pub fn Liked() -> Element {
                     }
                 },
                 onshuffle: move |_| {
-                    if !shuffle_pool.is_empty() {
-                        let i = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() as usize)
-                            .unwrap_or(0);
-                        crate::player::launch_track(shuffle_pool[i % shuffle_pool.len()].clone());
-                    }
+                    crate::player::launch_random(shuffle_pool.clone());
                 },
             }
 
@@ -122,10 +115,4 @@ pub fn Liked() -> Element {
             }
         }
     }
-}
-
-// Keep the icon referenced even if the hero owns visuals today.
-#[allow(unused)]
-fn _icon_keep() -> Element {
-    heart(16, false)
 }

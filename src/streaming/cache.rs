@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 pub struct CachedUrl {
     pub url: String,
     pub format: String,
+    /// Provider-reported quality tier (`Display` of `Quality`). Empty for
+    /// entries written before quality was persisted — treated as unknown,
+    /// never assumed lossless.
+    #[serde(default)]
+    pub quality: String,
     /// Unix epoch seconds when this URL expires.
     pub expires_at: u64,
 }
@@ -59,22 +64,32 @@ fn inner() -> &'static std::sync::Mutex<CacheInner> {
     })
 }
 
-/// Look up a cached stream URL. Returns `None` on miss or expiry.
+/// Look up a cached stream URL. Returns `None` on miss or expiry; expired
+/// rows are evicted on read so dead entries can't consume the cap and push
+/// live URLs out early.
 pub fn get(track_id: &str, provider: &str) -> Option<CachedUrl> {
     let key = CacheKey {
         track_id: track_id.to_string(),
         provider: provider.to_string(),
     };
-    let guard = inner().lock().ok()?;
-    let entry = guard.memory.get(&key)?;
-    if entry.is_expired() {
+    let mut guard = inner().lock().ok()?;
+    let expired = guard
+        .memory
+        .get(&key)
+        .map(|e| e.is_expired())
+        .unwrap_or(false);
+    if expired {
+        guard.memory.remove(&key);
+        if let Some(pos) = guard.order.iter().position(|k| k == &key) {
+            guard.order.remove(pos);
+        }
         return None;
     }
-    Some(entry.clone())
+    guard.memory.get(&key).cloned()
 }
 
 /// Store a resolved stream URL in the cache.
-pub fn put(track_id: &str, provider: &str, url: &str, format: &str) {
+pub fn put(track_id: &str, provider: &str, url: &str, format: &str, quality: &str) {
     let key = CacheKey {
         track_id: track_id.to_string(),
         provider: provider.to_string(),
@@ -86,6 +101,7 @@ pub fn put(track_id: &str, provider: &str, url: &str, format: &str) {
     let entry = CachedUrl {
         url: url.to_string(),
         format: format.to_string(),
+        quality: quality.to_string(),
         expires_at,
     };
     if let Ok(mut guard) = inner().lock() {
@@ -140,11 +156,17 @@ pub fn load_from_disk() {
     if let Ok(mut guard) = inner().lock() {
         // Cap the load: a stale oversized file must not grow memory past
         // MEMORY_CAP on startup (expired rows don't consume the budget).
+        // Dedupe per key (same rule as put): a repeat load must not append
+        // second order slots — duplicates halved the effective cap and
+        // evicted live entries early. Live in-memory rows are preserved.
         for (key, entry) in entries
             .into_iter()
             .filter(|(_, v)| !v.is_expired())
             .take(MEMORY_CAP)
         {
+            if let Some(pos) = guard.order.iter().position(|k| k == &key) {
+                guard.order.remove(pos);
+            }
             guard.memory.insert(key.clone(), entry);
             guard.order.push(key);
         }
@@ -157,8 +179,16 @@ mod tests {
 
     #[test]
     fn put_get_roundtrip() {
-        put("track1", "tidal", "https://example.com/stream.flac", "flac");
-        let cached = get("track1", "tidal");
+        // Test-unique keys: these tests share the process-global cache, so
+        // fixed keys would make outcomes depend on execution order.
+        put(
+            "roundtrip/track1",
+            "tidal",
+            "https://example.com/stream.flac",
+            "flac",
+            "lossless",
+        );
+        let cached = get("roundtrip/track1", "tidal");
         assert!(cached.is_some());
         let c = cached.unwrap();
         assert_eq!(c.url, "https://example.com/stream.flac");
@@ -167,33 +197,46 @@ mod tests {
 
     #[test]
     fn miss_returns_none() {
-        assert!(get("nonexistent", "tidal").is_none());
+        assert!(get("miss/nonexistent", "tidal").is_none());
     }
 
     #[test]
     fn different_providers_are_separate() {
-        put("t1", "tidal", "https://tidal.example.com", "flac");
-        put("t1", "qobuz", "https://qobuz.example.com", "flac");
-        assert!(get("t1", "tidal").is_some());
-        assert!(get("t1", "qobuz").is_some());
-        assert!(get("t1", "youtube").is_none());
+        put(
+            "separate/t1",
+            "tidal",
+            "https://tidal.example.com",
+            "flac",
+            "lossless",
+        );
+        put(
+            "separate/t1",
+            "qobuz",
+            "https://qobuz.example.com",
+            "flac",
+            "lossless",
+        );
+        assert!(get("separate/t1", "tidal").is_some());
+        assert!(get("separate/t1", "qobuz").is_some());
+        assert!(get("separate/t1", "youtube").is_none());
     }
 
     #[test]
     fn expired_entry_returns_none() {
         let key = CacheKey {
-            track_id: "expired_track".to_string(),
+            track_id: "expired/expired_track".to_string(),
             provider: "test".to_string(),
         };
         let entry = CachedUrl {
             url: "https://expired.example.com".to_string(),
             format: "mp3".to_string(),
+            quality: "normal".to_string(),
             expires_at: 0, // already expired
         };
         if let Ok(mut guard) = inner().lock() {
             guard.memory.insert(key.clone(), entry);
             guard.order.push(key);
         }
-        assert!(get("expired_track", "test").is_none());
+        assert!(get("expired/expired_track", "test").is_none());
     }
 }

@@ -23,11 +23,24 @@ pub struct ProviderIds {
 }
 
 /// In-memory cache of Spotify track ID → provider IDs.
-/// TTL: session lifetime (Odesli data is stable for released tracks).
+/// Bounded (FIFO evict-one at cap): the map previously grew without limit
+/// for the life of the process.
+const ODESLI_CAP: usize = 512;
 static ODESLI_CACHE: OnceLock<std::sync::Mutex<HashMap<String, ProviderIds>>> = OnceLock::new();
 
 fn cache() -> &'static std::sync::Mutex<HashMap<String, ProviderIds>> {
     ODESLI_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn cache_insert(key: String, ids: ProviderIds) {
+    if let Ok(mut map) = cache().lock() {
+        if map.len() >= ODESLI_CAP && !map.contains_key(&key) {
+            if let Some(k) = map.keys().next().cloned() {
+                map.remove(&k);
+            }
+        }
+        map.insert(key, ids);
+    }
 }
 
 #[derive(Deserialize)]
@@ -92,9 +105,7 @@ pub async fn resolve(spotify_id: &str) -> Option<ProviderIds> {
     };
 
     // Cache the result.
-    if let Ok(mut map) = cache().lock() {
-        map.insert(spotify_id.to_string(), ids.clone());
-    }
+    cache_insert(spotify_id.to_string(), ids.clone());
 
     Some(ids)
 }
@@ -102,12 +113,26 @@ pub async fn resolve(spotify_id: &str) -> Option<ProviderIds> {
 /// Extract a platform-specific track ID from its Odesli URL.
 /// E.g. "https://tidal.com/browse/12345" → "12345".
 pub fn extract_id_from_url(url: &str) -> Option<String> {
+    // Host-first: the old code split on "v=" before checking the host, so
+    // any TIDAL/Qobuz URL with a `v=` query param (`?version=…`, tracking
+    // params) was truncated into a bogus YouTube ID.
+    let host = url.split("://").nth(1).unwrap_or(url);
+    let host = host.split('/').next().unwrap_or("").to_lowercase();
     // TIDAL: https://tidal.com/browse/12345 or https://listen.tidal.com/track/12345
     // Qobuz: https://www.qobuz.com/us/en/album/abc-def-12345 (uses album, not track)
     // YouTube: https://www.youtube.com/watch?v=VIDEO_ID
-    if let Some(vtid) = url.split("v=").nth(1) {
-        // YouTube: strip any trailing params
-        return Some(vtid.split('&').next().unwrap_or(vtid).to_string());
+    if host.contains("youtube.com") || host.contains("youtu.be") {
+        if host.contains("youtu.be") {
+            return url
+                .rsplit('/')
+                .next()
+                .map(|s| s.split('?').next().unwrap_or(s).to_string());
+        }
+        if let Some(vtid) = url.split("v=").nth(1) {
+            // YouTube: strip any trailing params
+            return Some(vtid.split('&').next().unwrap_or(vtid).to_string());
+        }
+        return None;
     }
     // Generic: last path segment
     url.rsplit('/').next().map(|s| s.to_string())

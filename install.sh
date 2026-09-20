@@ -17,7 +17,7 @@
 # GitHub Release assets are named (see .github/workflows/release.yml):
 #   spotify-dx-<target>.tar.gz               Linux / macOS (unversioned alias)
 #   spotify-dx-<target>.zip                  Windows (unversioned alias)
-#   spotify-dx-<ver>-signed.apk              Android APK
+#   app-release-unsigned-signed.apk          Android APK (stable name)
 
 set -euo pipefail
 
@@ -144,12 +144,12 @@ install_desktop() {
             dest="$(cygpath -u "${LOCALAPPDATA:-$HOME/AppData/Local}/Programs/SpotifyDX" 2>/dev/null \
                     || printf '%s' "$HOME/AppData/Local/Programs/SpotifyDX")"
             mkdir -p "$dest"
-            if have tar; then
-                tar -xzf "$tmp/$fname" -C "$tmp"
-                src="$(find "$tmp" -maxdepth 2 -type f -name 'spotify-dx.exe' | head -n1)"
-            else
-                src="$tmp/$fname"
-            fi
+            # .zip is not gzip: `tar -xzf` fails obscurely on systems whose
+            # tar can't auto-detect zip, and the no-tar fallback would copy
+            # the zip over as a corrupt "exe". Require unzip explicitly.
+            have unzip || { rm -rf "$tmp"; die "unzip is required to install the Windows .zip (found neither a zip-capable tar nor unzip)"; }
+            unzip -q -o "$tmp/$fname" -d "$tmp/unzipped"
+            src="$(find "$tmp/unzipped" -maxdepth 2 -type f -name 'spotify-dx.exe' | head -n1)"
             [ -n "$src" ] && [ -f "$src" ] || { rm -rf "$tmp"; die "could not locate spotify-dx.exe in archive"; }
             cp "$src" "$dest/spotify-dx.exe"
             rm -rf "$tmp"
@@ -159,14 +159,32 @@ install_desktop() {
 }
 
 # ---------------------------------------------------------------------------
-# Android: download the APK and tell the user how to install it.
+# Android: download the APK (SHA-256 verified like desktop) and tell the
+# user how to install it.
 # ---------------------------------------------------------------------------
 install_android() {
-    local url="$2" fname="$3"
+    local url="$2" fname="$3" digest="$4"
     local dest="$HOME/Download"
     [ -d "$dest" ] || mkdir -p "$dest"
     log "downloading ${fname} …"
     curl -fsSL -o "$dest/$fname" "$url"
+    # The APK is the privileged artifact here — verify it exactly like the
+    # desktop binary (fail closed when no digest or no tool, not open).
+    if [ -z "$digest" ]; then
+        rm -f "$dest/$fname"
+        die "no SHA-256 digest published for ${fname}; refusing unverified APK"
+    fi
+    if have shasum; then
+        echo "$digest  $dest/$fname" | shasum -a 256 -c - >/dev/null \
+            || { rm -f "$dest/$fname"; die "SHA-256 verification failed for ${fname}"; }
+    elif have sha256sum; then
+        echo "$digest  $dest/$fname" | sha256sum -c - >/dev/null \
+            || { rm -f "$dest/$fname"; die "SHA-256 verification failed for ${fname}"; }
+    else
+        rm -f "$dest/$fname"
+        die "no checksum tool (shasum/sha256sum) to verify ${fname}; refusing unverified APK"
+    fi
+    log "checksum verified"
     echo "$dest/$fname"
 }
 
@@ -196,7 +214,15 @@ main() {
     # Pick the platform asset by its name token and resolve its digest.
     local fname url digest
     case "$os" in
-        linux)   fname="spotify-dx-x86_64-unknown-linux-gnu.tar.gz" ;;
+        linux)
+            # Only x86_64 Linux is published (see release.yml matrix): an
+            # ARM machine must fail loudly here instead of downloading an
+            # x86_64 binary that can never exec.
+            case "$arch" in
+                x86_64) fname="spotify-dx-x86_64-unknown-linux-gnu.tar.gz" ;;
+                *) die "no Linux ${arch} build published (only x86_64); refusing to install the wrong arch" ;;
+            esac
+            ;;
         macos)
             case "$arch" in
                 aarch64) fname="spotify-dx-aarch64-apple-darwin.tar.gz" ;;
@@ -204,7 +230,7 @@ main() {
             esac
             ;;
         windows) fname="spotify-dx-x86_64-pc-windows-msvc.zip" ;;
-        android) fname="signed.apk" ;;
+        android) fname="app-release-unsigned-signed.apk" ;;
     esac
     url="$(
         printf '%s' "$body" \
@@ -233,7 +259,7 @@ main() {
 
     local installed
     if [ "$os" = "android" ]; then
-        installed="$(install_android "$os" "$url" "$(basename "$url")")"
+        installed="$(install_android "$os" "$url" "$(basename "$url")" "$digest")"
         log "APK downloaded to: ${installed}"
         log "open it on your device to install (enable 'Install from unknown sources' if prompted)"
         return 0

@@ -52,7 +52,8 @@ say "release plan:"
 say "  tag     : ${TAG}"
 say "  remote  : ${remote}"
 say "  workflow: .github/workflows/release.yml"
-say "  │ will run: 'cargo build --release --features desktop' for each desktop target"
+say "  │ will run: desktop builds (linux-gnu, macOS arm64+x86_64, windows-msvc)"
+say "  │           + the owned Kotlin Android APK + the web bundle,"
 say "  │ then publish a GitHub Release 'spotify-dx ${TAG}'."
 if [ "$DRY_RUN" = "1" ]; then
   say "dry-run: not creating or pushing anything."
@@ -60,9 +61,12 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # ── commit the current release config if needed ─────────────────────────────
-if [ -n "$(git status --porcelain -- .github scripts 2>/dev/null)" ]; then
+# Narrowly scoped: only files this script owns or the workflow consumes that
+# changed just now. A broad `git add .github scripts` could sweep unrelated
+# work into a generic "ci: release workflow" commit.
+if [ -n "$(git status --porcelain -- .github/workflows/release.yml scripts/release.sh scripts/build-kotlin.sh scripts/build-web.sh 2>/dev/null)" ]; then
   say "committing workflow/script changes so the tag build is reproducible..."
-  git add .github scripts 2>/dev/null || true
+  git add .github/workflows/release.yml scripts/release.sh scripts/build-kotlin.sh scripts/build-web.sh 2>/dev/null || true
   git commit --no-verify -m "ci: release workflow"
 else
   say "workflow/script already committed."
@@ -83,9 +87,17 @@ say "the GitHub Release (when done) will appear at:"
 say "  https://github.com/${repo}/releases/tag/${TAG}"
 
 # Optional: block until the workflow run completes if gh is available.
+# NOTE: `gh run list` filters by BRANCH — a tag is not a branch, so the old
+# `--branch "$TAG"` query returned empty and the watch never attached.
+# Tag-triggered runs are found via the head SHA of the pushed tag instead.
 if command -v gh >/dev/null 2>&1 && [ -n "$repo" ]; then
   say "waiting for the release workflow to finish (Ctrl-C to skip)…"
-  gh run watch --repo "$repo" --exit-status --run-id \
-    "$(gh run list --repo "$repo" --workflow release.yml --branch "$TAG" --limit 1 --json databaseId --jq '.[0].databaseId')" \
-    || warn "watch failed — check the run manually at ${repo}/actions"
+  tag_sha="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
+  run_id="$(gh run list --repo "$repo" --workflow release.yml --limit 20 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$tag_sha\")][0].databaseId" 2>/dev/null || true)"
+  if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+    gh run watch --repo "$repo" --exit-status --run-id "$run_id" \
+      || warn "watch failed — check the run manually at ${repo}/actions"
+  else
+    warn "could not locate the CI run for ${TAG} — check manually at ${repo}/actions"
+  fi
 fi

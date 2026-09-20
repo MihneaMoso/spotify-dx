@@ -89,6 +89,20 @@ impl SaavnProvider {
         }
     }
 
+    /// Rewrite ONLY the quality token: it sits right before the extension
+    /// (`…_96.mp4`) or at the very end. A blind first-occurrence replace
+    /// could rewrite a `_96` inside a content hash earlier in the URL and
+    /// corrupt the stream while the real token survives untouched.
+    fn swap_quality_token(base: &str, token: &str) -> String {
+        if base.contains("_96.") {
+            base.replacen("_96.", &format!("{token}."), 1)
+        } else if let Some(prefix) = base.strip_suffix("_96") {
+            format!("{prefix}{token}")
+        } else {
+            base.to_owned()
+        }
+    }
+
     async fn resolve_inner(&self, query: &TrackQuery) -> Resolution {
         let url = format!(
             "{SEARCH_URL}&q={}+{}",
@@ -146,7 +160,7 @@ impl SaavnProvider {
             // Prefer 320kbps when the item advertises it, else 160.
             let high = item.get("320kbps").and_then(|v| v.as_str()) == Some("true");
             let token = if high { "_320" } else { "_160" };
-            let stream_url = base.replacen("_96", token, 1);
+            let stream_url = Self::swap_quality_token(&base, token);
             self.note_success();
             return Resolution::Success {
                 url: stream_url,
@@ -238,10 +252,18 @@ mod tests {
         assert_eq!(decrypt_media_url(ENC).as_deref(), Some(PLAIN));
         assert!(decrypt_media_url("").is_none());
         assert!(decrypt_media_url("!!!not-base64!!!").is_none());
-        // Quality token swap reaches 320kbps.
+        // Quality token swap reaches 320kbps…
         assert_eq!(
-            PLAIN.replacen("_96", "_320", 1),
+            SaavnProvider::swap_quality_token(PLAIN, "_320"),
             "https://aac.saavncdn.com/366/fcbf0d7acd7f132746ce655f8b4237b9_320.mp4"
+        );
+        // …without touching an earlier `_96` inside a content hash.
+        assert_eq!(
+            SaavnProvider::swap_quality_token(
+                "https://aac.saavncdn.com/366/abc_96def/fcbf0d7acd7f132746ce655f8b4237b9_96.mp4",
+                "_320",
+            ),
+            "https://aac.saavncdn.com/366/abc_96def/fcbf0d7acd7f132746ce655f8b4237b9_320.mp4"
         );
     }
 

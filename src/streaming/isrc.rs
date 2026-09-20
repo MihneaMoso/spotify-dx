@@ -38,16 +38,28 @@ fn cache_put(key: String, value: Option<String>) {
     if let Ok(mut guard) = CACHE.lock() {
         let map = guard.get_or_insert_with(HashMap::new);
         if map.len() >= CACHE_CAP {
-            map.clear();
+            // Evict one arbitrary entry — never wipe the whole map (the
+            // old clear() discarded 512 immutable, still-valid ISRCs and
+            // forced every one through a fresh rate-gated fetch).
+            if let Some(k) = map.keys().next().cloned() {
+                map.remove(&k);
+            }
         }
         map.insert(key, value);
     }
 }
 
+/// Cache key includes a duration bucket: same title+artist at a wildly
+/// different length (live/extended vs studio) is a different recording,
+/// and reusing the first ISRC silently resolves the wrong one.
+fn cache_key(title: &str, artist: &str, duration_ms: u64) -> String {
+    format!("{title}\0{artist}\0{}", duration_ms / LENGTH_TOLERANCE_MS)
+}
+
 /// Look up the ISRC for a track (miss-path enrichment).
 /// Returns the first ISRC of the best-matching recording, if any.
 pub async fn lookup_isrc(title: &str, artist: &str, duration_ms: u64) -> Option<String> {
-    let key = format!("{title}\0{artist}");
+    let key = cache_key(title, artist, duration_ms);
     if let Some(cached) = cache_get(&key) {
         return cached;
     }
@@ -56,52 +68,83 @@ pub async fn lookup_isrc(title: &str, artist: &str, duration_ms: u64) -> Option<
     found
 }
 
+/// Shared HTTP client: one connection pool for all ISRC lookups instead of
+/// a fresh client (fresh TLS pool) per miss.
+#[cfg(not(target_arch = "wasm32"))]
+fn http_client() -> reqwest::Client {
+    use once_cell::sync::Lazy;
+    static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+        reqwest::Client::builder()
+            .user_agent("SpotifyDX/0.1 (https://github.com/MihneaMoso/spotify-dx)")
+            .build()
+            .expect("isrc http client")
+    });
+    CLIENT.clone()
+}
+
 async fn fetch_isrc(title: &str, artist: &str, duration_ms: u64) -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Shared 1 req/s gate (MusicBrainz policy).
-        let wait = LAST_CALL
-            .lock()
-            .ok()
-            .and_then(|last| {
-                last.as_ref()
-                    .and_then(|t| CALL_GAP.checked_sub(t.elapsed()))
-            })
-            .unwrap_or(Duration::from_millis(0));
-        if !wait.is_zero() {
-            tokio::time::sleep(wait).await;
+        // Shared 1 req/s gate (MusicBrainz policy), held across the wait:
+        // check-then-set without the lock let concurrent misses both
+        // observe wait=0 and fire together. The mutex guards the whole
+        // wait+stamp sequence (short critical section, never held across
+        // network I/O); the timestamp marks completion, so slow responses
+        // can't compress spacing either.
+        static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _permit = GATE.lock().await;
+        if let Some(last) = LAST_CALL.lock().ok().and_then(|l| *l) {
+            if let Some(wait) = CALL_GAP.checked_sub(last.elapsed()) {
+                tokio::time::sleep(wait).await;
+            }
         }
-        if let Ok(mut last) = LAST_CALL.lock() {
-            *last = Some(Instant::now());
+        let query = format!(
+            "recording:\"{}\" AND artist:\"{}\"",
+            title.replace('"', ""),
+            artist.replace('"', "")
+        );
+        let url = format!(
+            "https://musicbrainz.org/ws/2/recording/?query={}&fmt=json&limit=5",
+            urlencoding::encode(&query)
+        );
+        let resp = http_client().get(&url).send().await.ok()?;
+        if let Ok(mut l) = LAST_CALL.lock() {
+            *l = Some(Instant::now());
         }
+        if !resp.status().is_success() {
+            return None;
+        }
+        let val: serde_json::Value = resp.json().await.ok()?;
+        pick_isrc(
+            val.get("recordings").and_then(|r| r.as_array()),
+            title,
+            artist,
+            duration_ms,
+        )
     }
-    let query = format!(
-        "recording:\"{}\" AND artist:\"{}\"",
-        title.replace('"', ""),
-        artist.replace('"', "")
-    );
-    let url = format!(
-        "https://musicbrainz.org/ws/2/recording/?query={}&fmt=json&limit=5",
-        urlencoding::encode(&query)
-    );
-    let resp = reqwest::Client::builder()
-        .user_agent("SpotifyDX/0.1 (https://github.com/MihneaMoso/spotify-dx)")
-        .build()
-        .ok()?
-        .get(&url)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let query = format!(
+            "recording:\"{}\" AND artist:\"{}\"",
+            title.replace('"', ""),
+            artist.replace('"', "")
+        );
+        let url = format!(
+            "https://musicbrainz.org/ws/2/recording/?query={}&fmt=json&limit=5",
+            urlencoding::encode(&query)
+        );
+        let resp = reqwest::Client::new().get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let val: serde_json::Value = resp.json().await.ok()?;
+        pick_isrc(
+            val.get("recordings").and_then(|r| r.as_array()),
+            title,
+            artist,
+            duration_ms,
+        )
     }
-    let val: serde_json::Value = resp.json().await.ok()?;
-    pick_isrc(
-        val.get("recordings").and_then(|r| r.as_array()),
-        title,
-        artist,
-        duration_ms,
-    )
 }
 
 /// Best-match recording's first ISRC: strict title, lenient artist

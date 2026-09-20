@@ -40,9 +40,13 @@ pub fn Library() -> Element {
     let mut alpha = use_signal(|| false);
 
     let resource = use_resource(|| async move {
-        let playlists = api::get_user_playlists().await;
-        let albums = api::get_user_albums(50, 0).await;
-        let liked = api::get_user_saved_tracks(50, 0).await;
+        // Independent legs fan out concurrently: paint waits the max
+        // latency, not the sum (serial awaits tripled library load).
+        let (playlists, albums, liked) = tokio::join!(
+            api::get_user_playlists(),
+            api::get_user_albums(50, 0),
+            api::get_user_saved_tracks(50, 0),
+        );
         (playlists, albums, liked)
     });
 
@@ -189,31 +193,17 @@ pub fn Library() -> Element {
                         if playable_rows.is_empty() {
                             div { class: "empty-state", "Nothing liked yet." }
                         }
-                        for (kid, t) in playable_rows {
-                            TrackRowLite {
-                                key: "{kid}",
-                                track: t,
-                                index_by_id: kid,
+                        for (n, (_kid, t)) in playable_rows.iter().enumerate() {
+                            crate::ui::components::TrackRow {
+                                key: "{t.id}",
+                                track: t.clone(),
+                                index: Some(n as u32 + 1),
+                                onplay: crate::player::launch_track,
                             }
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-/// Minimal list row for the library's liked section.
-#[component]
-fn TrackRowLite(track: crate::spotify::models::Track, index_by_id: String) -> Element {
-    let played = track.clone();
-    rsx! {
-        button {
-            class: "lib-row",
-            onclick: move |_| crate::player::launch_track(played.clone()),
-            span { class: "track-index", "{index_by_id}" }
-            span { class: "lib-row-name", "{track.name}" }
-            span { class: "np-duration", "{crate::state::format_duration(track.duration_ms)}" }
         }
     }
 }

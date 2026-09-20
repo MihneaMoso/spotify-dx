@@ -323,7 +323,9 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${HOME}/.cargo/bin:${PATH}"
-          cargo install dioxus-cli --version 0.7.10 --locked 2>/dev/null || true
+          # Fail fast: a broken toolchain install must stop the job here,
+          # not surface later as a cryptic `dx: command not found`.
+          cargo install dioxus-cli --version 0.7.10 --locked
           dx build --platform web --release
           # `dx build` does NOT honor `out_dir`: web output always goes to
           # target/dx/<crate>/<profile>/web/public (DioxusLabs/dioxus#3328), so

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use futures::channel::mpsc::UnboundedReceiver;
 
 use crate::player;
-use crate::state::{RepeatMode, PLAYER_STATE, SHOW_NOW_PLAYING};
+use crate::state::{PLAYER_STATE, SHOW_NOW_PLAYING};
 use crate::ui::components::{AlbumArt, ProgressBar, VolumeBar};
 
 /// Persistent bottom bar: artwork, controls, progress and volume. Always lives
@@ -52,19 +52,15 @@ pub fn PlayerBar() -> Element {
     let playing = PLAYER_STATE.read().is_playing;
     let volume = PLAYER_STATE.read().volume;
     let shuffle = PLAYER_STATE.read().shuffle;
-    let repeat = PLAYER_STATE.read().repeat;
     let liked = PLAYER_STATE.read().liked;
 
-    let state = PLAYER_STATE.peek();
+    // Subscribed snapshot (not peek): track/art/position must update on
+    // track changes that leave is_playing untouched (auto-advance while
+    // playing froze the bar until some other field flipped).
+    let state = PLAYER_STATE.read().clone();
     let (art_url, seed, title, subtitle, pos, dur) = match &state.track {
         Some(t) => (
-            t.album
-                .images
-                .iter()
-                .find(|img| img.width.is_some() && img.width.unwrap_or(0) >= 64)
-                .or_else(|| t.album.images.first())
-                .map(|img| img.url.clone())
-                .unwrap_or_default(),
+            crate::ui::components::pick_artwork(&t.album.images, 64),
             t.id.clone(),
             t.name.clone(),
             state.subtitle(),
@@ -106,8 +102,11 @@ pub fn PlayerBar() -> Element {
                         title: "Shuffle",
                         class: if shuffle { "ctrl active" } else { "ctrl" },
                         onclick: move |_| {
+                            // Real engine path (queue reorder + snapshot),
+                            // not a local-only flip: the old handler set the
+                            // bool while the queue order never changed.
                             let next = !PLAYER_STATE.peek().shuffle;
-                            PLAYER_STATE.write().shuffle = next;
+                            PLAYER_STATE.write().set_shuffle(next);
                         },
                         {crate::ui::icons::shuffle(18, shuffle)}
                     }
@@ -137,21 +136,22 @@ pub fn PlayerBar() -> Element {
                         {crate::ui::icons::skip_forward(22)}
                     }
                     button {
-                        title: "Repeat: {repeat_label(repeat)}",
-                        class: if repeat != RepeatMode::Off { "ctrl active" } else { "ctrl" },
-                        onclick: move |_| {
-                            PLAYER_STATE.write().repeat = match PLAYER_STATE.peek().repeat {
-                                RepeatMode::Off => RepeatMode::Context,
-                                RepeatMode::Context => RepeatMode::Track,
-                                RepeatMode::Track => RepeatMode::Off,
-                            };
-                        },
-                        {crate::ui::icons::repeat(18, repeat != RepeatMode::Off)}
+                        // Disabled, honestly: no engine path reads repeat
+                        // state (neither the SDK relay nor the open sink
+                        // loops on it), so cycling it only lied in the UI.
+                        // Re-enable with a real loop when a backend lands.
+                        title: "Repeat (not available yet)",
+                        class: "ctrl",
+                        disabled: true,
+                        {crate::ui::icons::repeat(18, false)}
                     }
                 }
                 ProgressBar {
                     position_ms: pos,
                     duration_ms: dur,
+                    onpreview: move |ms| {
+                        PLAYER_STATE.write().position_ms = ms;
+                    },
                     onscrub: move |ms| {
                         PLAYER_STATE.write().position_ms = ms;
                         dioxus::prelude::spawn(async move {
@@ -192,13 +192,5 @@ pub fn PlayerBar() -> Element {
                 }
             }
         }
-    }
-}
-
-fn repeat_label(repeat: RepeatMode) -> &'static str {
-    match repeat {
-        RepeatMode::Off => "Repeat off",
-        RepeatMode::Context => "Repeat all",
-        RepeatMode::Track => "Repeat one",
     }
 }

@@ -230,8 +230,19 @@ pub static SEARCH_SEED: GlobalSignal<String> = Signal::global(String::new);
 /// Whether the now-playing right column is shown (≥1280 px viewports).
 pub static SHOW_NOW_PLAYING: GlobalSignal<bool> = Signal::global(|| true);
 
+/// An error toast with a unique sequence number. Identity-by-string made
+/// repeated identical errors indistinguishable (the first 5s timer could
+/// clear the second early); the sequence distinguishes emissions.
+/// (`AppError` itself isn't `Clone`, so only the stamp derives it — the
+/// error moves into the signal once.)
+#[derive(Debug)]
+pub struct StampedError {
+    pub err: crate::app_error::AppError,
+    pub seq: u64,
+}
+
 /// The most recent application-level error, consumed by the toast component.
-pub static APP_ERROR: GlobalSignal<Option<AppError>> = Signal::global(|| None);
+pub static APP_ERROR: GlobalSignal<Option<StampedError>> = Signal::global(|| None);
 
 /// Whether the ad filter finished seeding its rule tree.
 pub fn is_blocker_ready() -> bool {
@@ -240,7 +251,12 @@ pub fn is_blocker_ready() -> bool {
 
 /// Publish an error that the toast component will render and clear.
 pub fn publish_error(err: AppError) {
-    APP_ERROR.write().replace(err);
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    APP_ERROR.write().replace(StampedError {
+        err,
+        seq: SEQ.fetch_add(1, Ordering::Relaxed),
+    });
 }
 
 /// Clear the active error toast.

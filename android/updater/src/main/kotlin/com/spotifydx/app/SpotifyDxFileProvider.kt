@@ -4,8 +4,10 @@ import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.UriMatcher
 import android.database.Cursor
+import android.database.MatrixCursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import java.io.File
 
 /**
@@ -13,9 +15,10 @@ import java.io.File
  * update APK. Using a content URI (instead of a raw file:// URI) avoids the
  * FileUriExposedException on API 24+ and needs no androidx.core dependency.
  *
- * Registered in the manifest by scripts/stage-updater.sh with authority
- * `com.spotifydx.app.updates` and grantUriPermissions so the system package
- * installer may read it (with FLAG_GRANT_READ_URI_PERMISSION on the intent).
+ * First-class manifest entry in the owned app (legacy dx path: injected by
+ * scripts/stage-updater.sh), authority `com.spotifydx.app.updates` with
+ * grantUriPermissions so the system package installer may read it (with
+ * FLAG_GRANT_READ_URI_PERMISSION on the intent).
  *
  * The served file must match where the native updater writes the download
  * (`filesDir/updates/spotify-dx-update.apk` — see updater.rs, which resolves
@@ -54,7 +57,16 @@ class SpotifyDxFileProvider : ContentProvider() {
         selection: String?,
         selectionArgs: Array<out String>?,
         sortOrder: String?,
-    ): Cursor? = null
+    ): Cursor? {
+        // The system installer reads DISPLAY_NAME/SIZE before opening the
+        // APK; a null cursor aborts the install with no UI. (This bit the
+        // old ACTION_VIEW path: intent fired, nothing appeared.)
+        if (matcher.match(uri) != APK) return null
+        val apk = File(context?.filesDir, "updates/spotify-dx-update.apk")
+        if (!apk.exists()) return null
+        return MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), 1)
+            .apply { addRow(arrayOf(apk.name, apk.length())) }
+    }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
 

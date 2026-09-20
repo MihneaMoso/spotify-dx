@@ -40,10 +40,9 @@ must be traceable back to a section there.
 > force-stop byte-identical (`files/settings.json`, user values intact);
 > update check runs at boot against the live GitHub API ("Up to date
 > (v0.1.10)"); profile/avatar/engine/privacy screens live. The
-> download→stage→apply round-trip is **blocked on the release pipeline**:
-> `release.yml` still publishes the legacy `dx build` scaffold APK (per-run
-> keystore, wrong app) — cutover (Phase 7) must publish the owned Kotlin APK
-> with a stable signing key before apply can be tested.
+> download→stage→apply round-trip was **blocked on the release pipeline
+> at the time; resolved by the Phase 7 cutover below** (owned Kotlin APK
+> with a stable signing key).
 >
 > Phase 7 CI cutover done (2026-09-09, unreleased): `android-apk` builds the
 > owned Kotlin app (`build-kotlin.sh release` + bridge-compat gate),

@@ -112,10 +112,6 @@
   --on-accent: #ffffff;
   --on-accent-ink: #000000;
 
-  /* Premium badge leftovers (Settings page restyles these in Phase 3) */
-  --spotify-green: #1db954;
-  --toast-premium-bg: #2d2d2d;
-
   /* ── RGB triplets (drive every alpha tint) ── */
   --accent-rgb: 59 130 246;         /* --blue        */
   --accent-deep-rgb: 37 99 235;     /* --blue-3      */
@@ -499,7 +495,9 @@ img { display: block; max-width: 100%; }
   border: 1px solid var(--border);
   background: rgb(var(--tint-rgb) /0.06);
   color: var(--muted);
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
@@ -888,15 +886,6 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.2); }
   padding: 6px 2px 12px;
 }
 
-.result-group-title {
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  color: var(--muted-2);
-  margin-bottom: 12px;
-}
-
 /* ── 9. Media cards ────────────────────────────────────────────────────────── */
 .media-card {
   backdrop-filter: blur(8px);
@@ -988,6 +977,8 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.2); }
   grid-template-columns: 50px minmax(0, 1fr) auto;
 }
 .track-head-index { text-align: right; width: 20px; }
+.track-head-art { width: 50px; }
+.track-head-title { text-align: left; }
 .track-head-duration { text-align: right; }
 
 .track-row {
@@ -1079,14 +1070,6 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.2); }
   font-size: 14px;
   margin-top: 10px;
 }
-.detail-actions { display: flex; gap: 12px; margin-top: 20px; }
-.detail-section h2 {
-  font-size: 19px;
-  font-weight: 750;
-  letter-spacing: -0.3px;
-  margin-bottom: 14px;
-}
-.detail-header-bar { display: flex; gap: 10px; margin-bottom: 18px; }
 
 /* ── 12. Buttons ───────────────────────────────────────────────────────────── */
 button.primary {
@@ -1130,37 +1113,6 @@ button.ghost:hover {
 button.ghost:active { transform: scale(0.97); }
 
 /* ── 13. Login gate ────────────────────────────────────────────────────────── */
-.login-page {
-  height: 100%;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(ellipse 60% 45% at 18% 6%, rgb(var(--accent-rgb) /0.4), transparent 70%),
-    radial-gradient(ellipse 50% 40% at 88% 88%, rgb(var(--cyan-rgb) /0.22), transparent 65%),
-    radial-gradient(ellipse 40% 35% at 70% 12%, rgb(var(--accent-deep-rgb) /0.25), transparent 60%),
-    linear-gradient(180deg, var(--bg-2), var(--bg));
-  overflow: hidden;
-}
-
-.login-card {
-  width: min(420px, 90vw);
-  text-align: center;
-  padding: 48px 38px;
-  border-radius: var(--radius-lg);
-  background: var(--glass-login-card);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-2);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 22px;
-  animation: rise-in var(--t-slow) var(--ease-out);
-}
-@keyframes rise-in {
-  from { opacity: 0; transform: translateY(14px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 .login-brand .brand-mark {
   margin: 0 auto 18px;
   width: 62px; height: 62px;
@@ -1169,25 +1121,6 @@ button.ghost:active { transform: scale(0.97); }
 }
 .login-brand h1 { font-size: 27px; font-weight: 800; letter-spacing: -0.6px; }
 .login-brand p { color: var(--muted); margin-top: 10px; font-size: 13.5px; }
-
-button.login-button {
-  padding: 15px 40px;
-  font-size: 15px;
-}
-
-.login-note {
-  color: var(--muted);
-  font-size: 13px;
-  min-height: 20px;
-  max-width: 34ch;
-  line-height: 1.55;
-}
-.login-terms {
-  color: var(--muted-2);
-  font-size: 11px;
-  line-height: 1.6;
-  max-width: 36ch;
-}
 
 /* ── 14. Toast / spinners / empty / error states ───────────────────────────── */
 .toast {
@@ -1404,17 +1337,6 @@ button.login-button {
   background: var(--blue-2);
 }
 
-/* Premium-required toast styling */
-.toast-premium {
-  background: var(--toast-premium-bg);
-  border-left: 4px solid var(--spotify-green);
-  color: var(--text);
-  padding: 0.75rem 1rem;
-  border-radius: 4px;
-  font-size: 0.875rem;
-}
-
-
 /* ── 17. Phase-3 page primitives ─────────────────────────────────────────── */
 .section-header { display: flex; align-items: baseline; gap: 12px; margin: 26px 0 14px; }
 .section-header h2 { font-size: 19px; font-weight: 750; letter-spacing: -0.3px; }
@@ -1427,38 +1349,8 @@ button.login-button {
   -webkit-backdrop-filter: blur(8px);
   will-change: backdrop-filter; scroll-snap-align: start; }
 
-/* Jump-back-in tiles */
-.tile-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 10px;
-  margin-bottom: 28px;
-}
-.tile {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px;
-  border-radius: var(--radius);
-  background: rgb(var(--tint-rgb) /0.08);
-  text-align: left;
-  min-width: 0;
-  transition: background var(--t-fast) ease, transform var(--t-fast) var(--ease-out);
-}
-.tile:hover { background: rgb(var(--tint-rgb) /0.16); transform: translateY(-2px); }
-.tile-art {
-  width: 52px; height: 52px;
-  border-radius: 8px;
-  object-fit: cover;
-  flex-shrink: 0;
-  box-shadow: var(--shadow-1);
-}
-.placeholder-tile { background: var(--surface-3); }
-.tile-text { display: flex; flex-direction: column; min-width: 0; }
-.tile-title {
-  font-weight: 650; font-size: 13.5px; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+/* Jump-back-in tiles (only .tile-sub survives — used inside the search
+   top-cards; the rest of the family has no markup behind it). */
 .tile-sub {
   font-size: 12px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1565,20 +1457,6 @@ button.login-button {
   gap: 14px;
   margin-bottom: 24px;
 }
-.lib-row {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  color: var(--text);
-  text-align: left;
-  transition: background var(--t-fast) ease;
-}
-.lib-row:hover { background: rgb(var(--tint-rgb) /0.08); }
-.lib-row-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Queue page */
 .queue-header { display: flex; align-items: center; justify-content: space-between; }

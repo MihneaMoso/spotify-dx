@@ -36,12 +36,24 @@ pub const MEMORY_CAP: usize = 256;
 /// Disk snapshots older than this are ignored entirely.
 pub const SWR_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Clone-able failure summary handed to coalesced followers.
+/// Clone-able failure summary handed to coalesced followers. Mirrors every
+/// [`AppError`] variant that can cross this boundary (payloads as strings —
+/// `reqwest`/`anyhow` errors aren't `Clone`), so followers branch on the
+/// same types the leader saw instead of a degraded generic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Fail {
     RateLimited,
-    Auth,
-    AdBlock,
+    Auth(String),
+    SessionExpired,
+    AdBlock(String),
+    Playback(String),
+    PremiumRequired(String),
+    NoBridgeSession,
+    Forbidden(String),
+    Network(String),
+    Spotify(String),
+    #[cfg(feature = "desktop")]
+    Webview(String),
     Generic(String),
 }
 
@@ -49,9 +61,18 @@ impl From<&AppError> for Fail {
     fn from(err: &AppError) -> Self {
         match err {
             AppError::RateLimited => Fail::RateLimited,
-            AppError::Auth(_) | AppError::SessionExpired => Fail::Auth,
-            AppError::AdBlock(_) => Fail::AdBlock,
-            other => Fail::Generic(other.to_string()),
+            AppError::Auth(m) => Fail::Auth(m.clone()),
+            AppError::SessionExpired => Fail::SessionExpired,
+            AppError::AdBlock(m) => Fail::AdBlock(m.clone()),
+            AppError::Playback(m) => Fail::Playback(m.clone()),
+            AppError::PremiumRequired(m) => Fail::PremiumRequired(m.clone()),
+            AppError::NoBridgeSession => Fail::NoBridgeSession,
+            AppError::Forbidden(m) => Fail::Forbidden(m.clone()),
+            AppError::Network(e) => Fail::Network(e.to_string()),
+            AppError::Spotify(m) => Fail::Spotify(m.clone()),
+            #[cfg(feature = "desktop")]
+            AppError::Webview(m) => Fail::Webview(m.clone()),
+            AppError::Other(e) => Fail::Generic(e.to_string()),
         }
     }
 }
@@ -60,9 +81,18 @@ impl Fail {
     fn into_app_error(self) -> AppError {
         match self {
             Fail::RateLimited => AppError::RateLimited,
-            Fail::Auth => AppError::Auth("session revoked during coalesced fetch".into()),
-            Fail::AdBlock => AppError::AdBlock("coalesced request".into()),
-            Fail::Generic(msg) => AppError::Spotify(msg),
+            Fail::Auth(m) => AppError::Auth(m),
+            Fail::SessionExpired => AppError::SessionExpired,
+            Fail::AdBlock(m) => AppError::AdBlock(m),
+            Fail::Playback(m) => AppError::Playback(m),
+            Fail::PremiumRequired(m) => AppError::PremiumRequired(m),
+            Fail::NoBridgeSession => AppError::NoBridgeSession,
+            Fail::Forbidden(m) => AppError::Forbidden(m),
+            Fail::Network(m) => AppError::Spotify(m),
+            Fail::Spotify(m) => AppError::Spotify(m),
+            #[cfg(feature = "desktop")]
+            Fail::Webview(m) => AppError::Webview(m),
+            Fail::Generic(m) => AppError::Spotify(m),
         }
     }
 }
@@ -288,6 +318,12 @@ impl Store {
             },
         );
         let mut order = self.inner.order.lock();
+        // Dedupe: re-caching a live key must refresh its slot, not append a
+        // second order entry — duplicates shrink the effective cap and make
+        // eviction remove the still-live key (same class as streaming/cache).
+        if let Some(pos) = order.iter().position(|k| k == key) {
+            order.remove(pos);
+        }
         order.push_back(key.to_owned());
         while order.len() > MEMORY_CAP {
             if let Some(oldest) = order.pop_front() {

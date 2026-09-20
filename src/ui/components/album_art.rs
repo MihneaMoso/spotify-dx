@@ -75,20 +75,42 @@ enum Artwork {
     },
 }
 
+/// Artwork URL pick shared by rows and the player bar: first image at
+/// least `min_width` wide, else the first image, else "". (The now-playing
+/// column deliberately uses `large_art_url` — max width — instead.)
+pub fn pick_artwork(images: &[crate::spotify::models::SpotifyImage], min_width: u32) -> String {
+    images
+        .iter()
+        .find(|img| img.width.is_some() && img.width.unwrap_or(0) >= min_width)
+        .or_else(|| images.first())
+        .map(|img| img.url.clone())
+        .unwrap_or_default()
+}
+
 /// Fetch artwork bytes over the ad-filtered client and hand back a data URI.
-/// Runs entirely on the UI thread (inside a dioxus `spawn`), so it never
-/// blocks rendering; while it loads we show a deterministic colored div.
 fn use_artwork(url: String) -> Signal<Artwork> {
     let mut state = use_signal(Artwork::default);
+    // Reactive copy of the prop: a plain String capture is not reactive,
+    // so the effect below ran once on mount and recycled rows kept stale
+    // art when reused with a new url.
+    let mut url_sig = use_signal(|| url.clone());
+    if url_sig.peek().as_str() != url.as_str() {
+        url_sig.set(url.clone());
+    }
     use_effect(move || {
-        if url.is_empty() {
+        let current = url_sig.read().clone();
+        if current.is_empty() {
+            state.set(Artwork::default());
             return;
         }
-        let url = url.clone();
         dioxus::prelude::spawn(async move {
-            if let Ok(bytes) = load_image_bytes(&url).await {
+            if let Ok(bytes) = load_image_bytes(&current).await {
                 let (blurred, full) = encode_blur_and_full(&bytes);
-                state.set(Artwork::Ready { blurred, full });
+                // Stale guard: a slower earlier fetch must not overwrite a
+                // newer URL's art.
+                if url_sig.peek().as_str() == current.as_str() {
+                    state.set(Artwork::Ready { blurred, full });
+                }
             }
         });
     });
@@ -175,6 +197,5 @@ pub fn AlbumArt(url: String, seed: String, class: Option<String>) -> Element {
             }
         }
     };
-    let _ = art;
     state
 }

@@ -18,7 +18,7 @@ pub fn MediaCard(
         None => "media-card".to_string(),
     };
     rsx! {
-        div {
+        button {
             class: "{root_class}",
             onclick: move |_| onselect.call(()),
             AlbumArt { url: image_url, seed: seed, class: Some("media-card-art".to_string()) }

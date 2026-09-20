@@ -38,6 +38,22 @@ pub fn launch_track(track: crate::spotify::models::Track) {
     });
 }
 
+/// Play a random track from a pool (shuffle buttons). Single implementation
+/// for every page (nanos-modulo is borrowed-time uniform — good enough for a
+/// shuffle pick without pulling arng dependency for one call site family).
+pub fn launch_random(pool: Vec<crate::spotify::models::Track>) {
+    if pool.is_empty() {
+        return;
+    }
+    // Nanos low bits are the cheapest nondeterministic seed available
+    // without a dependency; modulo bias on small pools is inaudible.
+    let i = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    launch_track(pool[i % pool.len()].clone());
+}
+
 fn report_playback_err(err: &AppError) {
     if matches!(err, AppError::PremiumRequired(_)) {
         crate::state::publish_error(AppError::PremiumRequired(

@@ -9,10 +9,15 @@ use dioxus::prelude::*;
 pub fn Login() -> Element {
     let mut error = use_signal(String::new);
     let mut started = use_signal(|| false);
+    // Retry generation: the kick effect depends on it, so "Try again"
+    // actually re-arms the flow (clearing the message alone retriggered
+    // nothing — the effect only subscribed to AUTH_STATE/started).
+    let mut attempt = use_signal(|| 0u32);
 
     // Kick the login flow once. `started` gates re-entry so a slow window never
     // gets opened twice; retry resets it.
     use_effect(move || {
+        let _ = *attempt.read();
         if AUTH_STATE.read().is_authenticated || *started.read() {
             return;
         }
@@ -36,7 +41,10 @@ pub fn Login() -> Element {
                     p { class: "login-error", "Couldn't start Spotify login: {error}" }
                     button {
                         class: "login-retry",
-                        onclick: move |_| error.set(String::new()),
+                        onclick: move |_| {
+                            error.set(String::new());
+                            attempt.set(attempt() + 1);
+                        },
                         "Try again"
                     }
                 }

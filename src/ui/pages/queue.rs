@@ -12,10 +12,27 @@ pub fn Queue() -> Element {
     let state = PLAYER_STATE.read();
     let current = state.track.clone();
     let queue = state.queue.clone();
-    let position = format_duration(state.position_ms);
-    let duration = format_duration(state.duration_ms);
 
     let has_queue = !queue.is_empty();
+
+    // Per-id occurrence counts so duplicate queue entries still key
+    // uniquely (stable identity without the row index).
+    let mut occurrences: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let rows: Vec<(String, u32, crate::spotify::models::Track)> = queue
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let n = occurrences.entry(t.id.clone()).or_insert(0);
+            *n += 1;
+            let key = if *n > 1 {
+                format!("{}-{}", t.id, n)
+            } else {
+                t.id.clone()
+            };
+            (key, (i + 1) as u32, t)
+        })
+        .collect();
 
     rsx! {
         div { class: "page detail",
@@ -35,7 +52,7 @@ pub fn Queue() -> Element {
                 div { class: "queue-now",
                     span { class: "queue-now-title", "{track.name}" }
                     span { class: "np-artists", "{state.subtitle()}" }
-                    span { class: "np-position", "{position} / {duration}" }
+                    QueuePosition {}
                 }
             }
 
@@ -44,11 +61,14 @@ pub fn Queue() -> Element {
             }
             if has_queue {
                 div { class: "track-list",
-                    for (i, t) in queue.into_iter().enumerate() {
+                    for (key, n, t) in rows {
                         TrackRow {
-                            key: "{t.id}-{i}",
+                            // Stable identity (id, not index) with numbered
+                            // display kept: edits move rows instead of
+                            // remounting everything below them.
+                            key: "{key}",
                             track: t,
-                            index: Some((i + 1) as u32),
+                            index: Some(n),
                             onplay: crate::player::launch_track,
                         }
                     }
@@ -59,5 +79,17 @@ pub fn Queue() -> Element {
                 }
             }
         }
+    }
+}
+
+/// Live position readout, isolated so the 4Hz ticks re-render only this
+/// text node instead of the whole queue page (rows keep stable keys and
+/// bail out of diffing on equal props).
+#[component]
+fn QueuePosition() -> Element {
+    let position = format_duration(PLAYER_STATE.read().position_ms);
+    let duration = format_duration(PLAYER_STATE.read().duration_ms);
+    rsx! {
+        span { class: "np-position", "{position} / {duration}" }
     }
 }

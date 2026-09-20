@@ -1,103 +1,30 @@
-//! TIDAL provider: resolves tracks via community TIDAL proxy instances.
+//! TIDAL provider — PARKED, stub only.
 //!
-//! Uses a live uptime list (`tidal-uptime.geeked.wtf`) merged in front of a
-//! static fallback pool. The uptime list is cached for ~5 minutes.
+//! `is_available()` is unconditionally false: Odesli (song.link) — the only
+//! Spotify→TIDAL ID mapper — was sunset, and the community proxy instances
+//! return 404. A `tidal_token` settings field exists, but a
+//! direct-search+stream revival needs real credentials to verify against
+//! (endpoint shapes, token type, manifest parsing) — deliberately NOT
+//! shipped blind.
 //!
-//! Resolution flow:
-//! 1. Odesli gives us a TIDAL URL like `https://tidal.com/browse/12345`.
-//! 2. We extract the TIDAL track ID from that URL.
-//! 3. We POST to a TIDAL proxy endpoint: `{instance}/api/dl/{track_id}`.
-//! 4. The proxy returns a direct stream URL (FLAC/MP3).
-
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+//! What was here (uptime-list pool, instance probing, proxy resolve) was
+//! removed as untestable live machinery; it lives in git history. Revival
+//! notes: map IDs without Odesli (direct search with the token), verify a
+//! manifest/stream URL shape against a real account, then re-add resolve +
+//! health gating behind the existing `is_available` switch. The chain
+//! already skips parked providers without network calls.
+//!
+//! Kept: the pure response helpers below (unit-tested, reusable on revival).
 
 use async_trait::async_trait;
 
-use crate::streaming::odesli;
-use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
+#[cfg(test)]
+use crate::streaming::provider::AudioFormat;
+use crate::streaming::provider::{Provider, Resolution, TrackQuery};
 
-/// Static fallback TIDAL proxy instances (used when the uptime list is stale).
-const FALLBACK_INSTANCES: &[&str] = &[
-    "https://monochrome.nyc", // Spotufi's primary
-    "https://monochrome.us.to",
-    "https://quack.wtf",
-];
-
-/// Uptime list URL.
-const UPTIME_URL: &str = "https://tidal-uptime.geeked.wtf";
-
-/// How long to cache the uptime list.
-const UPTIME_TTL: Duration = Duration::from_secs(5 * 60);
-
-struct UptimeState {
-    instances: Vec<String>,
-    fetched_at: Instant,
-}
-
-static UPTIME: OnceLock<std::sync::Mutex<UptimeState>> = OnceLock::new();
-
-fn uptime_state() -> &'static std::sync::Mutex<UptimeState> {
-    UPTIME.get_or_init(|| {
-        std::sync::Mutex::new(UptimeState {
-            instances: FALLBACK_INSTANCES.iter().map(|s| s.to_string()).collect(),
-            fetched_at: Instant::now() - UPTIME_TTL * 2, // force first fetch
-        })
-    })
-}
-
-/// Refresh the live uptime list in the background. Non-blocking.
-/// NOTE: currently dead code (provider parked — `is_available` is false
-/// and nothing calls this). The bounds below exist so a future revival
-/// can't hang or fan out unboundedly: 10s fetch timeout, instance cap.
-pub async fn refresh_uptime() {
-    let client = super::common::http_client("spotify-dx-uptime/1.0", 10);
-    let Ok(resp) = client.get(UPTIME_URL).send().await else {
-        return;
-    };
-    let Ok(body) = resp.text().await else {
-        return;
-    };
-    // The uptime list is newline-separated base URLs of healthy instances.
-    // Cap: the resolver tries instances in order with per-try timeouts, so
-    // dozens of stale entries mean minutes of doomed probing.
-    const MAX_UPTIME_INSTANCES: usize = 12;
-    let mut instances: Vec<String> = body
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| l.starts_with("http"))
-        .take(MAX_UPTIME_INSTANCES)
-        .collect();
-    // Always include fallbacks at the end.
-    for fb in FALLBACK_INSTANCES {
-        let fb_str = fb.to_string();
-        if !instances.contains(&fb_str) {
-            instances.push(fb_str);
-        }
-    }
-    if instances.is_empty() {
-        return;
-    }
-    if let Ok(mut state) = uptime_state().lock() {
-        state.instances = instances;
-        state.fetched_at = Instant::now();
-    }
-}
-
-fn get_instances() -> Vec<String> {
-    let mut instances = Vec::new();
-    if let Ok(state) = uptime_state().lock() {
-        instances = state.instances.clone();
-    }
-    if instances.is_empty() {
-        instances = FALLBACK_INSTANCES.iter().map(|s| s.to_string()).collect();
-    }
-    instances
-}
-
-pub struct TidalProvider {
-    client: reqwest::Client,
-}
+/// Parked provider handle: zero state (no client, no pools) since nothing
+/// here touches the network.
+pub struct TidalProvider;
 
 impl Default for TidalProvider {
     fn default() -> Self {
@@ -107,14 +34,7 @@ impl Default for TidalProvider {
 
 impl TidalProvider {
     pub fn new() -> Self {
-        Self {
-            client: {
-                let builder = reqwest::Client::builder();
-                #[cfg(not(target_arch = "wasm32"))]
-                let builder = builder.timeout(Duration::from_secs(10));
-                builder.build().unwrap_or_default()
-            },
-        }
+        Self
     }
 }
 
@@ -135,59 +55,17 @@ impl Provider for TidalProvider {
         false
     }
 
-    async fn resolve(&self, query: &TrackQuery) -> Resolution {
-        // Step 1: Get TIDAL URL from Odesli.
-        let odesli_ids = match odesli::resolve(&query.spotify_id).await {
-            Some(ids) => ids,
-            None => return Resolution::Error("odesli mapping failed".into()),
-        };
-        let tidal_url = match odesli_ids.tidal_url {
-            Some(url) => url,
-            None => return Resolution::NotFound,
-        };
-        let track_id = match odesli::extract_id_from_url(&tidal_url) {
-            Some(id) => id,
-            None => return Resolution::Error("failed to extract TIDAL track ID".into()),
-        };
-
-        // Step 2: Try instances in order.
-        let instances = get_instances();
-        let mut last_error = String::new();
-        for instance in &instances {
-            let api_url = format!("{}/api/dl/{}", instance.trim_end_matches('/'), track_id);
-            match self.client.get(&api_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(body) = resp.text().await {
-                        // The response may be a direct URL or JSON with a URL field.
-                        let url = extract_url_from_response(&body);
-                        if !url.is_empty() {
-                            let format = guess_format(&url);
-                            return Resolution::Success {
-                                url,
-                                format,
-                                quality: Quality::Lossless,
-                            };
-                        }
-                    }
-                }
-                Ok(resp) if resp.status().as_u16() == 503 => {
-                    return Resolution::Cooldown {
-                        retry_after_secs: 60,
-                    };
-                }
-                Ok(resp) => {
-                    last_error = format!("HTTP {} from {}", resp.status(), instance);
-                }
-                Err(e) => {
-                    last_error = format!("{}: {}", instance, e);
-                }
-            }
-        }
-        Resolution::Error(format!("all TIDAL instances failed: {last_error}"))
+    async fn resolve(&self, _query: &TrackQuery) -> Resolution {
+        // Parked: no ID mapper, no verified stream shape. Anything here
+        // would be untestable guesswork against dead endpoints.
+        Resolution::NotFound
     }
 }
 
-/// Extract a URL from the proxy response (may be plain text or JSON).
+/// Pure response helpers, kept unit-tested for a future revival (they
+/// exercise no network). Non-test builds don't reference them — that is
+/// intentional while the provider is parked, not dead code to "clean up".
+#[cfg(test)]
 fn extract_url_from_response(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.starts_with("http") {
@@ -202,7 +80,9 @@ fn extract_url_from_response(body: &str) -> String {
     String::new()
 }
 
-/// Guess the audio format from a URL's file extension.
+/// Guess the audio format from a URL's file extension (test-only while
+/// parked — see above).
+#[cfg(test)]
 fn guess_format(url: &str) -> AudioFormat {
     let lower = url.to_lowercase();
     if lower.contains(".flac") {

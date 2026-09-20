@@ -14,6 +14,10 @@ use crate::ui::router::Route;
 pub fn TopBar() -> Element {
     let nav = navigator();
     let mut query = use_signal(String::new);
+    // Menu open-state lives in a signal (not native <details> behavior)
+    // so route pushes can close it — the open menu used to carry over
+    // onto the new page since the shell never remounts.
+    let mut menu_open = use_signal(|| false);
 
     let display_name = AUTH_STATE
         .read()
@@ -63,7 +67,14 @@ pub fn TopBar() -> Element {
             }
 
             details { class: "avatar-chip",
+                open: *menu_open.read(),
                 summary {
+                    onclick: move |evt| {
+                        // Drive the toggle from the signal (native toggle
+                        // would desync from it).
+                        evt.prevent_default();
+                        menu_open.set(!menu_open());
+                    },
                     if let Some(uri) = avatar_uri {
                         img { class: "avatar-img", src: uri, alt: "" }
                     } else {
@@ -74,14 +85,20 @@ pub fn TopBar() -> Element {
                 div { class: "avatar-menu",
                     button {
                         class: "menu-item",
-                        onclick: move |_| { nav.push(Route::Settings); },
+                        onclick: move |_| {
+                            menu_open.set(false);
+                            nav.push(Route::Settings);
+                        },
                         {settings_gear(16)}
                         "Settings"
                     }
                     div { class: "menu-sep" }
                     button {
                         class: "menu-item",
-                        onclick: move |_| crate::auth::logout(),
+                        onclick: move |_| {
+                            menu_open.set(false);
+                            crate::auth::logout();
+                        },
                         "Log out"
                     }
                 }

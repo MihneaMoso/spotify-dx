@@ -7,45 +7,19 @@ TARGET="${ARCH:-aarch64-linux-android}"
 LINK="${1:---check}"
 PKG="com.spotifydx.app"
 
-NDK_BIN=""
-for cand in "${ANDROID_NDK_HOME:-}" "${NDK_HOME:-}" "${ANDROID_HOME:-}/ndk/"*/ "${ANDROID_SDK_ROOT:-}/ndk/"*/; do
-  [ -z "$cand" ] && continue
-  b="$cand/toolchains/llvm/prebuilt/linux-x86_64/bin"
-  [ -x "$b/clang" ] && NDK_BIN="$b" && break
-done
-if [ -z "$NDK_BIN" ]; then
-  echo "Android NDK toolchain not found (set ANDROID_NDK_HOME)." >&2
-  exit 1
-fi
+# NDK toolchain (shared helper — was pasted here and in build-kotlin.sh).
+# shellcheck disable=SC1091
+source "$(dirname "$0")/android-ndk.sh" "$TARGET"
 
-case "$TARGET" in
-  # Keep local verification aligned with the app's min_sdk_version (30).
-  aarch64-linux-android) TRIPLE="aarch64-linux-android30" ;;
-  *) echo "Unsupported target: $TARGET" >&2; exit 1 ;;
-esac
-
-workdir="$(mktemp -d)"
-trap 'rm -rf "$workdir"' EXIT
-cat > "$workdir/$TARGET-clang" <<EOF
-#!/bin/bash
-exec "$NDK_BIN/clang" --target=$TRIPLE "\$@"
-EOF
-chmod +x "$workdir/$TARGET-clang"
-
-export PATH="$workdir:$PATH"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$workdir/$TARGET-clang"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_CC="$workdir/$TARGET-clang"
-cat > "$workdir/$TARGET-ar" <<EOF
-#!/bin/bash
-exec "$NDK_BIN/llvm-ar" "\$@"
-EOF
-chmod +x "$workdir/$TARGET-ar"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$workdir/$TARGET-ar"
-
-echo "Verifying $TARGET ..."
+echo "Verifying $TARGET (headless core + mobile renderer) ..."
+# Both feature sets: the shipped Kotlin .so builds headless
+# (--no-default-features) while the legacy renderer path needs mobile.
+# Checking only one left the other silently broken before.
 if [ "$LINK" = "--build" ]; then
+  cargo build --no-default-features --target "$TARGET"
   cargo build --no-default-features --features mobile --target "$TARGET"
 else
+  cargo check --no-default-features --target "$TARGET"
   cargo check --no-default-features --features mobile --target "$TARGET"
 fi
 echo "Android ($TARGET) cross-build OK."

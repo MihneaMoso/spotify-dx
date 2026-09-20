@@ -9,13 +9,16 @@ pub fn Toast() -> Element {
     // count stays stable. Re-runs whenever an error appears (dioxus tracks
     // the signal reads inside the effect).
     use_effect(move || {
-        let Some(seen) = APP_ERROR.read().as_ref().map(|err| err.to_string()) else {
+        let Some(seen) = APP_ERROR.read().as_ref().map(|stamped| stamped.seq) else {
             return;
         };
         dioxus::prelude::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if let Some(err) = APP_ERROR.peek().as_ref() {
-                if err.to_string() == seen {
+            if let Some(stamped) = APP_ERROR.peek().as_ref() {
+                // Sequence identity: a repeated identical error is a new
+                // emission with a new timer — the old timer must not clear
+                // it early.
+                if stamped.seq == seen {
                     APP_ERROR.write().take();
                 }
             }
@@ -23,10 +26,10 @@ pub fn Toast() -> Element {
     });
 
     let snapshot = APP_ERROR.read();
-    let Some(message) = snapshot.as_ref() else {
+    let Some(stamped) = snapshot.as_ref() else {
         return VNode::empty();
     };
-    let message = message.to_string();
+    let message = stamped.err.to_string();
 
     rsx! {
         div { class: "toast",

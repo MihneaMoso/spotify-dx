@@ -22,6 +22,11 @@ pub fn Artist(id: String) -> Element {
         .cloned();
     let is_err = matches!(resource.read().as_ref(), Some(Err(_)));
 
+    // Hoisted above the early return: hooks must run identically on every
+    // render — a signal below the loading/error return changes the hook
+    // count on transition.
+    let mut expanded = use_signal(|| false);
+
     let Some(page) = loaded else {
         return if is_err {
             rsx! {
@@ -42,11 +47,15 @@ pub fn Artist(id: String) -> Element {
     let albums_owned = page.albums;
     let related_owned = page.related;
 
-    let mut expanded = use_signal(|| false);
     let name = artist.name.clone();
     let followers = artist.followers.total;
+    // No dangling separator when the API omits genres.
     let genres = artist.genres.join(" · ");
-    let meta = format!("{} followers · {}", format_count(followers), genres);
+    let meta = if genres.is_empty() {
+        format!("{} followers", format_count(followers))
+    } else {
+        format!("{} followers · {}", format_count(followers), genres)
+    };
     let art_url = artist
         .images
         .first()
@@ -93,13 +102,7 @@ pub fn Artist(id: String) -> Element {
                     }
                 },
                 onshuffle: move |_| {
-                    if !shuffle_pool.is_empty() {
-                        let i = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() as usize)
-                            .unwrap_or(0);
-                        crate::player::launch_track(shuffle_pool[i % shuffle_pool.len()].clone());
-                    }
+                    crate::player::launch_random(shuffle_pool.clone());
                 },
             }
 

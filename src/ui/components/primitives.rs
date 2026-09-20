@@ -82,6 +82,12 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
     let total = tracks.len();
     let shown = (*visible.peek()).min(total);
 
+    // Stable identity keys (never the row index): inserts/removes move
+    // rows instead of remounting every row below the edit — each remount
+    // re-entered the artwork fetch/encode path. Genuine duplicate ids in
+    // one list get a per-id occurrence disambiguator.
+    let mut occurrences: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let rows: Vec<Element> = tracks
         .iter()
         .take(shown)
@@ -89,9 +95,16 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
         .map(|(i, t)| {
             let index = numbered.then_some(i as u32 + 1);
             let track = t.clone();
+            let n = occurrences.entry(track.id.clone()).or_insert(0);
+            *n += 1;
+            let key = if *n > 1 {
+                format!("{}-{}", track.id, n)
+            } else {
+                track.id.clone()
+            };
             rsx! {
                 TrackRow {
-                    key: "{track.id}-{i}",
+                    key: "{key}",
                     track: track,
                     index: index,
                     onplay: crate::player::launch_track,

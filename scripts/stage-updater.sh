@@ -26,8 +26,12 @@ fi
 
 PACKAGE_DIR="$APP/kotlin/com/spotifydx/app"
 mkdir -p "$PACKAGE_DIR"
-cp -n "$SRC/kotlin/com/spotifydx/app/SpotifyDxUpdater.kt" "$PACKAGE_DIR/SpotifyDxUpdater.kt"
-cp -n "$SRC/kotlin/com/spotifydx/app/SpotifyDxFileProvider.kt" "$PACKAGE_DIR/SpotifyDxFileProvider.kt"
+# Overwrite (not no-clobber): android/updater/ mirrors the owned app sources
+# verbatim (see header), so a stale previously-staged copy must refresh —
+# `cp -n` once shipped the pre-Session-API updater here indefinitely.
+cp -f "$SRC/kotlin/com/spotifydx/app/SpotifyDxUpdater.kt" "$PACKAGE_DIR/SpotifyDxUpdater.kt"
+cp -f "$SRC/kotlin/com/spotifydx/app/SpotifyDxFileProvider.kt" "$PACKAGE_DIR/SpotifyDxFileProvider.kt"
+cp -f "$SRC/kotlin/com/spotifydx/app/InstallResultReceiver.kt" "$PACKAGE_DIR/InstallResultReceiver.kt"
 
 MANIFEST="$APP/AndroidManifest.xml"
 python3 - "$MANIFEST" <<'PY'
@@ -37,6 +41,11 @@ with open(path) as f:
     xml = f.read()
 
 MARK = "<!-- spotify-dx-updater:provider -->"
+PERM = '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />'
+if PERM not in xml:
+    # Self-update installs APKs: without this permission the install intent
+    # dies silently on Android 8+ (the exact failure the owned app fixed).
+    xml = xml.replace("<application", PERM + "\n    <application", 1)
 if MARK not in xml:
     provider = (
         "        " + MARK + "\n"
@@ -44,6 +53,12 @@ if MARK not in xml:
         '            android:authorities="com.spotifydx.app.updates"\n'
         '            android:exported="false"\n'
         '            android:grantUriPermissions="true" />\n'
+        '        <receiver android:name="com.spotifydx.app.InstallResultReceiver"\n'
+        '            android:exported="false">\n'
+        '            <intent-filter>\n'
+        '                <action android:name="com.spotifydx.app.INSTALL_STATUS" />\n'
+        '            </intent-filter>\n'
+        '        </receiver>\n'
     )
     xml = xml.replace("</application>", provider + "    </application>", 1)
 

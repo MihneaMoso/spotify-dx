@@ -59,7 +59,11 @@ async fn graphql_post(
         return Err(AppError::RateLimited);
     }
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        crate::auth::logout();
+        // Typed revocation, no side effects: the data layer must not log
+        // the user out as a hidden global mutation (a transient or
+        // proxy-injected 401 used to wipe credentials process-wide).
+        // Revocation converges through the session owner instead — the
+        // next ensure_token refresh fails → SessionExpired → gate.
         return Err(AppError::Auth("session revoked".into()));
     }
     if status == reqwest::StatusCode::PRECONDITION_FAILED {
@@ -228,18 +232,7 @@ pub async fn gql_user_playlists(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<crate::spotify::models::Playlist>, AppError> {
-    let vars = json!({
-        "filters": ["Playlists"],
-        "order": null,
-        "textFilter": "",
-        "features": ["LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS"],
-        "limit": limit,
-        "offset": offset,
-        "flatten": true,
-        "expandedFolders": [],
-        "folderUri": null,
-        "includeFoldersWhenFlattening": false
-    });
+    let vars = library_v3_vars("Playlists", limit, offset);
 
     let data = graphql_post("libraryV3", hashes::LIBRARY_V3, vars).await?;
     let library = &data["me"]["libraryV3"];
@@ -282,7 +275,7 @@ pub async fn gql_user_playlists(
 pub async fn gql_user_liked_tracks(
     limit: u32,
     offset: u32,
-) -> Result<Vec<crate::spotify::models::Track>, AppError> {
+) -> Result<(Vec<crate::spotify::models::Track>, u32), AppError> {
     let vars = json!({ "offset": offset, "limit": limit });
     let data = graphql_post("fetchLibraryTracks", hashes::FETCH_LIBRARY_TRACKS, vars).await?;
     let tracks_data = &data["me"]["library"]["tracks"];
@@ -298,7 +291,14 @@ pub async fn gql_user_liked_tracks(
             }
         }
     }
-    Ok(tracks)
+    // Real library size for pagination (Paged.total). Without totalCount the
+    // honest floor is offset+page length — never the page length alone,
+    // which used to end pagination after page 0.
+    let total = tracks_data["totalCount"]
+        .as_u64()
+        .map(|t| t as u32)
+        .unwrap_or_else(|| offset.saturating_add(tracks.len() as u32));
+    Ok((tracks, total))
 }
 
 fn parse_gql_album(
@@ -335,8 +335,12 @@ fn parse_gql_album(
 fn album_release_date(data: &Value) -> String {
     let d = &data["date"];
     if let Some(iso) = d["isoString"].as_str() {
-        if !iso.is_empty() {
-            return iso[..4].to_string();
+        // `get(..4)`: a short/malformed string must yield "" (or the
+        // structured fallback below), never an out-of-bounds panic.
+        if let Some(year) = iso.get(..4) {
+            if !year.is_empty() {
+                return year.to_string();
+            }
         }
     }
     let mut parts = Vec::new();
@@ -380,18 +384,7 @@ pub async fn gql_user_albums(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<crate::spotify::models::Album>, AppError> {
-    let vars = json!({
-        "filters": ["Albums"],
-        "order": null,
-        "textFilter": "",
-        "features": ["LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS"],
-        "limit": limit,
-        "offset": offset,
-        "flatten": true,
-        "expandedFolders": [],
-        "folderUri": null,
-        "includeFoldersWhenFlattening": false
-    });
+    let vars = library_v3_vars("Albums", limit, offset);
 
     let data = graphql_post("libraryV3", hashes::LIBRARY_V3, vars).await?;
     let library = &data["me"]["libraryV3"];
@@ -411,6 +404,23 @@ pub async fn gql_user_albums(
         }
     }
     Ok(albums)
+}
+
+/// Shared `libraryV3` variables (user playlists + saved albums): one builder
+/// so `features`/ordering can never diverge between the two calls.
+fn library_v3_vars(filter: &str, limit: u32, offset: u32) -> serde_json::Value {
+    json!({
+        "filters": [filter],
+        "order": null,
+        "textFilter": "",
+        "features": ["LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS"],
+        "limit": limit,
+        "offset": offset,
+        "flatten": true,
+        "expandedFolders": [],
+        "folderUri": null,
+        "includeFoldersWhenFlattening": false
+    })
 }
 
 /// One GQL track page carries at most this many items (server-side cap for
@@ -434,32 +444,84 @@ fn remaining_offsets(total: u32, limit: u32, max_pages: u32) -> Vec<u32> {
     offsets
 }
 
-/// Playlist detail + its tracks via `fetchPlaylist`. Populates `tracks.items`
-/// and `tracks.total`, so the detail page renders (and shows a real count).
+/// Shared full-collection fan-out (playlist + album detail): page 0 reveals
+/// the total, remaining offsets fan out concurrently (offsets are
+/// independent). One implementation so ordering, error (fail-whole-call,
+/// never silently gappy), and cap behavior can't drift between the two.
 ///
-/// Playlists hold up to 10,000 tracks but one response carries at most
-/// `PAGE_LIMIT`: page 0 reveals `totalCount`, then remaining offsets fan out
-/// concurrently (offsets are independent). A page failure fails the whole
-/// call — a silently gappy track list is worse than error + retry.
-pub async fn gql_playlist(id: &str) -> Result<crate::spotify::models::Playlist, AppError> {
-    let first = fetch_playlist_page(id, 0).await?;
-    let total = playlist_total(&first);
-    let mut tracks = parse_playlist_items(&first);
-
+/// Unknown totals (server omitted `totalCount`) don't truncate at one page:
+/// that leg falls back to sequential paging until a short page, bounded by
+/// `MAX_PAGES` — slower, but complete instead of a silent half list.
+async fn collect_paged_tracks<F, Fut, T, P, R>(
+    fetch_page: F,
+    total_of: T,
+    parse_items: P,
+    raw_len: R,
+) -> Result<(Value, u32, Vec<crate::spotify::models::Track>), AppError>
+where
+    F: Fn(u32) -> Fut + Sync,
+    Fut: std::future::Future<Output = Result<Value, AppError>> + Send,
+    T: Fn(&Value) -> Option<u32>,
+    P: Fn(&Value) -> Vec<crate::spotify::models::Track> + Sync,
+    R: Fn(&Value) -> usize,
+{
+    let first = fetch_page(0).await?;
+    let mut tracks = parse_items(&first);
+    let Some(total) = total_of(&first) else {
+        // Unknown total: page sequentially until a short page (bounded).
+        let mut offset = PAGE_LIMIT;
+        let mut total = raw_len(&first) as u32;
+        let mut last_full = raw_len(&first) >= PAGE_LIMIT as usize;
+        while last_full && offset / PAGE_LIMIT < MAX_PAGES {
+            let page = fetch_page(offset).await?;
+            let n = raw_len(&page);
+            tracks.extend(parse_items(&page));
+            total = total.saturating_add(n as u32);
+            last_full = n >= PAGE_LIMIT as usize;
+            offset = offset.saturating_add(PAGE_LIMIT);
+        }
+        return Ok((first, total, tracks));
+    };
     let offsets = remaining_offsets(total, PAGE_LIMIT, MAX_PAGES);
     if !offsets.is_empty() {
+        // Borrowed refs: each fan-out future shares (not moves) the
+        // closures, so one driver serves every collection type.
+        let fetch_ref = &fetch_page;
+        let parse_ref = &parse_items;
         let pages: Vec<Vec<crate::spotify::models::Track>> =
             futures::future::try_join_all(offsets.iter().map(|&off| async move {
-                let data = fetch_playlist_page(id, off).await?;
-                Ok::<_, AppError>(parse_playlist_items(&data))
+                let data = fetch_ref(off).await?;
+                Ok::<_, AppError>(parse_ref(&data))
             }))
             .await?;
         for page in pages {
             tracks.extend(page);
         }
     }
+    Ok((first, total, tracks))
+}
 
-    let playlist_data = &first;
+/// Playlist detail + its tracks via `fetchPlaylist`. Populates `tracks.items`
+/// and `tracks.total`, so the detail page renders (and shows a real count).
+///
+/// Playlists hold up to 10,000 tracks but one response carries at most
+/// `PAGE_LIMIT`: paging runs through the shared [`collect_paged_tracks`]
+/// driver (same as albums, by construction).
+pub async fn gql_playlist(id: &str) -> Result<crate::spotify::models::Playlist, AppError> {
+    let (first, total, tracks) = collect_paged_tracks(
+        |off| fetch_playlist_page(id, off),
+        |d| playlist_total(&d["playlistV2"]),
+        |d| parse_playlist_items(&d["playlistV2"]),
+        |d| {
+            d["playlistV2"]["content"]["items"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        },
+    )
+    .await?;
+
+    let playlist_data = &first["playlistV2"];
     let owner_v2 = &playlist_data["ownerV2"]["data"];
     let uri = format!("spotify:playlist:{id}");
 
@@ -491,13 +553,14 @@ async fn fetch_playlist_page(id: &str, offset: u32) -> Result<Value, AppError> {
     });
 
     let data = graphql_post("fetchPlaylist", hashes::FETCH_PLAYLIST, vars).await?;
-    let playlist_data = &data["playlistV2"];
-    if playlist_data.is_null() {
+    if data["playlistV2"].is_null() {
         return Err(AppError::Spotify(format!(
             "gql fetchPlaylist: no playlistV2 for {id}"
         )));
     }
-    Ok(playlist_data.clone())
+    // Owned full response — no per-page clone (a 10k-track playlist used to
+    // clone ~100 full page payloads before parsing).
+    Ok(data)
 }
 
 /// Items of one playlist page; unparseable entries skip (established rule).
@@ -527,18 +590,12 @@ fn parse_playlist_items(playlist_data: &Value) -> Vec<crate::spotify::models::Tr
     tracks
 }
 
-/// True track count (`totalCount`); falls back to the page length so exact
-/// multiples of the page size still terminate.
-fn playlist_total(playlist_data: &Value) -> u32 {
+/// True track count (`totalCount`); `None` when the server omits it — the
+/// driver then pages to completion instead of truncating at one page.
+fn playlist_total(playlist_data: &Value) -> Option<u32> {
     playlist_data["content"]["totalCount"]
         .as_u64()
         .map(|t| t as u32)
-        .unwrap_or_else(|| {
-            playlist_data["content"]["items"]
-                .as_array()
-                .map(|a| a.len() as u32)
-                .unwrap_or(0)
-        })
 }
 
 /// Single track metadata via the `searchDesktop` GQL operation.
@@ -670,28 +727,24 @@ fn page_of<T: Clone>(v: &[T]) -> Option<crate::spotify::models::Paged<T>> {
 /// Populates `tracks.items` so the album page renders a real track list and
 /// count.
 ///
-/// Same paging as playlists (page 0 reveals the total, rest fan out); see
-/// `gql_playlist`. `total_tracks` stays the rendered count (truthful even if
-/// the page cap ever bound).
+/// Same paging as playlists (shared driver — see `gql_playlist`).
+/// `total_tracks` stays the rendered count (truthful even if the page cap
+/// ever bound).
 pub async fn gql_album(id: &str) -> Result<crate::spotify::models::Album, AppError> {
-    let first = fetch_album_page(id, 0).await?;
-    let total = album_total(&first);
-    let mut tracks = parse_album_items(&first);
+    let (first, _total, tracks) = collect_paged_tracks(
+        |off| fetch_album_page(id, off),
+        |d| album_total(&d["albumUnion"]),
+        |d| parse_album_items(&d["albumUnion"]),
+        |d| {
+            d["albumUnion"]["tracksV2"]["items"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        },
+    )
+    .await?;
 
-    let offsets = remaining_offsets(total, PAGE_LIMIT, MAX_PAGES);
-    if !offsets.is_empty() {
-        let pages: Vec<Vec<crate::spotify::models::Track>> =
-            futures::future::try_join_all(offsets.iter().map(|&off| async move {
-                let data = fetch_album_page(id, off).await?;
-                Ok::<_, AppError>(parse_album_items(&data))
-            }))
-            .await?;
-        for page in pages {
-            tracks.extend(page);
-        }
-    }
-
-    let mut album = parse_gql_album(&first, None)
+    let mut album = parse_gql_album(&first["albumUnion"], None)
         .ok_or_else(|| AppError::Spotify(format!("album {id} could not be parsed")))?;
     album.tracks = Some(page_of(&tracks).unwrap_or_default());
     album.total_tracks = tracks.len() as u32;
@@ -707,11 +760,11 @@ async fn fetch_album_page(id: &str, offset: u32) -> Result<Value, AppError> {
     });
 
     let data = graphql_post("getAlbum", hashes::GET_ALBUM, vars).await?;
-    let album_union = &data["albumUnion"];
-    if album_union["__typename"].as_str() != Some("Album") {
+    if data["albumUnion"]["__typename"].as_str() != Some("Album") {
         return Err(AppError::Spotify(format!("album {id} not found via GQL")));
     }
-    Ok(album_union.clone())
+    // Owned full response — no per-page clone (see fetch_playlist_page).
+    Ok(data)
 }
 
 /// Items of one album page; non-track entries skip (established rule).
@@ -734,18 +787,12 @@ fn parse_album_items(album_union: &Value) -> Vec<crate::spotify::models::Track> 
     tracks
 }
 
-/// True track count when the response carries it; otherwise the page length
-/// (exact multiples of the page size then stop at one page — status quo).
-fn album_total(album_union: &Value) -> u32 {
+/// True track count when the response carries it; `None` otherwise — the
+/// driver pages to completion instead of truncating at one page.
+fn album_total(album_union: &Value) -> Option<u32> {
     album_union["tracksV2"]["totalCount"]
         .as_u64()
         .map(|t| t as u32)
-        .unwrap_or_else(|| {
-            album_union["tracksV2"]["items"]
-                .as_array()
-                .map(|a| a.len() as u32)
-                .unwrap_or(0)
-        })
 }
 
 /// Artist hero node from `queryArtistOverview`: `profile.name`, `uri`,
@@ -838,7 +885,15 @@ pub async fn gql_artist_page(
         }
     }
 
-    let related = gql_artist_related(id).await.unwrap_or_default();
+    let related = match gql_artist_related(id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // A failed related leg must not masquerade as "no related
+            // artists" — and must not bypass rate-limit backoff either.
+            // Surface it: callers that can degrade do so knowingly.
+            return Err(e);
+        }
+    };
 
     Ok((hero, albums, top_tracks, related))
 }
@@ -1025,20 +1080,20 @@ mod tests {
     #[test]
     fn playlist_total_prefers_total_count() {
         let v = json!({ "content": { "totalCount": 250, "items": [1, 2] } });
-        assert_eq!(playlist_total(&v), 250);
-        // Missing totalCount falls back to the page length (exact multiples
-        // still terminate via the offsets helper).
+        assert_eq!(playlist_total(&v), Some(250));
+        // Missing totalCount yields None (the driver pages to completion)
+        // instead of silently truncating at the page length.
         let v2 = json!({ "content": { "items": [1, 2, 3] } });
-        assert_eq!(playlist_total(&v2), 3);
-        assert_eq!(playlist_total(&json!({})), 0);
+        assert_eq!(playlist_total(&v2), None);
+        assert_eq!(playlist_total(&json!({})), None);
     }
 
     #[test]
     fn album_total_prefers_total_count() {
         let v = json!({ "tracksV2": { "totalCount": 150, "items": [] } });
-        assert_eq!(album_total(&v), 150);
+        assert_eq!(album_total(&v), Some(150));
         let v2 = json!({ "tracksV2": { "items": [1] } });
-        assert_eq!(album_total(&v2), 1);
+        assert_eq!(album_total(&v2), None);
     }
 
     #[test]

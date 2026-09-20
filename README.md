@@ -103,8 +103,9 @@ push to `master`:
 - Landing page: https://mihneamoso.github.io/spotify-dx/
 - Web app: https://mihneamoso.github.io/spotify-dx/app/
 
-Both are built from source in CI (`scripts/build-web.sh`, shared with the
-release workflow — every version tag also redeploys the web build). The app is
+Both are built from source in CI (`scripts/build-web.sh` for Pages; the
+release workflow packages its own versioned tarball from `dx build`
+output — every version tag also redeploys the web build). The app is
 built with `base_path = "spotify-dx/app"` in `Dioxus.toml` so it works under the
 `/spotify-dx/` path prefix; the landing page in `web/site/` uses only relative
 URLs. To build and inspect the deploy tree locally:

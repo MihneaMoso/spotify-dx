@@ -15,9 +15,10 @@ import java.io.File
  * update APK. Using a content URI (instead of a raw file:// URI) avoids the
  * FileUriExposedException on API 24+ and needs no androidx.core dependency.
  *
- * Registered in the manifest by scripts/stage-updater.sh with authority
- * `com.spotifydx.app.updates` and grantUriPermissions so the system package
- * installer may read it (with FLAG_GRANT_READ_URI_PERMISSION on the intent).
+ * First-class manifest entry in the owned app (legacy dx path: injected by
+ * scripts/stage-updater.sh), authority `com.spotifydx.app.updates` with
+ * grantUriPermissions so the system package installer may read it (with
+ * FLAG_GRANT_READ_URI_PERMISSION on the intent).
  *
  * The served file must match where the native updater writes the download
  * (`filesDir/updates/spotify-dx-update.apk` — see updater.rs, which resolves

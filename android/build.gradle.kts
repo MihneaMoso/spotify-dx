@@ -10,6 +10,13 @@
 // Gradle, pin the wrapper properties back to a proven pair instead of
 // floating forward.
 
+// NOTE: repository URLs are declared twice in this project — here AND in
+// settings.gradle.kts (pluginManagement + dependencyResolutionManagement).
+// That is structural, not sloppiness: the classic `apply plugin` style in
+// app/build.gradle (required for --offline resolution) reads its classpath
+// from this `buildscript` block, not from settings. If you add a plugin
+// repository, add it in BOTH places.
+
 buildscript {
     repositories {
         google()

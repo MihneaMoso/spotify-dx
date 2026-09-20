@@ -10,7 +10,7 @@ mod toast;
 mod top_bar;
 mod track_row;
 
-pub use album_art::AlbumArt;
+pub use album_art::{pick_artwork, AlbumArt};
 pub use app_layout::{AppLayout, SidebarResizer};
 pub use card::MediaCard;
 pub use nav::{BottomNav, SideNav};

@@ -1781,6 +1781,20 @@ dioxus-mobile Rust code is untouched and still builds.
   no code on the touch path, so zero scroll/startup cost (the custom
   per-touch wave animators that caused the jank are gone; only a single
   fire-time burst remains).
+- **Full review fixes (2026-09-19, 103 findings → all implemented):**
+  adblock engine now reloads live on refresh (text can't cross threads —
+  `EngineMsg::Reload` re-deserializes the persisted cache) + idempotent
+  spawn + count sidecar; `initCore` returns at once with a `restoring`
+  mirror flag (bootstrap on bridge rt); settings/token writes are
+  tmp+rename; GQL paging is one driver (unknown totals page on instead
+  of truncating); stream cache persists quality; tidal trimmed to a
+  parked stub; desktop player bar subscribes properly + shuffle wired to
+  `set_shuffle` (repeat disabled — no engine reads it); install/build
+  scripts fail closed (Android digest, unzip, scoped APK find, guarded
+  deploy dir). One reported claim rejected on verification: no SWR
+  thundering herd — `leader()` dedupes via the inflight map
+  (`calls==1` test proves it). `cargo test` 112/112, clippy 0, gradle
+  `assembleDebug` green.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

@@ -51,8 +51,12 @@ fi
 echo "==> building Kotlin app ($MODE)"
 ./scripts/build-kotlin.sh "$MODE"
 
-APK="$(find android/app/build/outputs/apk -name '*.apk' | head -1)"
-test -n "$APK" || { echo "no APK produced" >&2; exit 1; }
+# Scope discovery to the requested mode: build-kotlin.sh deletes only that
+# mode's output dir, so an unscoped find could grab a stale APK of the
+# other mode (filesystem-dependent head -1 order).
+APK_DIR="android/app/build/outputs/apk/$MODE"
+APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
+test -n "$APK" || { echo "no APK produced in $APK_DIR" >&2; exit 1; }
 echo "==> APK: $APK"
 
 echo "==> uninstalling old packages (wipes app data)"

@@ -47,13 +47,7 @@ pub fn Playlist(id: String) -> Element {
                         }
                     },
                     onshuffle: move |_| {
-                        if !shuffle_tracks.is_empty() {
-                            let i = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.subsec_nanos() as usize)
-                                .unwrap_or(0);
-                            crate::player::launch_track(shuffle_tracks[i % shuffle_tracks.len()].clone());
-                        }
+                        crate::player::launch_random(shuffle_tracks.clone());
                     },
                 }
                 TrackTable { tracks: tracks, numbered: true }

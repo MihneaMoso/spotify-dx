@@ -44,13 +44,6 @@ const INNERTUBE_API_KEY: &str = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
 const CLIENT_VERSION: &str = "20.10.38";
 const USER_AGENT: &str = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
 
-/// Piped API hosts for ciphered-URL recovery (no key; docs prescribe dynamic
-/// instance discovery — the Phase B pool supersedes this pair).
-const PIPED_APIS: &[&str] = &[
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
-];
-
 /// Max search candidates examined per resolve (bounded: each is cheap, but a
 /// dead network shouldn't multiply the 15s client timeout unboundedly).
 const MAX_CANDIDATES: usize = 6;
@@ -333,7 +326,16 @@ impl YoutubeProvider {
                             .map(|m| m.starts_with("video/"))
                             .unwrap_or(false)
                     })
-                    .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
+                    // Smallest mux, not largest: we play audio, and the old
+                    // max-bitrate pick downloaded the biggest video container
+                    // whenever higher-resolution muxes existed — multiples
+                    // of the bytes (and disk) for zero audible benefit.
+                    // Missing bitrates sort last (unknown size, not free).
+                    .min_by_key(|f| {
+                        f.get("bitrate")
+                            .and_then(|b| b.as_u64())
+                            .unwrap_or(u64::MAX)
+                    })
             })
         {
             let url = muxed
@@ -395,7 +397,9 @@ impl YoutubeProvider {
     /// costs nothing on the happy path. Instances tried in order; transport
     /// failures move to the next instance, content failures end the attempt.
     async fn piped_recovery(&self, video_id: &str) -> StreamOutcome {
-        for api in PIPED_APIS {
+        // Hosts single-sourced from the Phase B pool (`piped::INSTANCES`)
+        // so host churn lands in exactly one place.
+        for api in super::piped::INSTANCES {
             let url = format!("{api}/streams/{video_id}");
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,

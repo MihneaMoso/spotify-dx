@@ -19,6 +19,20 @@ pub fn Album(id: String) -> Element {
         .cloned();
     let is_err = matches!(resource.read().as_ref(), Some(Err(_)));
 
+    // Hoisted above the match: hooks must run identically on every render —
+    // a resource inside the Some arm changes the hook count on the
+    // None→Some transition. None id yields an empty list (no fetch).
+    let tracks_album_id = album_loaded.as_ref().map(|a| a.id.clone());
+    let tracks_resource = use_resource(move || {
+        let id = tracks_album_id.clone();
+        async move {
+            match id {
+                Some(id) => api::get_album_tracks(&id).await.unwrap_or_default(),
+                None => Vec::new(),
+            }
+        }
+    });
+
     match album_loaded {
         None => {
             if is_err {
@@ -46,11 +60,6 @@ pub fn Album(id: String) -> Element {
                 .map(|i| i.url.clone())
                 .unwrap_or_default();
 
-            let album_for_tracks = album.clone();
-            let tracks_resource = use_resource(move || {
-                let id = album_for_tracks.id.clone();
-                async move { api::get_album_tracks(&id).await.unwrap_or_default() }
-            });
             let tracks = tracks_resource.read().as_ref().cloned().unwrap_or_default();
             let total_label = album
                 .tracks
@@ -76,13 +85,7 @@ pub fn Album(id: String) -> Element {
                             }
                         },
                         onshuffle: move |_| {
-                            if !shuffle_tracks.is_empty() {
-                                let i = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.subsec_nanos() as usize)
-                                    .unwrap_or(0);
-                                crate::player::launch_track(shuffle_tracks[i % shuffle_tracks.len()].clone());
-                            }
+                            crate::player::launch_random(shuffle_tracks.clone());
                         },
                     }
                     TrackTable { tracks: tracks, numbered: true }
