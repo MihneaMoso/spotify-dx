@@ -118,8 +118,11 @@ object SessionRepository {
         MusicRepository.clear()
         scope.launch {
             // Persisted queue/last-played belong to the account: wipe them so
-            // the next sign-in starts clean.
-            PlaybackStore.clearAll()
+            // the next sign-in starts clean. Played history is device-level
+            // (Echo past-songs parity + the Auto Backup reinstall payload),
+            // so it survives logout — wiping it here destroyed history on
+            // every transient session-expiry logout.
+            PlaybackStore.clearSession()
             BridgeClient.logout()
             _state.value = Snapshot()
         }

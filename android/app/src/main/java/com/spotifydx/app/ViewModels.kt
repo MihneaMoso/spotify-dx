@@ -93,8 +93,6 @@ class HomeViewModel : ScopedViewModel() {
     val banner: StateFlow<String?> = _banner.asStateFlow()
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
-    private val _liked = MutableStateFlow<List<Track>>(emptyList())
-    val liked: StateFlow<List<Track>> = _liked.asStateFlow()
 
     private var retryJob: Job? = null
 
@@ -120,9 +118,10 @@ class HomeViewModel : ScopedViewModel() {
                     List(arr.length()) { i -> arr.optJSONObject(i) }
                         .filterNotNull().map(Models::playlist)
                 }
-                _liked.value = Models.tracks(json.optJSONArray("liked_tracks"))
+                // The second Home list is Recently Played, owned live by
+                // PlayerRepository.history — not the feed's liked snapshot.
                 _state.value = ScreenState.Content(
-                    empty = _playlists.value.isEmpty() && _liked.value.isEmpty(),
+                    empty = _playlists.value.isEmpty(),
                 )
             } else if (isRateLimited(err)) {
                 // Banner + 60s timed auto-retry until quota clears (§7.5).

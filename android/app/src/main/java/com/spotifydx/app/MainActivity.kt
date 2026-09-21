@@ -7,7 +7,6 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.SearchView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -55,6 +54,15 @@ class MainActivity : AppCompatActivity() {
     }
     private lateinit var toastView: TextView
     private var toastJob: Job? = null
+
+    /**
+     * Last tag showCached was asked to display (verifyNav target). Updated
+     * on every navigation so a superseded check never escalates.
+     */
+    private var expectedTag: String? = null
+
+    /** Last emergencyHome escalation (bounded: one per 10s, no storms). */
+    private var lastEmergencyMs = 0L
 
     // Mini-player view refs, bound once (renderPlayerBar runs on every
     // 250ms position tick — repeated findViewById would churn per tick).
@@ -197,6 +205,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleBack() {
         // Open player sheet: expanded section collapses first (Echo
         // parity), then the sheet minimizes.
+        android.util.Log.d("SpotifyDxNav", "handleBack sheet=${playerSheet.isOpen} current=$current tab=$currentTab")
         if (playerSheet.isOpen) {
             if (!playerSheet.backToMain()) playerSheet.close()
         } else if (goBack()) {
@@ -300,6 +309,7 @@ class MainActivity : AppCompatActivity() {
     /** Active-tab reselect: pop to the tab root (Spotify behavior). */
     private fun popTabToRoot(tab: Destination) {
         val stack = stackFor(tab)
+        android.util.Log.d("SpotifyDxNav", "popTabToRoot tab=$tab size=${stack.size} current=$current")
         while (stack.size > 1) stack.removeLast()
         val root = stack.lastOrNull()
         if (root == null) {
@@ -320,6 +330,7 @@ class MainActivity : AppCompatActivity() {
     /** Pops back history (back gesture/button). False when already at root. */
     private fun goBack(): Boolean {
         val stack = stackFor(currentTab)
+        android.util.Log.d("SpotifyDxNav", "goBack tab=$currentTab size=${stack.size} current=$current")
         if (stack.size > 1) {
             stack.removeLast()
             val top = stack.last()
@@ -394,10 +405,69 @@ class MainActivity : AppCompatActivity() {
         // (session/watchdog collectors) that can legally emit after
         // onSaveInstanceState (backgrounded app) — a lost frame beats a
         // crash (IllegalStateException seen on-device 2026-09-09).
+        android.util.Log.d("SpotifyDxNav", "showCached dest=$dest tag=$tag")
+        expectedTag = tag
         tx.commitAllowingStateLoss()
         // Highlight the TAB (not the screen): a detail drilled from Search
         // keeps Search lit, matching the stack it belongs to.
         syncNav(currentTab)
+        verifyNav(tag)
+    }
+
+    /**
+     * Post-commit visibility check: the reinstall-only wedge class (back +
+     * Home tab dead on a detail, no crash, reopen doesn't fix, reinstall
+     * does — seen 2026-09-18 artist page, 2026-09-20 home playlist) leaves
+     * the requested screen never-visible. If the expected tag isn't the
+     * visible one once the transaction lands, escalate to [emergencyHome]
+     * instead of stranding the user. Bounded (one escalation per 10s) and
+     * supersede-safe (a newer navigation cancels an older check).
+     */
+    private fun verifyNav(tag: String) {
+        findViewById<View>(R.id.content)?.post {
+            // A newer navigation superseded this check — not a miss.
+            if (expectedTag != tag) return@post
+            val fm = supportFragmentManager
+            runCatching { fm.executePendingTransactions() }
+            val visible = fm.fragments.firstOrNull {
+                it.isAdded && !it.isHidden && it.id == R.id.content
+            }
+            if (visible == null || visible.tag != tag) {
+                android.util.Log.w(
+                    "SpotifyDxNav",
+                    "verifyNav MISS expected=$tag visible=${visible?.tag}",
+                )
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastEmergencyMs > 10_000) {
+                    lastEmergencyMs = now
+                    emergencyHome()
+                }
+            } else {
+                android.util.Log.d("SpotifyDxNav", "verifyNav OK $tag")
+            }
+        }
+    }
+
+    /**
+     * Last-resort nav reset (see [verifyNav]): drops every back stack and
+     * cached screen and rebuilds HOME fresh. Whatever poisoned the path —
+     * desynced stacks, an orphaned fragment, a wedged transaction — a
+     * clean rebuild routes around it with two back presses instead of a
+     * reinstall. Login-scoped by construction (GATE path untouched).
+     */
+    private fun emergencyHome() {
+        android.util.Log.w("SpotifyDxNav", "emergencyHome: resetting nav to HOME")
+        clearScreens()
+        tabStacks.clear()
+        currentTab = Destination.HOME
+        current = Destination.HOME
+        lastArgs = null
+        val tag = tagFor(Destination.HOME, null)
+        stackFor(Destination.HOME).addLast(ScreenEntry(tag, Destination.HOME, null))
+        // The 10s escalation bound above stops any verify→emergency loop:
+        // this inner showCached re-arms expectedTag, and its verify can
+        // only log on a second consecutive miss.
+        showCached(Destination.HOME, null, tag)
     }
 
     private fun createFragment(dest: Destination, args: Bundle?): Fragment = when (dest) {
@@ -451,7 +521,7 @@ class MainActivity : AppCompatActivity() {
         // belongs to renderPlayerBar's track-driven ownership — syncNav
         // must not force it visible on every navigation).
         val gated = dest == Destination.GATE
-        findViewById<View>(R.id.bottom_nav)?.visibility =
+        findViewById<BottomNavigationView>(R.id.bottom_nav)?.visibility =
             if (gated) View.GONE else View.VISIBLE
         findViewById<View>(R.id.nav_rail)?.visibility =
             if (gated) View.GONE else View.VISIBLE

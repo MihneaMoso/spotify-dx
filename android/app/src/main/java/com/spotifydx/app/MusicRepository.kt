@@ -136,6 +136,18 @@ object MusicRepository {
 
     suspend fun <T> withSessionCheck(block: suspend () -> Result<T>): Result<T> {
         val res = withContext(Dispatchers.IO) { block() }
+        val err = res.exceptionOrNull() as? BridgeException
+        // No token (yet) is recoverable via the session page — it must NEVER
+        // trigger a logout: that wiped queue/history/playback from disk on
+        // every transient boot race (verified empty tables on-device), then
+        // cleared the core token, making the session unrecoverable and every
+        // retry dead. Revive once and retry the read instead.
+        if (err?.error is BridgeError.NeedsPage) {
+            if (SessionRefresher.refresh().isSuccess) {
+                return withContext(Dispatchers.IO) { block() }
+            }
+            return res
+        }
         if (isSessionFailure(res.exceptionOrNull())) {
             SessionRepository.logout()
         }

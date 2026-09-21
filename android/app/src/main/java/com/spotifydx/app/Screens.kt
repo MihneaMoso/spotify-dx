@@ -184,16 +184,16 @@ class HomeFragment : Fragment() {
         )
         list.adapter = shelves
         list.rememberScroll("home:shelf")
-        val likedList: RecyclerView = v.findViewById(R.id.home_liked)
-        likedList.layoutManager = LinearLayoutManager(context)
-        val liked = TrackAdapter(
+        val recentList: RecyclerView = v.findViewById(R.id.home_recent)
+        recentList.layoutManager = LinearLayoutManager(context)
+        val recent = TrackAdapter(
             showIndex = false,
-            onPlay = { PlayerRepository.play(it, "Liked Songs") },
+            onPlay = { PlayerRepository.play(it, "Recently Played") },
             onMenu = { ContextMenuHost.showMenu(parentFragmentManager, MenuTarget.Song(it)) },
         )
-        likedList.adapter = liked
-        likedList.rememberScroll("home:liked")
-        likedList.swipeToQueue(liked)
+        recentList.adapter = recent
+        recentList.rememberScroll("home:recent")
+        recentList.swipeToQueue(recent)
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }
         }
@@ -211,8 +211,12 @@ class HomeFragment : Fragment() {
                 })
             }
         }
+        // Recently played: last 30 from the live play history, most recent
+        // first (history is stored oldest→newest). Updates as songs play.
         viewLifecycleOwner.lifecycleScope.launch {
-            vm.liked.collect { liked.submitList(it) }
+            PlayerRepository.state.collect { s ->
+                recent.submitList(s.history.takeLast(30).reversed())
+            }
         }
         // Self-heal after a boot-time session failure: Home loads once,
         // eagerly, so a NEEDS_PAGE/expired-token error lands before the
@@ -484,6 +488,9 @@ class LibraryFragment : Fragment() {
         v.findViewById<Button>(R.id.tab_liked)?.setOnClickListener {
             markLibTab(R.id.tab_liked)
             vm.selectTab(LibraryViewModel.Tab.LIKED)
+        }
+        v.findViewById<View>(R.id.library_history)?.setOnClickListener {
+            HistorySheet().show(parentFragmentManager, "history")
         }
         viewLifecycleOwner.lifecycleScope.launch {
             vm.state.collect { bindState(v, it) }

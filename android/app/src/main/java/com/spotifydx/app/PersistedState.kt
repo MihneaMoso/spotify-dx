@@ -152,4 +152,19 @@ object PlaybackStore {
             db.playback().clear()
         }
     }
+
+    /**
+     * Session-scoped wipe (logout / account switch): queue + last-played
+     * belong to the account, but played history is device-level past songs
+     * (Echo parity) and survives — it is also the reinstall-restore payload
+     * via Auto Backup, so wiping it here would defeat that durability.
+     */
+    suspend fun clearSession() {
+        queueJob?.cancel()
+        withContext(Dispatchers.IO) {
+            val db = AppDb.get(AppState.ctx())
+            db.queue().clear()
+            db.playback().clear()
+        }
+    }
 }

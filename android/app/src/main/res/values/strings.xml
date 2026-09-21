@@ -15,6 +15,8 @@
     <string name="search_hint">Search tracks, albums, artists</string>
     <string name="search_recent">Recent searches</string>
     <string name="home_playlists">Your playlists</string>
+    <string name="home_recent">Recently played</string>
+    <string name="history_title">History</string>
     <string name="library_filter_hint">Filter your library</string>
     <string name="tab_playlists">Playlists</string>
     <string name="tab_albums">Albums</string>

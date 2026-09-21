@@ -38,6 +38,14 @@ cargo test --no-default-features    # also compiles the headless/CI target
 `cargo check --tests` and `cargo check` (default features) are useful
 complements. Never `cargo run` and never launch the produced binary.
 
+**Android checks: use Gradle directly, never `scripts/build-kotlin.sh`.**
+`build-kotlin.sh` rebuilds the Rust core + re-stages the `.so` (minutes);
+for check/compile the agent runs `./gradlew assembleDebug --offline` from
+`android/` (the staged `.so` is reused — Gradle never rebuilds Rust, which
+is exactly why the user runs `build-kotlin.sh` themselves for real
+builds). Same for lint: `./gradlew lintDebug` if needed. The full script
+stays the user's job.
+
 ## 3. Environment prerequisites
 
 - **No API credentials are needed.** Auth is the web-player session: the user
@@ -1756,6 +1764,25 @@ dioxus-mobile Rust code is untouched and still builds.
   InputDispatcher "stealing touch" lines; plain taps log nothing), and
   check for a still-added dialog in the fragment dump. A screenshot
   settles "what's on screen" instantly.
+- **Reinstall-only wedge class (2026-09-20, 2nd occurrence):** same
+  signature again (home playlist detail: back + Home tab dead, no crash;
+  close/reopen doesn't fix, reinstall does). "Reopen doesn't fix" does
+  NOT prove persisted-state poison: swipe-closing usually keeps the app
+  process cached, so poisoned singletons (`MusicRepository.mem`,
+  `ScrollMemory`, scopes) and restored FragmentManager state survive a
+  relaunch — reinstall forces process death AND data clear, so it fixes
+  both halves at once. Before reinstalling, force-stop the app: if that
+  fixes it, the wedge was in-memory; if not, it's on disk (Room
+  `spotifydx.db`, core disk SWR under files/spotify-dx, prefs). Either
+  way the user never reinstalls anymore: every showCached arms
+  `verifyNav` (posted visible-tag check, supersede-safe), and a miss
+  escalates to `emergencyHome()` (drop all stacks + cached screens,
+  rebuild HOME fresh — bounded to one escalation per 10s, so the
+  verify→emergency path can't loop). Permanent `SpotifyDxNav` logs in
+  handleBack/goBack/popTabToRoot/showCached/verifyNav mean the next
+  occurrence answers itself via `adb logcat -d | grep SpotifyDxNav`.
+  Rule: a twice-seen "no code fault" is a systematic bug — instrument
+  first, self-heal second, never reinstall-and-forget again.
 - **Mini player extras (2026-09-18):** `mini_art` loads through
   `ArtworkLoader` with a tag guard — `renderPlayerBar` runs on every
   position tick, so an unguarded `load()` would restart the Coil request
@@ -1795,6 +1822,26 @@ dioxus-mobile Rust code is untouched and still builds.
   thundering herd — `leader()` dedupes via the inflight map
   (`calls==1` test proves it). `cargo test` 112/112, clippy 0, gradle
   `assembleDebug` green.
+- **Recently played + history sheet (2026-09-20):** Home's second list
+  is the live `PlayerRepository.history` (last 30, most-recent-first —
+  not the feed's liked snapshot); Library's header button opens
+  `HistorySheet` (full history, recency-sorted, tap-to-play + menus).
+  History cap raised 50→100. Play origin labels: "Recently Played" /
+  "History".
+- **History durability (2026-09-21):** played history is device-level
+  (Echo past-songs parity), NOT session-level: `SessionRepository.logout`
+  now calls `PlaybackStore.clearSession()` (queue + last-played only) —
+  the old `clearAll()` wiped history on every transient session-expiry
+  logout, which is also how boot races produced verified-empty tables
+  on-device. Reinstall survival rides on Auto Backup (`allowBackup=true`
+  + `backup_rules.xml`): the Room DB (`databases/spotifydx.db` —
+  history/queue/playback/search) and prefs back up by default; only
+  `spotify-dx/` (tokens/settings), `audiocache/`, `updates/` are excluded.
+  Caveats to tell the user honestly: snapshots run ~daily (idle +
+  charging + WiFi) on the Play-account backup transport, so a reinstall
+  minutes after a listening session can still lose the tail; same-account
+  restore only. Do NOT "fix" this with an `<include>` (it would narrow
+  the default include-all) or by moving tokens into the DB.
 - **Review-fix regressions (2026-09-20, both fixed):** (1) async `initCore`
   returned before the mirror was seeded while shell-first screens fired
   data calls within ms → every call failed `NEEDS_PAGE` against a healthy

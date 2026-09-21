@@ -115,7 +115,7 @@ object PlayerRepository {
     }
 
     /** Played-history cap (oldest trimmed, persisted debounced). */
-    private const val HISTORY_CAP = 50
+    private const val HISTORY_CAP = 100
 
     /** Records [track] as played (consecutive dupes skipped, oldest trimmed). */
     private fun pushHistory(track: Track?) {
