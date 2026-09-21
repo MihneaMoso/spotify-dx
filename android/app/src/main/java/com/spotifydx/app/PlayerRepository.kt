@@ -619,6 +619,23 @@ object PlayerRepository {
         dispatchPlay(next)
     }
 
+    /**
+     * Prev-button semantics (all transports share this): 4s+ into the song
+     * restarts it; otherwise the outgoing current returns to upcoming and
+     * the most recent past row becomes current. Empty past = restart.
+     * Position comes from repo state (tick-mirrored, survives pause), not
+     * the service — so paused presses behave identically.
+     */
+    fun previousTrack() {
+        val s = _state.value
+        if (s.track == null) return
+        if (s.positionMs >= 4_000 || s.history.isEmpty()) {
+            seekTo(0)
+            return
+        }
+        seekHistory(s.history.size - 1)
+    }
+
     fun seekTo(ms: Long) {
         update { _state.value.copy(positionMs = ms) }
         val s = _state.value

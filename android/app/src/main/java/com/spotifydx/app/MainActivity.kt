@@ -683,7 +683,7 @@ class MainActivity : AppCompatActivity() {
             PlayerRepository.nextTrack()
         }
         bar.findViewById<ImageButton>(R.id.btn_prev)?.setOnClickListener {
-            PlayerRepository.seekTo(0)
+            PlayerRepository.previousTrack()
         }
         bar.findViewById<SeekBar>(R.id.scrub)?.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {

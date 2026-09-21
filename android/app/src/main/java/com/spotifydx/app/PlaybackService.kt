@@ -332,9 +332,9 @@ class PlaybackService : Service(),
     }
 
     private fun prevFromExternal() {
-        // Restart-first semantics live in the ViewModel; the service only
-        // reconciles what the repository already decided.
-        PlayerRepository.seekTo(0)
+        // Restart-vs-previous decision lives in the repository (4s rule);
+        // the service only reconciles what it decided.
+        PlayerRepository.previousTrack()
     }
 
     // -- Audio focus: reconciliation only, never an interface rebuild ---------------

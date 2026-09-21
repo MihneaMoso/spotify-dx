@@ -119,7 +119,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             PlayerRepository.nextTrack(); punch(it)
         }
         root.findViewById<ImageButton>(R.id.sheet_prev)?.setOnClickListener {
-            PlayerRepository.seekTo(0); punch(it)
+            PlayerRepository.previousTrack(); punch(it)
         }
         // Echo transport feel: press sinks to 0.88 with a springy release.
         // Purely visual touch feedback — click behavior is untouched.
