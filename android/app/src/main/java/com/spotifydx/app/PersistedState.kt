@@ -59,6 +59,7 @@ object PlaybackStore {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var queueJob: Job? = null
     private var historyJob: Job? = null
+    private var playLogJob: Job? = null
 
     fun saveQueueSoon(tracks: List<Track>) {
         queueJob?.cancel()
@@ -91,6 +92,22 @@ object PlaybackStore {
         }
     }
 
+    /** Debounced play-log persist (durable History feature). */
+    fun savePlayLogSoon(tracks: List<Track>) {
+        playLogJob?.cancel()
+        playLogJob = scope.launch {
+            delay(400)
+            withContext(Dispatchers.IO) {
+                val dao = AppDb.get(AppState.ctx()).playLog()
+                dao.replace(
+                    tracks.mapIndexed { i, t ->
+                        PlayLogItem(i, t.id, Models.trackToJson(t).toString())
+                    },
+                )
+            }
+        }
+    }
+
     suspend fun loadQueue(): List<Track> =
         withContext(Dispatchers.IO) {
             AppDb.get(AppState.ctx()).queue().all().mapNotNull { item ->
@@ -109,19 +126,30 @@ object PlaybackStore {
             }
         }
 
+    suspend fun loadPlayLog(): List<Track> =
+        withContext(Dispatchers.IO) {
+            AppDb.get(AppState.ctx()).playLog().all().mapNotNull { item ->
+                runCatching {
+                    Models.track(org.json.JSONObject(item.trackJson)).takeIf { it.playable }
+                }.getOrNull()
+            }
+        }
+
     /**
      * True when any playback state survived on disk (last-played row,
-     * queue, or history). A completely blank store on cold start proves a
-     * fresh device — no valid session can predate it — so the boot flow
-     * may route to GATE without waiting out a slow core. (A logged-in user
-     * who never played has no rows either, but then the core answers fast
-     * and the settled path wins before this fallback matters.)
+     * queue, past window, or play log). A completely blank store on cold
+     * start proves a fresh device — no valid session can predate it — so
+     * the boot flow may route to GATE without waiting out a slow core. (A
+     * logged-in user who never played has no rows either, but then the
+     * core answers fast and the settled path wins before this fallback
+     * matters.)
      */
     suspend fun hasPersistedState(): Boolean = withContext(Dispatchers.IO) {
         val db = AppDb.get(AppState.ctx())
         runCatching { db.playback().get() != null }.getOrDefault(false) ||
             runCatching { db.queue().all().isNotEmpty() }.getOrDefault(false) ||
-            runCatching { db.history().all().isNotEmpty() }.getOrDefault(false)
+            runCatching { db.history().all().isNotEmpty() }.getOrDefault(false) ||
+            runCatching { db.playLog().all().isNotEmpty() }.getOrDefault(false)
     }
 
     fun saveLastSoon(track: Track?, positionMs: Long, source: String = "") {
@@ -145,25 +173,30 @@ object PlaybackStore {
     suspend fun clearAll() {
         queueJob?.cancel()
         historyJob?.cancel()
+        playLogJob?.cancel()
         withContext(Dispatchers.IO) {
             val db = AppDb.get(AppState.ctx())
             db.queue().clear()
             db.history().clear()
+            db.playLog().clear()
             db.playback().clear()
         }
     }
 
     /**
-     * Session-scoped wipe (logout / account switch): queue + last-played
-     * belong to the account, but played history is device-level past songs
-     * (Echo parity) and survives — it is also the reinstall-restore payload
-     * via Auto Backup, so wiping it here would defeat that durability.
+     * Session-scoped wipe (logout / account switch): queue, last-played,
+     * and the past window belong to the account's listening session, but
+     * the play log is device-level past songs (Echo parity) and survives
+     * — it is also the reinstall-restore payload via Auto Backup, so
+     * wiping it here would defeat that durability.
      */
     suspend fun clearSession() {
         queueJob?.cancel()
+        historyJob?.cancel()
         withContext(Dispatchers.IO) {
             val db = AppDb.get(AppState.ctx())
             db.queue().clear()
+            db.history().clear()
             db.playback().clear()
         }
     }

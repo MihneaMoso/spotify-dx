@@ -26,11 +26,23 @@ object PlayerRepository {
         val track: Track? = null,
         val queue: List<Track> = emptyList(),
         /**
-         * Played history, oldest→newest (Echo-style past songs; the queue
-         * itself holds UPCOMING only). Jump-back truncates at the tapped
-         * item — never duplicates, never disturbs the current track.
+         * Session past window, oldest→newest (Echo-style past songs; the
+         * queue itself holds UPCOMING only). Navigation state, not a
+         * record: jump-back truncates at the tapped item, skipped rows
+         * land here, drags re-split it by position — never duplicates,
+         * never disturbs the current track. Drives the queue screen's past
+         * section and prev/next walks ONLY (see [playLog] for the History
+         * feature).
          */
         val history: List<Track> = emptyList(),
+        /**
+         * Append-only play log, oldest→newest: every track actually played,
+         * exactly once. Written ONLY when a track is left going forward
+         * (advance/next/context switch/tap-ahead); back-jumps, taps, and
+         * drags never touch it. Drives the History feature (Home recent +
+         * HistorySheet) and nothing else.
+         */
+        val playLog: List<Track> = emptyList(),
         val isPlaying: Boolean = false,
         val positionMs: Long = 0,
         val durationMs: Long = 0,
@@ -117,7 +129,7 @@ object PlayerRepository {
     /** Played-history cap (oldest trimmed, persisted debounced). */
     private const val HISTORY_CAP = 100
 
-    /** Records [track] as played (consecutive dupes skipped, oldest trimmed). */
+    /** Appends [track] to the session past window (consecutive dupes skipped). */
     private fun pushHistory(track: Track?) {
         if (track == null || track.id.isEmpty()) return
         val h = _state.value.history
@@ -127,15 +139,43 @@ object PlayerRepository {
         PlaybackStore.saveHistorySoon(next)
     }
 
+    /**
+     * Appends [track] to the durable play log (consecutive dupes skipped).
+     * Forward-leaves only — the single writer path is [leaveForward]; no
+     * other mutation may call this.
+     */
+    private fun logPlay(track: Track?) {
+        if (track == null || track.id.isEmpty()) return
+        val l = _state.value.playLog
+        if (l.lastOrNull()?.id == track.id) return
+        val next = (l + track).takeLast(HISTORY_CAP)
+        update { s -> s.copy(playLog = next) }
+        PlaybackStore.savePlayLogSoon(next)
+    }
+
+    /**
+     * Shared forward-leave tail: the outgoing current joins BOTH the
+     * session past window (navigation) and the durable play log
+     * (History feature). Every forward transition funnels here so the two
+     * lists can never disagree about what was played.
+     */
+    private fun leaveForward(track: Track?) {
+        pushHistory(track)
+        logPlay(track)
+    }
+
     fun clearHistory() {
-        update { s -> s.copy(history = emptyList()) }
+        update { s -> s.copy(history = emptyList(), playLog = emptyList()) }
         PlaybackStore.saveHistorySoon(emptyList())
+        PlaybackStore.savePlayLogSoon(emptyList())
     }
 
     /**
      * Unified queue timeline (Echo single-list queue): past played + NOW
-     * current + upcoming, in display order. One list to show, one list to
-     * drag — never a pop-queue plus a detached history.
+     * current + upcoming, in display order. The past section renders the
+     * session past window ([history]) — one list to show, one list to
+     * drag. The durable play log ([playLog]) is a separate list for the
+     * History feature and never renders here.
      */
     fun timeline(): List<QueueEntry> {
         val s = _state.value
@@ -319,7 +359,7 @@ object PlayerRepository {
     /** Queue-first next-track (prefers the queue head over device skip). */
     fun advance(): Track? {
         val head = _state.value.queue.firstOrNull() ?: return null
-        pushHistory(_state.value.track)
+        leaveForward(_state.value.track)
         update { s -> s.copy(track = head, queue = s.queue.drop(1), isPlaying = true, positionMs = 0) }
         PlaybackStore.saveQueueSoon(_state.value.queue)
         return head
@@ -349,7 +389,7 @@ object PlayerRepository {
 
     fun play(track: Track, source: String = "") {
         val prev = _state.value.track
-        if (prev != null && prev.id != track.id) pushHistory(prev)
+        if (prev != null && prev.id != track.id) leaveForward(prev)
         startTrack(track, source)
     }
 
@@ -384,6 +424,8 @@ object PlayerRepository {
      * timeline row makes it current while PRESERVING the full timeline on
      * both sides (windows behind become past, ahead stay upcoming) — never
      * a pop, never a jump. Position is dupe-safe (counted, not id-matched).
+     * Only the outgoing current reaches the play log ([leaveForward] /
+     * [logPlay]); positional reshuffles stay in the past window.
      */
     fun seekTimelinePosition(pos: Int) {
         val tl = timeline()
@@ -401,7 +443,13 @@ object PlayerRepository {
         }
     }
 
-    /** Tap an upcoming row: skipped rows (and the outgoing current) become past. */
+    /**
+     * Tap an upcoming row: the outgoing current joins the past window AND
+     * the play log ([leaveForward]); the jumped rows were never played, so
+     * they join the past window only (old queue behavior: the new current
+     * is followed by the rows after it, nothing reshuffled) — never the
+     * log.
+     */
     private fun seekUpcoming(idx: Int) {
         val s = _state.value
         val q = s.queue
@@ -411,6 +459,7 @@ object PlayerRepository {
         val rest = q.subList(idx + 1, q.size).toList()
         val hist = (s.history + listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + skipped)
             .takeLast(HISTORY_CAP)
+        logPlay(s.track)
         update { it.copy(track = track, queue = rest, history = hist, positionMs = 0) }
         PlaybackStore.saveHistorySoon(hist)
         PlaybackStore.saveQueueSoon(rest)
@@ -624,16 +673,24 @@ object PlayerRepository {
      * restarts it; otherwise the outgoing current returns to upcoming and
      * the most recent past row becomes current. Empty past = restart.
      * Position comes from repo state (tick-mirrored, survives pause), not
-     * the service — so paused presses behave identically.
+     * the service — so paused presses behave identically. The log is never
+     * truncated, so a back-jump leaves the target as history tail: step
+     * past it when already sitting on it, or prev would stall on one song.
      */
     fun previousTrack() {
         val s = _state.value
-        if (s.track == null) return
+        val cur = s.track ?: return
         if (s.positionMs >= 4_000 || s.history.isEmpty()) {
             seekTo(0)
             return
         }
-        seekHistory(s.history.size - 1)
+        val h = s.history
+        val idx = if (h.lastOrNull()?.id == cur.id) h.size - 2 else h.size - 1
+        if (idx < 0) {
+            seekTo(0)
+            return
+        }
+        seekHistory(idx)
     }
 
     fun seekTo(ms: Long) {
@@ -693,6 +750,7 @@ object PlayerRepository {
         scope.launch {
             val queue = PlaybackStore.loadQueue()
             val history = PlaybackStore.loadHistory()
+            val playLog = PlaybackStore.loadPlayLog()
             val last = PlaybackStore.loadLast()
             val track = last?.trackJson?.let { raw ->
                 runCatching {
@@ -704,13 +762,14 @@ object PlayerRepository {
                     track = track ?: s.track,
                     queue = queue,
                     history = history,
+                    playLog = playLog,
                     isPlaying = false,
                     positionMs = last?.positionMs ?: s.positionMs,
                     durationMs = track?.durationMs ?: s.durationMs,
                     source = last?.source ?: s.source,
                 )
             }
-            Log.i(TAG, "restored queue=${queue.size} history=${history.size} last=${track?.name ?: "none"}")
+            Log.i(TAG, "restored queue=${queue.size} history=${history.size} playlog=${playLog.size} last=${track?.name ?: "none"}")
         }
     }
 

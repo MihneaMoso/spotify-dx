@@ -211,11 +211,12 @@ class HomeFragment : Fragment() {
                 })
             }
         }
-        // Recently played: last 30 from the live play history, most recent
-        // first (history is stored oldest→newest). Updates as songs play.
+        // Recently played: last 30 from the durable play log, most
+        // recent first (stored oldest→newest). The session past window
+        // (state.history) is navigation state — it must never render here.
         viewLifecycleOwner.lifecycleScope.launch {
             PlayerRepository.state.collect { s ->
-                recent.submitList(s.history.takeLast(30).reversed())
+                recent.submitList(s.playLog.takeLast(30).reversed())
             }
         }
         // Self-heal after a boot-time session failure: Home loads once,

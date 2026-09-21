@@ -4,8 +4,8 @@
        plus the token-store file fallback)
      - audiocache/ : re-fetchable audio bytes (bulk, no point backing up)
      - updates/    : staged self-update APK (re-downloadable)
-     The Room database (queue/history/playback, no tokens) and UI prefs
-     (theme/engine, no secrets) keep backing up so restores feel seamless. -->
+  The Room database (queue/past-window/play-log/playback, no tokens) and UI prefs
+  (theme/engine, no secrets) keep backing up so restores feel seamless. -->
 <full-backup-content>
     <exclude domain="file" path="spotify-dx/" />
     <exclude domain="file" path="audiocache/" />

@@ -47,6 +47,20 @@ data class HistoryItem(
     @ColumnInfo(name = "track_json") val trackJson: String,
 )
 
+/**
+ * Append-only play log (the History feature). Split from `history_items`
+ * (2026-09-21): that table is session navigation state (the queue screen's
+ * past section + prev/next walk), which shuffles and truncates by design —
+ * it can never double as the durable played record. This table is written
+ * only on forward track-leaves, never on back-jumps/taps/drags.
+ */
+@Entity(tableName = "playlog_items")
+data class PlayLogItem(
+    @PrimaryKey val pos: Int,
+    @ColumnInfo(name = "track_id") val trackId: String,
+    @ColumnInfo(name = "track_json") val trackJson: String,
+)
+
 @Entity(tableName = "cache_entries")
 data class CacheEntry(
     @PrimaryKey @ColumnInfo(name = "track_id") val trackId: String,
@@ -128,6 +142,24 @@ interface HistoryDao {
 }
 
 @Dao
+interface PlayLogDao {
+    @Query("SELECT * FROM playlog_items ORDER BY pos")
+    suspend fun all(): List<PlayLogItem>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putAll(items: List<PlayLogItem>)
+
+    @Query("DELETE FROM playlog_items")
+    suspend fun clear()
+
+    @Transaction
+    suspend fun replace(items: List<PlayLogItem>) {
+        clear()
+        putAll(items)
+    }
+}
+
+@Dao
 interface AudioCacheDao {
     @Query("SELECT * FROM cache_entries WHERE track_id = :key")
     suspend fun entry(key: String): CacheEntry?
@@ -161,14 +193,15 @@ interface PlaybackDao {
 }
 
 @Database(
-    entities = [SearchEntry::class, QueueItem::class, HistoryItem::class, CacheEntry::class, PlaybackStateRow::class],
-    version = 4,
+    entities = [SearchEntry::class, QueueItem::class, HistoryItem::class, PlayLogItem::class, CacheEntry::class, PlaybackStateRow::class],
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun search(): SearchDao
     abstract fun queue(): QueueDao
     abstract fun history(): HistoryDao
+    abstract fun playLog(): PlayLogDao
     abstract fun audioCache(): AudioCacheDao
     abstract fun playback(): PlaybackDao
 
@@ -210,6 +243,18 @@ abstract class AppDb : RoomDatabase() {
             }
         }
 
+        /** v4 → v5: append-only play log (durable History feature). */
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS playlog_items (" +
+                        "pos INTEGER NOT NULL PRIMARY KEY, " +
+                        "track_id TEXT NOT NULL, " +
+                        "track_json TEXT NOT NULL)",
+                )
+            }
+        }
+
         @Volatile
         private var inst: AppDb? = null
 
@@ -219,7 +264,7 @@ abstract class AppDb : RoomDatabase() {
                     ctx.applicationContext,
                     AppDb::class.java,
                     "spotifydx.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { inst = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { inst = it }
             }
     }
 }

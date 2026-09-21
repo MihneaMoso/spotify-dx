@@ -13,9 +13,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Full playing-history sheet (opened from the Library header button):
- * every played track, most recent first. Tap plays; dots/hold open the
- * same context menu as everywhere else. No arguments — history is live
- * repository state, so the sheet always shows the latest on open.
+ * every played track, most recent first. Reads the durable play log
+ * (state.playLog) — never the session past window. Tap plays; dots/hold
+ * open the same context menu as everywhere else. No arguments — history
+ * is live repository state, so the sheet always shows the latest on open.
  */
 class HistorySheet : BottomSheetDialogFragment() {
     override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View =
@@ -33,7 +34,7 @@ class HistorySheet : BottomSheetDialogFragment() {
         list.swipeToQueue(adapter)
         viewLifecycleOwner.lifecycleScope.launch {
             PlayerRepository.state.collect { st ->
-                adapter.submitList(st.history.reversed())
+                adapter.submitList(st.playLog.reversed())
             }
         }
     }

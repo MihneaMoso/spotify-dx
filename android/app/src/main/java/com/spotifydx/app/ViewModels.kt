@@ -119,7 +119,7 @@ class HomeViewModel : ScopedViewModel() {
                         .filterNotNull().map(Models::playlist)
                 }
                 // The second Home list is Recently Played, owned live by
-                // PlayerRepository.history — not the feed's liked snapshot.
+                // PlayerRepository.playLog — not the feed's liked snapshot.
                 _state.value = ScreenState.Content(
                     empty = _playlists.value.isEmpty(),
                 )

@@ -1828,6 +1828,21 @@ dioxus-mobile Rust code is untouched and still builds.
   `HistorySheet` (full history, recency-sorted, tap-to-play + menus).
   History cap raised 50→100. Play origin labels: "Recently Played" /
   "History".
+- **History vs queue split (2026-09-21):** one list served two masters
+  (`timeline()` = history + NOW + queue, with history doubling as the
+  History feature AND the queue's past section AND drag membership), so
+  every fix to one side broke the other. Now two lists: `history` is the
+  session past window (navigation state — old queue-coupled semantics
+  restored verbatim: truncate on back-jump, skipped rows land here,
+  positional drag split; drives the queue screen past section + prev/next
+  only) and `playLog` is the append-only durable log (new `playlog_items`
+  table, v4→v5 migration; written ONLY via `leaveForward` on
+  advance/play/tap-ahead; drives Home recent + HistorySheet only).
+  Tap-ahead logs just the outgoing current to the log while skipped rows
+  join the past window (queue behaves exactly like the old build);
+  back-jumps/drags never touch the log. Logout wipes queue + past window,
+  keeps the log (device-level). Rule: a feature with different writers
+  than its renderer needs its own list.
 - **History durability (2026-09-21):** played history is device-level
   (Echo past-songs parity), NOT session-level: `SessionRepository.logout`
   now calls `PlaybackStore.clearSession()` (queue + last-played only) —
