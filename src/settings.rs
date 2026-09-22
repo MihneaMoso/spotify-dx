@@ -160,6 +160,16 @@ pub struct Settings {
     pub tidal_token: String,
     #[serde(default)]
     pub deezer_arl: String,
+    /// Streaming quality preference on unmetered networks (wifi):
+    /// "low" | "normal" | "high" | "lossless". Advisory ceiling, not a
+    /// hard gate (see resolver): providers prefer a variant within the
+    /// cap and degrade honestly (real tier always labeled) rather than
+    /// failing a track nothing else could play.
+    #[serde(default)]
+    pub stream_quality_wifi: String,
+    /// Same for metered networks (mobile data).
+    #[serde(default)]
+    pub stream_quality_mobile: String,
 }
 
 impl Default for Settings {
@@ -174,6 +184,8 @@ impl Default for Settings {
             qobuz_auth_token: String::new(),
             tidal_token: String::new(),
             deezer_arl: String::new(),
+            stream_quality_wifi: "high".to_string(),
+            stream_quality_mobile: "normal".to_string(),
         }
     }
 }
@@ -264,6 +276,20 @@ impl Settings {
             self.volume = Settings::default().volume;
         }
         self.volume = self.volume.clamp(0.0, 1.0);
+        // Unknown quality strings (hand edits, future tiers) fall back to
+        // the field default — never fail the whole settings load over one
+        // bad value.
+        self.stream_quality_wifi = normalize_quality(&self.stream_quality_wifi, "high");
+        self.stream_quality_mobile = normalize_quality(&self.stream_quality_mobile, "normal");
+    }
+}
+
+/// One validated quality value: the known four pass through, anything
+/// else becomes `fallback`.
+fn normalize_quality(v: &str, fallback: &str) -> String {
+    match v {
+        "low" | "normal" | "high" | "lossless" => v.to_string(),
+        _ => fallback.to_string(),
     }
 }
 

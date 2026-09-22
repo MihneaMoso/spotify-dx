@@ -161,8 +161,9 @@ pub async fn play_track(track: &crate::spotify::models::Track) -> Result<(), App
 /// Resolves the track through the provider chain and plays the result through
 /// the audio sink. Reuses the metadata already present on `track`.
 async fn open_play_track(track: &crate::spotify::models::Track) -> Result<(), AppError> {
-    // Resolve through the open engine.
-    let stream = crate::streaming::resolver::resolve(track)
+    // Resolve through the open engine (desktop: unconstrained quality —
+    // the wifi/metered preference is an Android-settings concern).
+    let stream = crate::streaming::resolver::resolve(track, None)
         .await
         .map_err(|e| AppError::Playback(format!("resolver error: {e}")))?;
     match stream {

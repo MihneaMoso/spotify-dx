@@ -41,6 +41,11 @@ class TrackAdapter(
             val s = (ms / 1000).toInt()
             return "%d:%02d".format(s / 60, s % 60)
         }
+
+        /** Explicit badge: visible only for explicit tracks (else GONE, no layout cost). */
+        fun bindExplicit(badge: TextView, explicit: Boolean) {
+            badge.visibility = if (explicit) View.VISIBLE else View.GONE
+        }
     }
 
     /**
@@ -56,6 +61,7 @@ class TrackAdapter(
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val explicitBadge: TextView = v.findViewById(R.id.track_explicit)
         private val more: android.widget.ImageButton = v.findViewById(R.id.track_more)
         private val handle: android.widget.ImageView = v.findViewById(R.id.track_handle)
 
@@ -74,6 +80,7 @@ class TrackAdapter(
             // right-side duration slot is now the dots button).
             subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = formatDuration(t.durationMs)
+            bindExplicit(explicitBadge, t.explicit)
             // Echo drag handle: visible only on reorderable lists; touching
             // it starts the drag instantly (consumed, so no tap-through play).
             val starter = onHandleTouch

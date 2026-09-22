@@ -854,6 +854,7 @@ object PlayerRepository {
             coverUrl = cover,
             durationMs = o.optLong("duration_ms", 0),
             uri = o.optString("uri", ""),
+            explicit = o.optBoolean("explicit", false),
         )
     }
 

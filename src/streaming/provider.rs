@@ -84,6 +84,20 @@ impl fmt::Display for Quality {
     }
 }
 
+impl Quality {
+    /// Parse a user quality hint ("low" | "normal" | "high" | "lossless").
+    /// Unknown (or missing) hints mean unconstrained — today's behavior.
+    pub fn parse_hint(s: Option<&str>) -> Option<Quality> {
+        match s.map(str::to_lowercase)?.as_str() {
+            "low" => Some(Quality::Low),
+            "normal" => Some(Quality::Normal),
+            "high" => Some(Quality::High),
+            "lossless" => Some(Quality::Lossless),
+            _ => None,
+        }
+    }
+}
+
 /// Track metadata needed by providers to locate a stream.
 /// Providers use different subsets (TIDAL uses Spotify ID, Qobuz uses ISRC,
 /// YouTube uses artist+title).
@@ -101,6 +115,10 @@ pub struct TrackQuery {
     pub album: Option<String>,
     /// Track duration in milliseconds.
     pub duration_ms: u64,
+    /// Advisory quality ceiling from the user's streaming preference
+    /// (wifi vs metered). None = unconstrained (legacy behavior).
+    /// Providers prefer variants within cap, degrade honestly.
+    pub max_quality: Option<Quality>,
 }
 
 /// A music source that can resolve a track query into a stream URL.

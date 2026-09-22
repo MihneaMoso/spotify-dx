@@ -132,6 +132,7 @@ class QueueTimelineAdapter(
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val explicitBadge: TextView = v.findViewById(R.id.track_explicit)
         private val more: android.widget.ImageButton = v.findViewById(R.id.track_more)
         private val handle: android.widget.ImageView = v.findViewById(R.id.track_handle)
 
@@ -145,6 +146,7 @@ class QueueTimelineAdapter(
             title.text = t.name.ifEmpty { "Unknown track" }
             subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = TrackAdapter.formatDuration(t.durationMs)
+            TrackAdapter.bindExplicit(explicitBadge, t.explicit)
             // Context menu on every row incl. NOW (tap still toggles —
             // HoldToOpen only fires on a 2s stationary hold, and the dots
             // are a separate target from the row click).

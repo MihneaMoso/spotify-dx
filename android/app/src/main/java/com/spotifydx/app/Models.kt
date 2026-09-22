@@ -11,7 +11,7 @@ import org.json.JSONObject
  *
  * Field map (core `spotify::models`, serialized 1:1):
  * - Track: {id, name, artists:[{id, name}], album:{id, name, images:[{url,width}]},
- *   duration_ms, uri}
+ *   duration_ms, uri, explicit}
  * - Album: {id, name, artists, images, release_date, total_tracks, uri}
  * - Playlist (GQL): {id, name, images, tracks:{total, items:[Track]}, uri}
  * - ArtistPage: {artist, albums[], top_tracks[], related[]}
@@ -32,6 +32,8 @@ data class Track(
     val uri: String = "",
     /** ISO-8601 playlist add time; "" when the source carries none. */
     val addedAt: String = "",
+    /** Explicit-lyrics flag (core `contentRating`); false when unknown. */
+    val explicit: Boolean = false,
 ) {
     val artistNames: String get() = artists.joinToString(", ")
     val playable: Boolean get() = id.isNotEmpty() && name.isNotEmpty()
@@ -115,6 +117,7 @@ object Models {
             )
             .put("uri", t.uri)
             .put("added_at", t.addedAt)
+            .put("explicit", t.explicit)
     }
 
     fun track(o: JSONObject): Track {
@@ -130,6 +133,7 @@ object Models {
             durationMs = o.optLong("duration_ms", o.optLong("durationMs", 0)),
             uri = o.optString("uri", ""),
             addedAt = o.optString("added_at", ""),
+            explicit = o.optBoolean("explicit", false),
         )
     }
 

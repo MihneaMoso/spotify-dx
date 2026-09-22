@@ -261,13 +261,34 @@ impl SoundcloudProvider {
                 None => continue,
             };
             // Progressive only — the platform player cannot do HLS.
-            let prog = transcodings.iter().find(|t| {
-                t.get("format")
-                    .and_then(|f| f.get("protocol"))
-                    .and_then(|p| p.as_str())
-                    == Some("progressive")
-            });
-            let entry = match prog {
+            // Capped below High: prefer a standard transcoding when one
+            // exists, else degrade to hq honestly (a cap never fails the
+            // track).
+            let prog_list: Vec<_> = transcodings
+                .iter()
+                .filter(|t| {
+                    t.get("format")
+                        .and_then(|f| f.get("protocol"))
+                        .and_then(|p| p.as_str())
+                        == Some("progressive")
+                })
+                .collect();
+            let capped_low = matches!(
+                query.max_quality,
+                Some(Quality::Normal) | Some(Quality::Low)
+            );
+            let entry = if capped_low {
+                prog_list
+                    .iter()
+                    .find(|t| {
+                        t.get("quality").and_then(|q| q.as_str()) != Some("hq")
+                    })
+                    .or(prog_list.first())
+                    .copied()
+            } else {
+                prog_list.first().copied()
+            };
+            let entry = match entry {
                 Some(e) => e,
                 None => continue,
             };

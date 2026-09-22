@@ -46,6 +46,7 @@ class SearchAdapter(
         private val title: TextView = v.findViewById(R.id.track_title)
         private val subtitle: TextView = v.findViewById(R.id.track_subtitle)
         private val duration: TextView = v.findViewById(R.id.track_duration)
+        private val explicitBadge: TextView = v.findViewById(R.id.track_explicit)
 
         init {
             // Search rows never show the index gutter.
@@ -58,6 +59,7 @@ class SearchAdapter(
             title.text = t.name.ifEmpty { "Unknown track" }
             subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = TrackAdapter.formatDuration(t.durationMs)
+            TrackAdapter.bindExplicit(explicitBadge, t.explicit)
             itemView.setOnClickListener { onPlayTrack(t) }
             itemView.findViewById<android.widget.ImageButton>(R.id.track_more)
                 ?.setOnClickListener { onMenu(MenuTarget.Song(t)) }

@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
@@ -30,6 +31,7 @@ class SettingsFragment : Fragment() {
         bindProfile(v)
         bindAppearance(v)
         bindEngine(v)
+        bindQuality(v)
         bindCredentials(v)
         bindPrivacy(v)
         bindUpdates(v)
@@ -151,6 +153,59 @@ class SettingsFragment : Fragment() {
         v.findViewById<View>(R.id.upsell_toggle)?.setOnClickListener {
             val cur = SettingsStore.settings.value
             SettingsStore.save(cur.copy(hideUpsell = !cur.hideUpsell))
+        }
+    }
+
+    // -- Streaming quality selectors (wifi cap + metered cap) -------------------------------
+    private fun bindQuality(v: View) {
+        val wifiGroup: LinearLayout = v.findViewById(R.id.quality_wifi_group)
+        val mobileGroup: LinearLayout = v.findViewById(R.id.quality_mobile_group)
+        // Rows built once; the settings collect below only flips checks
+        // (compare-before-write, so no ripple churn on unrelated saves).
+        val wifiRows = buildQualityRows(wifiGroup, get = { it.qualityWifi }) { q ->
+            val cur = SettingsStore.settings.value
+            if (q != cur.qualityWifi) SettingsStore.save(cur.copy(qualityWifi = q))
+        }
+        val mobileRows = buildQualityRows(mobileGroup, get = { it.qualityMobile }) { q ->
+            val cur = SettingsStore.settings.value
+            if (q != cur.qualityMobile) SettingsStore.save(cur.copy(qualityMobile = q))
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            SettingsStore.settings.collect { s ->
+                wifiRows.forEach { (q, btn) ->
+                    btn.isChecked = q == s.qualityWifi
+                }
+                mobileRows.forEach { (q, btn) ->
+                    btn.isChecked = q == s.qualityMobile
+                }
+            }
+        }
+    }
+
+    /** Builds one tappable option row per tier; returns (quality, radio) pairs. */
+    private fun buildQualityRows(
+        group: LinearLayout,
+        get: (SettingsStore.Settings) -> String,
+        onPick: (String) -> Unit,
+    ): List<Pair<String, RadioButton>> {
+        val ctx = group.context
+        val names = mapOf(
+            SettingsStore.Quality.LOW to ctx.getString(R.string.quality_low),
+            SettingsStore.Quality.NORMAL to ctx.getString(R.string.quality_normal),
+            SettingsStore.Quality.HIGH to ctx.getString(R.string.quality_high),
+            SettingsStore.Quality.LOSSLESS to ctx.getString(R.string.quality_lossless),
+        )
+        val cur = SettingsStore.settings.value
+        return SettingsStore.Quality.ALL.map { q ->
+            val row = LayoutInflater.from(ctx).inflate(R.layout.item_quality_option, group, false)
+            val btn: RadioButton = row.findViewById(R.id.quality_option_btn)
+            row.findViewById<TextView>(R.id.quality_option_name).text = names[q]
+            row.findViewById<TextView>(R.id.quality_option_detail).text =
+                SettingsStore.Quality.detail(q)
+            btn.isChecked = q == get(cur)
+            row.setOnClickListener { onPick(q) }
+            group.addView(row)
+            q to btn
         }
     }
 

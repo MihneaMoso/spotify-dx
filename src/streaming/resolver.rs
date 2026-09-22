@@ -23,9 +23,13 @@ pub struct ResolvedStream {
 /// Resolve a Spotify track to a playable audio URL.
 ///
 /// Checks the cache first, then tries the provider chain in order.
+/// `quality_hint` is the user's advisory ceiling (wifi vs metered
+/// preference); None = unconstrained (legacy behavior). Hints only ever
+/// narrow variant choice — never cause NotFound.
 /// Returns `Err` only on hard failure; `Ok(None)` means "not found anywhere".
 pub async fn resolve(
     track: &crate::spotify::models::Track,
+    quality_hint: Option<crate::streaming::provider::Quality>,
 ) -> Result<Option<ResolvedStream>, String> {
     let track_id = &track.id;
 
@@ -62,7 +66,8 @@ pub async fn resolve(
     }
 
     // Step 2: Build the track query.
-    let query = build_query(track);
+    let mut query = build_query(track);
+    query.max_quality = quality_hint;
 
     // Step 3: Try providers in order.
     let chain = providers::build_provider_chain();
@@ -183,6 +188,7 @@ fn build_query(track: &crate::spotify::models::Track) -> TrackQuery {
         artist,
         album: if album.is_empty() { None } else { Some(album) },
         duration_ms: track.duration_ms,
+        max_quality: None,
     }
 }
 

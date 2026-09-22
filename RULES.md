@@ -1902,6 +1902,19 @@ dioxus-mobile Rust code is untouched and still builds.
   started-but-never-foregrounded services on slow starts. Now plain
   `startService` (playUrl foregrounds itself) with a 5s poll. Rule: never
   `startForegroundService` without a guaranteed prompt `startForeground`.
+- **Search top result + explicit badge + quality selectors (2026-09-21):**
+  search promotes an exact (else prefix) name match artist > album >
+  track to the front, removed from its section (Kotlin-only, server order
+  otherwise kept); `Track.explicit` is parsed core-side all along — it was
+  only dropped at the Kotlin model, so the badge is model + `item_track`
+  `track_explicit` view (GONE when clean) bound in all three adapters +
+  `mapSdkTrack`; quality prefs (`stream_quality_wifi/mobile`, defaults
+  high/normal, normalize-repaired) travel as an advisory hint in the
+  resolve payload — providers prefer within-cap variants and degrade
+  honestly (tier always labels what served; Saavn 160 no longer reports
+  High), caps never fail a playable track; cache already keys on quality.
+  Settings UI reuses manual row-click binding (RadioButtons aren't
+  RadioGroup children). `cargo test` 112/112, clippy 0, gradle green.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

@@ -17,6 +17,27 @@ import org.json.JSONObject
  * bridge instead of direct file access.
  */
 object SettingsStore {
+    /** Streaming quality tiers (mirror core `settings.rs` vocabulary). */
+    object Quality {
+        const val LOW = "low"
+        const val NORMAL = "normal"
+        const val HIGH = "high"
+        const val LOSSLESS = "lossless"
+        val ALL = listOf(LOW, NORMAL, HIGH, LOSSLESS)
+
+        /** Details shown under each option (provider-honest tiers). */
+        fun detail(q: String): String = when (q) {
+            LOW -> "≈96 kbps · minimal data"
+            NORMAL -> "≈160 kbps · balanced"
+            HIGH -> "Up to 320 kbps · best lossy"
+            LOSSLESS -> "Lossless · where available (Qobuz), ~5× data"
+            else -> ""
+        }
+
+        fun sanitize(q: String, fallback: String): String =
+            if (q in ALL) q else fallback
+    }
+
     data class Settings(
         val theme: String = "deep-blue",
         val volume: Float = 0.8f,
@@ -28,6 +49,9 @@ object SettingsStore {
         val qobuzAuthToken: String = "",
         val tidalToken: String = "",
         val deezerArl: String = "",
+        /** Streaming quality preference: wifi (unmetered) vs mobile (metered). */
+        val qualityWifi: String = Quality.HIGH,
+        val qualityMobile: String = Quality.NORMAL,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -56,6 +80,8 @@ object SettingsStore {
                 .put("qobuz_auth_token", next.qobuzAuthToken)
                 .put("tidal_token", next.tidalToken)
                 .put("deezer_arl", next.deezerArl)
+                .put("stream_quality_wifi", next.qualityWifi)
+                .put("stream_quality_mobile", next.qualityMobile)
                 .toString()
             BridgeClient.setSettings(json).onFailure {
                 _settings.value = prev
@@ -76,6 +102,8 @@ object SettingsStore {
             qobuzAuthToken = json.optString("qobuz_auth_token", ""),
             tidalToken = json.optString("tidal_token", ""),
             deezerArl = json.optString("deezer_arl", ""),
+            qualityWifi = Quality.sanitize(json.optString("stream_quality_wifi", Quality.HIGH), Quality.HIGH),
+            qualityMobile = Quality.sanitize(json.optString("stream_quality_mobile", Quality.NORMAL), Quality.NORMAL),
         )
         if (next != _settings.value) _settings.value = next
         Theme.apply(next.theme)

@@ -157,15 +157,32 @@ impl SaavnProvider {
                 Some(u) => u,
                 None => continue,
             };
-            // Prefer 320kbps when the item advertises it, else 160.
+            // Quality variant: serve the best offered tier within the
+            // advisory cap, else degrade honestly — a cap never fails a
+            // playable track. The returned tier always describes the URL
+            // actually served (previously everything reported High,
+            // even 160kbps URLs).
             let high = item.get("320kbps").and_then(|v| v.as_str()) == Some("true");
-            let token = if high { "_320" } else { "_160" };
-            let stream_url = Self::swap_quality_token(&base, token);
+            let offered = if high { Quality::High } else { Quality::Normal };
+            let cap = query.max_quality;
+            let (token, quality) = match cap {
+                Some(Quality::Low) => ("_96", Quality::Low),
+                Some(Quality::Normal) => ("_160", Quality::Normal),
+                _ if offered == Quality::High => ("_320", Quality::High),
+                _ => ("_160", Quality::Normal),
+            };
+            // `_96` is the base token: Low keeps it (no swap); higher
+            // tiers swap up (swap_quality_token is a no-op without `_96`).
+            let stream_url = if token == "_96" {
+                base
+            } else {
+                Self::swap_quality_token(&base, token)
+            };
             self.note_success();
             return Resolution::Success {
                 url: stream_url,
                 format: AudioFormat::Unknown,
-                quality: Quality::High,
+                quality,
             };
         }
         Resolution::NotFound

@@ -26,6 +26,8 @@ const API: &str = "https://api.qobuz.com/api/2.0";
 /// CD-quality FLAC (16/44.1): the most widely available lossless tier.
 /// Higher tiers (24-bit) fail per-track far more often.
 const FORMAT_CD_FLAC: u8 = 6;
+/// MP3 320kbps: the only sub-FLAC tier Qobuz serves (no 96/160 exist).
+const FORMAT_MP3_320: u8 = 5;
 
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -121,15 +123,16 @@ impl QobuzProvider {
         Ok(hits)
     }
 
-    /// Direct file URL for a numeric track id (CD FLAC).
+    /// Direct file URL for a numeric track id (format selectable).
     async fn file_url(
         &self,
         app_id: &str,
         token: &str,
         track_id: u64,
+        format_id: u8,
     ) -> Result<Option<String>, SearchError> {
         let url = format!(
-            "{API}/track/getFileUrl?format_id={FORMAT_CD_FLAC}\
+            "{API}/track/getFileUrl?format_id={format_id}\
              &track_id={track_id}&app_id={app_id}&user_auth_token={token}"
         );
         let resp = self
@@ -153,6 +156,15 @@ impl QobuzProvider {
     }
 
     async fn resolve_inner(&self, app_id: &str, token: &str, query: &TrackQuery) -> Resolution {
+        // Format preference from the advisory cap: lossless (or
+        // unconstrained) takes CD FLAC; anything lower takes MP3 320 —
+        // the only sub-FLAC tier Qobuz serves. A failed preferred format
+        // falls back to FLAC before giving up the hit (labeled by what
+        // actually served, never assumed).
+        let preferred = match query.max_quality {
+            None | Some(Quality::Lossless) => FORMAT_CD_FLAC,
+            _ => FORMAT_MP3_320,
+        };
         // ISRC first (exact recording match), then text fallback.
         let mut attempts = Vec::new();
         if let Some(ref isrc) = query.isrc {
@@ -178,24 +190,41 @@ impl QobuzProvider {
                 if secs != 0 && !youtube::duration_accepts(query.duration_ms, Some(secs)) {
                     continue;
                 }
-                match self.file_url(app_id, token, id).await {
-                    Ok(Some(url)) => {
-                        return Resolution::Success {
-                            url,
-                            format: AudioFormat::Flac,
-                            quality: Quality::Lossless,
+                // Preferred format first, FLAC fallback (distinct formats
+                // only — no double request when they coincide).
+                let mut formats = vec![preferred];
+                if preferred != FORMAT_CD_FLAC {
+                    formats.push(FORMAT_CD_FLAC);
+                }
+                let mut served: Option<(String, AudioFormat, Quality)> = None;
+                for format_id in formats {
+                    match self.file_url(app_id, token, id, format_id).await {
+                        Ok(Some(url)) => {
+                            served = Some(if format_id == FORMAT_CD_FLAC {
+                                (url, AudioFormat::Flac, Quality::Lossless)
+                            } else {
+                                (url, AudioFormat::Mp3, Quality::High)
+                            });
+                            break;
                         }
-                    }
-                    Ok(None) => continue,
-                    Err(SearchError::Auth) => {
-                        return Resolution::Error("qobuz credentials rejected".into())
-                    }
-                    Err(SearchError::Cooldown) => {
-                        return Resolution::Cooldown {
-                            retry_after_secs: 60,
+                        Ok(None) => continue,
+                        Err(SearchError::Auth) => {
+                            return Resolution::Error("qobuz credentials rejected".into())
                         }
+                        Err(SearchError::Cooldown) => {
+                            return Resolution::Cooldown {
+                                retry_after_secs: 60,
+                            }
+                        }
+                        Err(SearchError::Other) => continue,
                     }
-                    Err(SearchError::Other) => continue,
+                }
+                if let Some((url, format, quality)) = served {
+                    return Resolution::Success {
+                        url,
+                        format,
+                        quality,
+                    };
                 }
             }
         }

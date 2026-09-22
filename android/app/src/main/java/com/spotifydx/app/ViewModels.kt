@@ -213,13 +213,21 @@ class SearchViewModel : ScopedViewModel() {
                     List(arr.length()) { i -> arr.optJSONObject(i) }
                         .filterNotNull().map(Models::artist)
                 }
-                // Unified relevance order: each array arrives Spotify-ordered;
-                // concatenate songs → artists → albums (the app's vertical
-                // order), no client ranking invented.
+                // Top result (Spotify parity): an exact name match jumps to
+                // the front — searching an artist shows the artist first,
+                // not their songs. Priority artist > album > track; fallback
+                // is prefix match in the same order. The promoted row leaves
+                // its section (no duplication); everything else keeps
+                // server order. Pure string compares over ≤50 rows.
+                val q = query.trim().lowercase()
+                val tracks = _tracks.value.toMutableList()
+                val artists = _artists.value.toMutableList()
+                val albums = _albums.value.toMutableList()
                 _results.value = buildList {
-                    _tracks.value.forEach { add(SearchRow.TrackRow(it)) }
-                    _artists.value.forEach { add(SearchRow.ArtistRow(it)) }
-                    _albums.value.forEach { add(SearchRow.AlbumRow(it)) }
+                    pickTop(q, artists, albums, tracks)?.let { add(it) }
+                    tracks.forEach { add(SearchRow.TrackRow(it)) }
+                    artists.forEach { add(SearchRow.ArtistRow(it)) }
+                    albums.forEach { add(SearchRow.AlbumRow(it)) }
                 }
                 val empty = _results.value.isEmpty()
                 _state.value = ScreenState.Content(empty = empty)
@@ -229,6 +237,40 @@ class SearchViewModel : ScopedViewModel() {
                 }
             }
         }
+    }
+
+    /**
+     * Top-result pick: exact name match first (artist > album > track),
+     * then prefix match in the same order. Returns the promoted row and
+     * REMOVES it from its section list (no duplication). Null when nothing
+     * matches — the concatenated sections render unchanged.
+     */
+    private fun pickTop(
+        q: String,
+        artists: MutableList<Artist>,
+        albums: MutableList<Album>,
+        tracks: MutableList<Track>,
+    ): SearchRow? {
+        if (q.isEmpty()) return null
+        artists.indexOfFirst { it.name.lowercase() == q }.takeIf { it >= 0 }?.let {
+            return SearchRow.ArtistRow(artists.removeAt(it))
+        }
+        albums.indexOfFirst { it.name.lowercase() == q }.takeIf { it >= 0 }?.let {
+            return SearchRow.AlbumRow(albums.removeAt(it))
+        }
+        tracks.indexOfFirst { it.name.lowercase() == q }.takeIf { it >= 0 }?.let {
+            return SearchRow.TrackRow(tracks.removeAt(it))
+        }
+        artists.indexOfFirst { it.name.lowercase().startsWith(q) }.takeIf { it >= 0 }?.let {
+            return SearchRow.ArtistRow(artists.removeAt(it))
+        }
+        albums.indexOfFirst { it.name.lowercase().startsWith(q) }.takeIf { it >= 0 }?.let {
+            return SearchRow.AlbumRow(albums.removeAt(it))
+        }
+        tracks.indexOfFirst { it.name.lowercase().startsWith(q) }.takeIf { it >= 0 }?.let {
+            return SearchRow.TrackRow(tracks.removeAt(it))
+        }
+        return null
     }
 }
 

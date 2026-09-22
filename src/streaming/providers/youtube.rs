@@ -263,7 +263,14 @@ pub(crate) fn duration_accepts(track_ms: u64, candidate_secs: Option<u64>) -> bo
 
 impl YoutubeProvider {
     /// Get a streamable audio URL for a YouTube video ID via InnerTube.
-    async fn get_stream_url(&self, video_id: &str) -> StreamOutcome {
+    /// `max_quality` is the advisory bitrate ceiling (None = today's
+    /// behavior): the pick prefers variants within cap and degrades
+    /// honestly (real tier labeled) rather than failing the candidate.
+    async fn get_stream_url(
+        &self,
+        video_id: &str,
+        max_quality: Option<Quality>,
+    ) -> StreamOutcome {
         let body = serde_json::json!({
             "context": Self::innertube_context(),
             "videoId": video_id,
@@ -315,6 +322,15 @@ impl YoutubeProvider {
         // be fetched. The progressive muxed format has no such restriction —
         // a plain GET returns the entire file. It carries an AAC audio track
         // (128kbps, the 360p muxed container), which rodio decodes fine.
+        // Bitrate ceiling from the advisory cap (bands mirror
+        // quality_for_bitrate so the pick and the label always agree).
+        // Uncapped = u64::MAX (today's behavior, bit-for-bit).
+        let ceiling: u64 = match max_quality {
+            Some(Quality::Low) => 127_999,
+            Some(Quality::Normal) => 255_999,
+            _ => u64::MAX,
+        };
+        let capped = ceiling != u64::MAX;
         if let Some(muxed) = data
             .get("formats")
             .and_then(|f| f.as_array())
@@ -345,11 +361,17 @@ impl YoutubeProvider {
                 .to_string();
             if !url.is_empty() {
                 let bitrate = muxed.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
-                return StreamOutcome::Playable {
-                    url,
-                    format: AudioFormat::Aac,
-                    quality: quality_for_bitrate(bitrate),
-                };
+                // Capped: an over-ceiling (or unknown-bitrate) mux yields
+                // to the adaptive pick below, which has real variants to
+                // choose from. Uncapped: today's pick, untouched.
+                let muxed_fits = !capped || (bitrate > 0 && bitrate <= ceiling);
+                if muxed_fits {
+                    return StreamOutcome::Playable {
+                        url,
+                        format: AudioFormat::Aac,
+                        quality: quality_for_bitrate(bitrate),
+                    };
+                }
             }
         }
         // Fallback: best audio-only adaptive format (`adaptiveFormats`).
@@ -361,7 +383,10 @@ impl YoutubeProvider {
                 return StreamOutcome::NextCandidate("no streaming formats found".into());
             }
         };
-        let best_audio = formats
+        // Capped: best variant within the ceiling; uncapped: best overall
+        // (today's max_by_key). An empty within-cap set falls through to
+        // the degraded pick below — a cap never fails the candidate.
+        let in_cap: Vec<_> = formats
             .iter()
             .filter(|f| {
                 f.get("mimeType")
@@ -369,7 +394,26 @@ impl YoutubeProvider {
                     .map(|m| m.starts_with("audio/"))
                     .unwrap_or(false)
             })
-            .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0));
+            .filter(|f| {
+                !capped
+                    || f.get("bitrate").and_then(|b| b.as_u64()).is_some_and(|b| b <= ceiling)
+            })
+            .collect();
+        let best_audio = if capped && in_cap.is_empty() {
+            formats
+                .iter()
+                .filter(|f| {
+                    f.get("mimeType")
+                        .and_then(|m| m.as_str())
+                        .map(|m| m.starts_with("audio/"))
+                        .unwrap_or(false)
+                })
+                .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
+        } else {
+            in_cap
+                .into_iter()
+                .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
+        };
         if let Some(fmt) = best_audio {
             let url = fmt
                 .get("url")
@@ -467,7 +511,7 @@ impl Provider for YoutubeProvider {
                 last_reason = format!("duration mismatch for {video_id}");
                 continue;
             }
-            match self.get_stream_url(&video_id).await {
+            match self.get_stream_url(&video_id, query.max_quality).await {
                 StreamOutcome::Playable {
                     url,
                     format,

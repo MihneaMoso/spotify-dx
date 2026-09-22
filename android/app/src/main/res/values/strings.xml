@@ -49,6 +49,14 @@
     <string name="settings_profile">Profile</string>
     <string name="settings_appearance">Appearance</string>
     <string name="settings_engine">Playback engine</string>
+    <string name="settings_quality">Streaming quality</string>
+    <string name="settings_quality_note">Separate caps for Wi-Fi and mobile data. The player always shows the tier actually served; lossless needs Qobuz credentials.</string>
+    <string name="settings_quality_wifi">On Wi-Fi</string>
+    <string name="settings_quality_mobile">On mobile data</string>
+    <string name="quality_low">Low</string>
+    <string name="quality_normal">Normal</string>
+    <string name="quality_high">High</string>
+    <string name="quality_lossless">Lossless (FLAC)</string>
     <string name="settings_privacy">Privacy</string>
     <string name="settings_updates">Software &amp; updates</string>
     <string name="settings_credentials">Streaming credentials</string>

@@ -94,7 +94,9 @@ object MusicRepository {
     /**
      * Resolve [track] to `{url, format, provider}`. Sends the core-shaped
      * Track object (id/name required, artists as [{name}] refs, album with
-     * images) — play-with-metadata, zero network beyond resolution.
+     * images) — play-with-metadata, zero network beyond resolution — plus
+     * the advisory quality ceiling from the wifi/metered preference
+     * (unknown networks count as metered: data-safe by default).
      */
     suspend fun resolveStream(track: Track): Result<JSONObject> {
         val artists = org.json.JSONArray()
@@ -123,9 +125,24 @@ object MusicRepository {
                             .put("images", images),
                     )
                     .put("uri", track.uri),
-            ).toString()
+            )
+            .put("quality", effectiveQuality())
+            .toString()
         return BridgeClient.resolveStream(payload)
     }
+
+    /** Effective streaming quality: metered connection → mobile pref, else wifi pref. */
+    fun effectiveQuality(): String {
+        val s = SettingsStore.settings.value
+        return if (isMetered()) s.qualityMobile else s.qualityWifi
+    }
+
+    private fun isMetered(): Boolean = runCatching {
+        val cm = AppState.ctx().getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager
+        // Null manager / no active network: assume metered (data-safe).
+        cm?.isActiveNetworkMetered ?: true
+    }.getOrDefault(true)
 
     /**
      * Session errors bubble to the gate; data errors stay page-local.

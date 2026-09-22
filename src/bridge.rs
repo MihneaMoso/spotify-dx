@@ -1275,7 +1275,12 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
             Ok(t) => t,
             Err(e) => return err("INVALID_ARGS", format!("arg.track is not a Track: {e}")),
         };
-        match rt().block_on(crate::streaming::resolver::resolve(&track)) {
+        // Advisory quality ceiling from the Android wifi/metered
+        // preference; absent/unknown = unconstrained (legacy behavior).
+        let hint = crate::streaming::provider::Quality::parse_hint(
+            v.get("quality").and_then(|q| q.as_str()),
+        );
+        match rt().block_on(crate::streaming::resolver::resolve(&track, hint)) {
             Ok(Some(r)) => ok_data(
                 &serde_json::json!({
                     "url": r.url,
