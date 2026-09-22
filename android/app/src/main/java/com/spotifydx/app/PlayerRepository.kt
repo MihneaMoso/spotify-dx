@@ -404,6 +404,23 @@ object PlayerRepository {
         playNext(rest)
     }
 
+    /**
+     * Resume after service death (crash/restart/system reclaim): re-resolve
+     * and continue from the saved offset. Position is deliberately
+     * untouched here — fresh plays always start at 0 (see startTrack).
+     */
+    private fun resumeResolved(track: Track, source: String) {
+        update { s ->
+            s.copy(
+                track = track,
+                isPlaying = true,
+                source = source.ifEmpty { s.source },
+                audioTier = "",
+            )
+        }
+        dispatchPlay(track)
+    }
+
     /** Shared track-launch tail (state flip + engine dispatch). */
     private fun startTrack(track: Track, source: String) {
         update { s ->
@@ -412,9 +429,12 @@ object PlayerRepository {
                 isPlaying = true,
                 source = source.ifEmpty { s.source },
                 audioTier = "",
-                // Fresh track = fresh position; same track (replay after a
-                // dead service) keeps the restored position for resume.
-                positionMs = if (s.track?.id != track.id) 0 else s.positionMs,
+                // Explicit plays always start at 0 — even replays of the
+                // loaded track (a boot-restored paused song otherwise
+                // resumes from yesterday's saved offset). Pause/resume
+                // keeps its offset via toggle/restore, never this path;
+                // media-error recovery resumes via playViaOpen directly.
+                positionMs = 0,
             )
         }
         dispatchPlay(track)
@@ -654,11 +674,12 @@ object PlayerRepository {
             PlaybackStore.saveLastSoon(s.track, _state.value.positionMs, s.source)
         } else {
             // Resume in place when the service still holds the track;
-            // otherwise (re)resolve from the top (keeping the source).
+            // otherwise (re)resolve from the saved offset (crash/restart
+            // resume — the ONLY launch path that keeps position).
             val resumed = svc?.resumePlayback() ?: false
             if (!resumed) {
                 val track = s.track
-                if (track != null) play(track, s.source)
+                if (track != null) resumeResolved(track, s.source)
             }
         }
     }
