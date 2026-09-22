@@ -452,6 +452,20 @@ fn remaining_offsets(total: u32, limit: u32, max_pages: u32) -> Vec<u32> {
 /// Unknown totals (server omitted `totalCount`) don't truncate at one page:
 /// that leg falls back to sequential paging until a short page, bounded by
 /// `MAX_PAGES` — slower, but complete instead of a silent half list.
+///
+/// The fan-out futures are `Send`-bounded on multi-threaded targets only:
+/// wasm32 is single-threaded (`JsFuture` and reqwest-wasm futures are
+/// `!Send` by design, driven by `spawn_local`), so the bound is vacuous
+/// there — same convention as the rest of the codebase.
+#[cfg(target_arch = "wasm32")]
+trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+#[cfg(not(target_arch = "wasm32"))]
+trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+
 async fn collect_paged_tracks<F, Fut, T, P, R>(
     fetch_page: F,
     total_of: T,
@@ -460,7 +474,7 @@ async fn collect_paged_tracks<F, Fut, T, P, R>(
 ) -> Result<(Value, u32, Vec<crate::spotify::models::Track>), AppError>
 where
     F: Fn(u32) -> Fut + Sync,
-    Fut: std::future::Future<Output = Result<Value, AppError>> + Send,
+    Fut: std::future::Future<Output = Result<Value, AppError>> + MaybeSend,
     T: Fn(&Value) -> Option<u32>,
     P: Fn(&Value) -> Vec<crate::spotify::models::Track> + Sync,
     R: Fn(&Value) -> usize,
