@@ -140,15 +140,16 @@ object PlayerRepository {
     }
 
     /**
-     * Appends [track] to the durable play log (consecutive dupes skipped).
+     * Records [track] as most-recent in the durable play log: a replay
+     * moves the existing entry to the tail instead of duplicating it.
      * Forward-leaves only — the single writer path is [leaveForward]; no
-     * other mutation may call this.
+     * other mutation may call this. The session past window intentionally
+     * keeps positional duplicates (prev/next walks depend on them).
      */
     private fun logPlay(track: Track?) {
         if (track == null || track.id.isEmpty()) return
-        val l = _state.value.playLog
-        if (l.lastOrNull()?.id == track.id) return
-        val next = (l + track).takeLast(HISTORY_CAP)
+        val next = (_state.value.playLog.filter { it.id != track.id } + track)
+            .takeLast(HISTORY_CAP)
         update { s -> s.copy(playLog = next) }
         PlaybackStore.savePlayLogSoon(next)
     }
