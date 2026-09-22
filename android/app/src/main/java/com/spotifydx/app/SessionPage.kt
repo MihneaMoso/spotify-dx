@@ -2,7 +2,6 @@ package com.spotifydx.app
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -15,16 +14,21 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.fragment.app.FragmentActivity
-import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
-import kotlin.coroutines.resume
 
 /**
- * Activity-hosted platform browser view for the login/session page (§8
- * migration). The Activity hosts it fullscreen layered above the gate
- * (today's proven pattern: the interface underneath is never touched,
- * reparented, or rebuilt — §12.3). Pages are shown/hidden/detached in place;
- * realized views are never moved between containers.
+ * Shared owner of the activity-hosted session WebView (§8 migration). The
+ * Activity hosts it fullscreen layered above the gate (the interface
+ * underneath is never touched, reparented, or rebuilt — §12.3). Pages are
+ * shown/hidden/detached in place; realized views are never moved between
+ * containers.
+ *
+ * This class owns MECHANICS only: construction, the shared WebViewClient
+ * (containment, error surfacing, injection, revive signals), IPC dispatch,
+ * visibility primitives, parking, and teardown. Intent lives in the two
+ * facades: [LoginPage] (visible interactive sign-in) and [RefreshChannel]
+ * (hidden silent refresh). Callers must use a facade, never this class
+ * directly — except Activity lifecycle (`destroy`) and the facades.
  *
  * Capture keeps its layered methods in priority order (see [CaptureJs]);
  * only non-anonymous tokens satisfy login. On capture the page stays alive
@@ -36,7 +40,7 @@ import kotlin.coroutines.resume
  * non-web schemes bounce back to sign-in, navigation URLs are traced in
  * diagnostics.
  */
-class LoginWebViewManager(
+class SessionPage(
     private val activity: FragmentActivity,
     private val container: FrameLayout,
 ) {
@@ -50,8 +54,15 @@ class LoginWebViewManager(
     private var webView: WebView? = null
     private var captured = false
     private val main = Handler(Looper.getMainLooper())
+
     /** One-shot hook fired from the shared onPageFinished (revive flow). */
-    private var reviveHook: (() -> Unit)? = null
+    internal var reviveHook: (() -> Unit)? = null
+
+    /** Flight-scoped revive signals, reset at every revive start (main thread). */
+    internal var reviveArmed = false
+    internal var reviveLoaded = false
+    internal var reviveError = false
+    internal var reviveCaptured = false
 
     /** Script-interface receiver: every call arrives off the UI thread. */
     inner class JsBridge {
@@ -86,6 +97,7 @@ class LoginWebViewManager(
                 val token = o.optString("token", "")
                 val expires = o.optLong("expiresMs", 0)
                 if (token.isNotEmpty() && !o.optBoolean("isAnon", false)) {
+                    reviveCaptured = true
                     SessionRepository.notifyCaptured(token, expires, null)
                 }
             }
@@ -95,6 +107,7 @@ class LoginWebViewManager(
     }
 
     private fun onCaptured(token: String, expiresMs: Long) {
+        reviveCaptured = true
         if (captured) {
             // Late captures keep the session fresh (same as `store()` post-login).
             SessionRepository.notifyCaptured(token, expiresMs, null)
@@ -110,16 +123,30 @@ class LoginWebViewManager(
     /** Build + show the fullscreen login page. Idempotent (re-entry guard). */
     @SuppressLint("SetJavaScriptEnabled")
     fun show(url: String = SIGN_IN_URL) {
-        val existing = webView
-        if (existing != null) {
+        val already = webView != null
+        val wv = ensure()
+        if (already) {
             // A live page may be showing a stale step (e.g. post-expiry
             // re-login landing on the player instead of sign-in): navigate
             // when the caller asked for a different URL.
-            if (existing.url != url) existing.loadUrl(url)
+            if (wv.url != url) wv.loadUrl(url)
             container.visibility = android.view.View.VISIBLE
             return
         }
         captured = false
+        container.visibility = android.view.View.VISIBLE
+        wv.loadUrl(url)
+    }
+
+    /**
+     * Build the session page if absent, WITHOUT showing it (stays
+     * hidden/parked until an explicit show or a revive navigation). Lets
+     * cold-boot silent refresh mint from disk cookies exactly like the
+     * backgrounded case — previously a null page failed revive instantly.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    internal fun ensure(): WebView {
+        webView?.let { return it }
         val wv = WebView(activity)
         wv.layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -158,6 +185,10 @@ class LoginWebViewManager(
                 injectCapture(view)
                 // Persist cookies promptly: silent restore depends on them.
                 CookieManager.getInstance().flush()
+                // Revive-flight signal: an http(s) document actually
+                // rendered (login wall included — that IS the loaded
+                // signal; tokenlessness is read at flight exit).
+                if (reviveArmed && url.startsWith("http")) reviveLoaded = true
                 // Revive-flow hook (one-shot); the shared client — with its
                 // containment, error surfacing, and injection — stays installed.
                 reviveHook?.let { hook ->
@@ -175,6 +206,12 @@ class LoginWebViewManager(
                 error: android.webkit.WebResourceError,
             ) {
                 if (!request.isForMainFrame) return
+                // Revive-flight signal: a main-frame load error (airplane
+                // mode, captive portal, cert failure) means "page never
+                // rendered" — TRANSIENT, never proof of a dead session
+                // (onPageFinished still fires for failed loads, so loaded
+                // alone can't carry that meaning).
+                if (reviveArmed) reviveError = true
                 Log.w(TAG, "page error: ${error.errorCode} ${request.url}")
                 ToastBus.error("No connection — check your network and retry.")
             }
@@ -201,9 +238,8 @@ class LoginWebViewManager(
         }
         container.removeAllViews()
         container.addView(wv)
-        container.visibility = android.view.View.VISIBLE
         webView = wv
-        wv.loadUrl(url)
+        return wv
     }
 
     private fun injectCapture(view: WebView) {
@@ -224,40 +260,13 @@ class LoginWebViewManager(
         hide()
     }
 
-    /**
-     * Revive the session page and mint a fresh token on demand (§5.4):
-     * navigate back, wait for load completion, run the refresh routine, park
-     * again afterwards.
-     */
-    suspend fun reviveAndRefresh(timeoutMs: Long = 15_000): Boolean {
-        val wv = webView ?: return false
-        return suspendCancellableCoroutine { cont ->
-            main.post {
-                reviveHook = {
-                    wv.evaluateJavascript(CaptureJs.REFRESH, null)
-                    main.postDelayed({
-                        park()
-                        if (cont.isActive) cont.resume(true)
-                    }, 9_000)
-                }
-                wv.loadUrl(PLAYER_URL)
-            }
-            main.postDelayed({
-                if (cont.isActive) {
-                    reviveHook = null
-                    cont.resume(false)
-                }
-            }, timeoutMs)
-        }
+    /** Forget a captured login so the next interactive flow starts clean. */
+    internal fun resetCapture() {
+        captured = false
     }
 
-    /**
-     * Logout teardown (§8.6): clear credentials (bridge), reset state, tear
-     * down cookie pages so the next login starts clean. Cookie clearing is
-     * best-effort; credential clearing is authoritative.
-     */
-    fun destroyForLogout() {
-        captured = false
+    /** Detach + destroy the realized view (logout teardown half). */
+    internal fun teardownView() {
         reviveHook = null
         container.visibility = android.view.View.GONE
         container.removeAllViews()
@@ -268,11 +277,22 @@ class LoginWebViewManager(
             destroy()
         }
         webView = null
+    }
+
+    /** Best-effort cookie wipe (logout teardown half; credentials authoritative). */
+    internal fun clearCookies() {
         runCatching {
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
         }
-        SessionRepository.logout()
+    }
+
+    internal fun post(block: () -> Unit) {
+        main.post(block)
+    }
+
+    internal fun postDelayed(block: () -> Unit, ms: Long) {
+        main.postDelayed(block, ms)
     }
 
     fun destroy() {

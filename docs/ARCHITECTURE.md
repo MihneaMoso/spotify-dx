@@ -274,6 +274,53 @@ is negligible because it happens roughly hourly.
   (new-window requests rewritten to same-window navigation, non-web schemes
   bounced back to sign-in, navigation URLs traced in diagnostics).
 
+### 5.7 Session contracts (Kotlin app)
+
+State diagram (mirror = `SessionRepository.state` + `settledFlow`):
+
+```
+valid token ──expire──▶ NEEDS_PAGE ──heal ok──▶ valid (silent, no UI)
+     │                       │
+     │                  heal transient-fail → page-local error + retry (token kept)
+     │                       │
+     │                  heal definitive-fail (page rendered, no token)
+     │                       └──▶ SessionExpired → logout → GATE → interactive login
+     └──hard reject──────────▶ SessionExpired → same path
+```
+
+Ownership (read the rule, not the call sites):
+
+- `SessionPolicy` (pure, no Android imports) — every session DECISION:
+  `onDataError` (NeedsPage → heal-then-retry, else return as-is),
+  `healErrorToSurface` (definitive heal failure replaces the original
+  NeedsPage; transient keeps it), `requiresLogout` (SessionExpired only —
+  NeedsPage never logs out), `isRateLimited` (shared banner rule).
+- `SessionEnd` — every session-end MECHANISM, per-cause table in its
+  KDoc: `full()` (explicit sign-out + in-flow expiry: memory, queue/past
+  disk state, core credentials, mirror) vs `credentialsOnly()`
+  (watchdog: credentials + mirror, queue/memory survive relogin). Both
+  idempotent. The play log is device-level and survives both.
+- `GatePolicy` (pure) — the single gate-routing table executed by the
+  settled collector, the fresh-device fast lane, and the wedged-core
+  backstop: authenticated-on-gate → HOME; authenticated → stay;
+  unauthenticated → GATE only when routing is allowed AND tokenless AND
+  not already there. A present-but-unverified token always stays
+  shell-first.
+- `SessionPage` — shared WebView mechanics (construction, clients, IPC,
+  park/teardown). `LoginPage` — visible interactive flow (show/hide,
+  logout teardown). `RefreshChannel` — hidden revive flights with
+  `CAPTURED`/`NO_SESSION`/`PAGE_DEAD` outcomes. Callers use a facade by
+  intent, never the shared page directly.
+
+Recovery-loop rule (learned from the 2026-09-21 stuck restore): a retry
+must always prove which failure it saw before deciding logout vs retry —
+a loop that retries without classifying its failure strands the user
+forever. Concretely: silent-refresh failure is classified by page
+signals (rendered-but-tokenless = dead session → login; main-frame
+error or never-rendered = transient → keep token), and the definitive
+case ends the session (clearing the dead token) so the gate condition
+can actually fire instead of looping on a dead retry.
+
 ---
 
 ## 6. Global state architecture

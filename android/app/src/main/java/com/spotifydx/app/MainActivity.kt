@@ -34,7 +34,10 @@ import kotlinx.coroutines.withContext
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var loginOverlay: FrameLayout
-    private lateinit var loginManager: LoginWebViewManager
+    /** Shared session page + its two intents: visible login, hidden refresh. */
+    private lateinit var sessionPage: SessionPage
+    private lateinit var loginPage: LoginPage
+    private lateinit var refreshChannel: RefreshChannel
     private var sdkDriver: SdkWebViewDriver? = null
     private lateinit var playerSheet: PlayerSheetController
     /** Theme painted in onCreate (pre-store-load); see collectRepos. */
@@ -108,7 +111,9 @@ class MainActivity : AppCompatActivity() {
         playerSheet = PlayerSheetController(this).also {
             it.bind(findViewById(android.R.id.content))
         }
-        loginManager = LoginWebViewManager(this, loginOverlay)
+        sessionPage = SessionPage(this, loginOverlay)
+        loginPage = LoginPage(sessionPage)
+        refreshChannel = RefreshChannel(sessionPage)
         // Phase 5 SDK device host (lazy: the view is only built on the SDK
         // engine path). Events feed PlayerRepository on the main thread.
         sdkDriver = SdkWebViewDriver(this, findViewById(R.id.sdk_holder)).also { d ->
@@ -116,7 +121,7 @@ class MainActivity : AppCompatActivity() {
             d.onPlayerState = { PlayerRepository.onSdkState(it) }
             PlayerRepository.sdkDriver = d
         }
-        SessionRefresher.pageHost = { loginManager.takeIf { !isFinishing } }
+        SessionRefresher.pageHost = { refreshChannel.takeIf { !isFinishing } }
 
         SettingsStore.load()
         // Boot auth: no fire-and-forget session flights here (concurrent
@@ -170,11 +175,16 @@ class MainActivity : AppCompatActivity() {
                 if (SessionRepository.snapshot().authenticated) return@launch
                 // Same hasToken rule as the settled collector: a stored
                 // (unverified) token stays shell-first; only tokenless
-                // boots take the fast GATE lane.
-                if ((settledInTime || !PlaybackStore.hasPersistedState()) &&
-                    !SessionRepository.snapshot().hasToken
+                // boots take the fast GATE lane (see GatePolicy).
+                val s = SessionRepository.snapshot()
+                if (GatePolicy.decide(
+                        authenticated = false,
+                        hasToken = s.hasToken,
+                        mayRoute = settledInTime || !PlaybackStore.hasPersistedState(),
+                        isGate = current == Destination.GATE,
+                    ) == GatePolicy.Decision.GO_GATE
                 ) {
-                    if (current != Destination.GATE) go(Destination.GATE, null, true)
+                    go(Destination.GATE, null, true)
                 }
                 // Else: probable valid session on a slow core — stay on
                 // HOME; the settled collector and the backstop below finish
@@ -188,9 +198,13 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 kotlinx.coroutines.delay(15_000)
                 bootGateArmed = true
-                if (!SessionRepository.snapshot().authenticated &&
-                    !SessionRepository.snapshot().hasToken &&
-                    current != Destination.GATE
+                val s = SessionRepository.snapshot()
+                if (GatePolicy.decide(
+                        authenticated = s.authenticated,
+                        hasToken = s.hasToken,
+                        mayRoute = true,
+                        isGate = current == Destination.GATE,
+                    ) == GatePolicy.Decision.GO_GATE
                 ) {
                     go(Destination.GATE, null, true)
                 }
@@ -547,22 +561,26 @@ class MainActivity : AppCompatActivity() {
                 SessionRepository.state,
                 SessionRepository.settledFlow,
             ) { s, settled -> s to settled }.collect { (s, settled) ->
-                if (s.authenticated) {
-                    loginManager.hide()
-                    if (current == Destination.GATE) go(Destination.HOME, null, true)
-                } else {
-                    // GATE only on definitively signed-OUT (settled AND no
-                    // token at all): a present-but-unverified token stays on
-                    // the shell while verification/capture proves it (the
-                    // old conflated flow never re-fired here — that silence
-                    // WAS the no-flash behavior; the settle flow exists so
-                    // the genuinely empty case still routes).
-                    if ((settled || bootGateArmed) && !s.hasToken &&
-                        current != Destination.GATE
-                    ) {
-                        go(Destination.GATE, null, true)
-                    }
+                // Destination rule lives in GatePolicy (single table for the
+                // collector, fast lane, and backstop); the overlay hide is
+                // the collector's own side effect, not a routing decision.
+                if (s.authenticated) loginPage.hide()
+                when (GatePolicy.decide(
+                    authenticated = s.authenticated,
+                    hasToken = s.hasToken,
+                    mayRoute = settled || bootGateArmed,
+                    isGate = current == Destination.GATE,
+                )) {
+                    GatePolicy.Decision.GO_HOME -> go(Destination.HOME, null, true)
+                    GatePolicy.Decision.GO_GATE -> go(Destination.GATE, null, true)
+                    GatePolicy.Decision.STAY -> Unit
                 }
+                // GATE only on definitively signed-OUT (settled AND no
+                // token at all): a present-but-unverified token stays on
+                // the shell while verification/capture proves it (the
+                // old conflated flow never re-fired here — that silence
+                // WAS the no-flash behavior; the settle flow exists so
+                // the genuinely empty case still routes).
             }
         }
         lifecycleScope.launch {
@@ -759,17 +777,19 @@ class MainActivity : AppCompatActivity() {
     // -- Login page hosting (§8) --------------------------------------------------------------
     fun showLoginPage(url: String) {
         // The page lives again — refresh flights may use it.
-        SessionRefresher.pageHost = { loginManager.takeIf { !isFinishing } }
-        loginManager.show(url)
+        SessionRefresher.pageHost = { refreshChannel.takeIf { !isFinishing } }
+        loginPage.show(url)
     }
 
     /** Full logout cycle: tear down cookie pages AND clear the credential
-     * store + mirror, so the next sign-in starts clean (§8.6). */
+     * store + mirror, so the next sign-in starts clean (§8.6). Single
+     * session end (LoginPage owns page+cookies+credentials — no second
+     * logout flight; the old duplicate re-ran the full wipe concurrently).
+     */
     fun logout() {
         SessionRefresher.pageHost = null
-        loginManager.destroyForLogout()
+        loginPage.destroyForLogout()
         sdkDriver?.shutdown()
-        SessionRepository.logout()
     }
 
     private fun requestNotificationPermission() {
@@ -788,7 +808,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         // The core outlives the Activity: never tear down session/download
         // state here. Only the login view holder is released with its owner.
-        if (isFinishing) loginManager.destroy()
+        if (isFinishing) sessionPage.destroy()
         // The SDK device dies with its WebView (rotation = new device on
         // next SDK play; hardening may lift the view to the Application).
         PlayerRepository.sdkDriver = null

@@ -123,7 +123,7 @@ class HomeViewModel : ScopedViewModel() {
                 _state.value = ScreenState.Content(
                     empty = _playlists.value.isEmpty(),
                 )
-            } else if (isRateLimited(err)) {
+            } else if (SessionPolicy.isRateLimited(err)) {
                 // Banner + 60s timed auto-retry until quota clears (§7.5).
                 _banner.value = "Spotify's API is temporarily limiting requests — retrying automatically."
                 _state.value = ScreenState.Content(empty = true)
@@ -135,12 +135,6 @@ class HomeViewModel : ScopedViewModel() {
                 _state.value = ScreenState.Error(UiStates.errorCopy(err)) { load() }
             }
         }
-    }
-
-    private fun isRateLimited(e: Throwable?): Boolean {
-        val err = (e as? BridgeException)?.error
-        return err is BridgeError.RateLimited ||
-            (err is BridgeError.Core && err.message.contains("rate", ignoreCase = true))
     }
 }
 

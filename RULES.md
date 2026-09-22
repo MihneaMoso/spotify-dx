@@ -1764,6 +1764,38 @@ dioxus-mobile Rust code is untouched and still builds.
   InputDispatcher "stealing touch" lines; plain taps log nothing), and
   check for a still-added dialog in the fragment dump. A screenshot
   settles "what's on screen" instantly.
+- **Expiry-while-closed stuck restore (2026-09-21, fixed):** opening
+  the app long after expiry stranded Home on "signing you back in…" with
+  a retry that replayed the same instant failure forever (restart and
+  force-stop included — disk state replayed the cycle). Two stacked
+  causes: (1) `reviveAndRefresh` returned false instantly when no WebView
+  existed yet (cold boot never runs a login flow), so silent refresh
+  never even tried — backgrounded expiry healed only because the page
+  was alive; (2) a cookie-dead web session (page renders, no token) was
+  indistinguishable from transient failure, and nothing could route to
+  interactive login anyway (GATE needs `!hasToken`, the dead file kept it
+  true; `verifyAtBoot` was dead code here (since deleted). Fix:
+  `ensureWebView()` builds the hidden page without showing it (extracted
+  from `show()`, byte-identical visible behavior); revive returns
+  `CAPTURED`/`NO_SESSION`/`PAGE_DEAD` (loaded-but-tokenless = dead
+  session; main-frame error or never-rendered = transient —
+  `onPageFinished` fires for failed loads too, so the error flag, not
+  loaded alone, carries "never rendered"; NO_SESSION is declared only at
+  the 15s timeout, never at the 9s mark, so slow captures can't false-
+  trigger); `NO_SESSION` maps to `SessionExpired` so the existing
+  logout→GATE path owns the UX, `PAGE_DEAD` keeps today's error+retry,
+  and `withSessionCheck` propagates (not discards) the definitive
+  failure. Rule: a recovery loop must always prove which failure it saw
+  before deciding logout vs retry.
+- **Session ownership map (2026-09-21 refactor, behavior-identical):**
+  `SessionPolicy` (pure decisions) → `SessionEnd` (`full` vs
+  `credentialsOnly` per-cause table) → `GatePolicy` (single routing
+  table); `SessionPage` (shared WebView mechanics) + `LoginPage`
+  (visible flow) + `RefreshChannel` (hidden revive) facades replaced
+  `LoginWebViewManager`. Deleted dead `verifyAtBoot` (never called) and
+  the duplicate logout flight in `MainActivity.logout()`. Contracts +
+  state diagram: ARCHITECTURE.md §5.7. When auditing session behavior,
+  read the policy/table/KDoc first — never the call sites.
 - **Reinstall-only wedge class (2026-09-20, 2nd occurrence):** same
   signature again (home playlist detail: back + Home tab dead, no crash;
   close/reopen doesn't fix, reinstall does). "Reopen doesn't fix" does

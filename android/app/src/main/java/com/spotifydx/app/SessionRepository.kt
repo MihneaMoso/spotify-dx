@@ -113,43 +113,12 @@ object SessionRepository {
     }
 
     fun logout() {
-        // Session-scoped memory caches die with the session (no cross-account
-        // bleed); the core clears its own stores in BridgeClient.logout().
-        MusicRepository.clear()
-        scope.launch {
-            // Persisted queue/last-played belong to the account: wipe them so
-            // the next sign-in starts clean. Played history is device-level
-            // (Echo past-songs parity + the Auto Backup reinstall payload),
-            // so it survives logout — wiping it here destroyed history on
-            // every transient session-expiry logout.
-            PlaybackStore.clearSession()
-            BridgeClient.logout()
-            _state.value = Snapshot()
-        }
+        scope.launch { SessionEnd.full() }
     }
 
-    /**
-     * Silent-restore verifier (Phase 2 gate): when a clock-valid token
-     * survived restart, a single low-volume `/v1/me` proves it server-side.
-     * Success flips the mirror authenticated (shell, no login page);
-     * rejection clears to the gate; anything else stays gated (the login
-     * page captures from cookies instead).
-     */
-    fun verifyAtBoot() {
-        scope.launch {
-            val s = _state.value
-            if (s.authenticated || !s.hasToken) return@launch
-            val res = BridgeClient.currentUser()
-            if (res.isSuccess) {
-                refresh()
-            } else {
-                val err = (res.exceptionOrNull() as? BridgeException)?.error
-                if (err is BridgeError.SessionExpired) {
-                    BridgeClient.logout()
-                    _state.value = Snapshot()
-                }
-            }
-        }
+    /** Mirror reset to signed-out (session-end half; see [SessionEnd]). */
+    internal fun resetMirror() {
+        _state.value = Snapshot()
     }
 
     /**
@@ -173,9 +142,10 @@ object SessionRepository {
                     if (res.isFailure) {
                         // Hard expiry: clear the flag; the gate returns and
                         // the still-valid cookies usually re-authenticate
-                        // silently there.
-                        BridgeClient.logout()
-                        _state.value = Snapshot()
+                        // silently there. Credential-only end (queue/memory
+                        // survive for a same-account relogin — see
+                        // SessionEnd's per-cause table).
+                        SessionEnd.credentialsOnly()
                         ToastBus.fromBridge(
                             res.exceptionOrNull() ?: Exception("session expired"),
                         )

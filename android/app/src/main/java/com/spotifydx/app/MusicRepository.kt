@@ -127,28 +127,41 @@ object MusicRepository {
         return BridgeClient.resolveStream(payload)
     }
 
-    /** Session errors bubble to the gate; data errors stay page-local. */
-    fun isSessionFailure(e: Throwable?): Boolean =
-        when ((e as? BridgeException)?.error) {
-            is BridgeError.SessionExpired, is BridgeError.NeedsPage -> true
-            else -> false
-        }
-
+    /**
+     * Session errors bubble to the gate; data errors stay page-local.
+     * Every branch below executes a [SessionPolicy] verdict — the rules
+     * live there, this function only executes them.
+     */
     suspend fun <T> withSessionCheck(block: suspend () -> Result<T>): Result<T> {
         val res = withContext(Dispatchers.IO) { block() }
-        val err = res.exceptionOrNull() as? BridgeException
+        val err = (res.exceptionOrNull() as? BridgeException)?.error
         // No token (yet) is recoverable via the session page — it must NEVER
         // trigger a logout: that wiped queue/history/playback from disk on
         // every transient boot race (verified empty tables on-device), then
         // cleared the core token, making the session unrecoverable and every
         // retry dead. Revive once and retry the read instead.
-        if (err?.error is BridgeError.NeedsPage) {
-            if (SessionRefresher.refresh().isSuccess) {
+        if (SessionPolicy.onDataError(err) is SessionPolicy.DataAction.HealThenRetry) {
+            val healed = SessionRefresher.refresh()
+            if (healed.isSuccess) {
                 return withContext(Dispatchers.IO) { block() }
+            }
+            // Definitive heal failure (web session dead) must NOT collapse
+            // back into the retried NeedsPage: that stranded expiry boots
+            // on a retry that replays the same instant failure forever.
+            // End the session so the GATE login owns the UX from here; the
+            // dead token is cleared, so the gate condition can actually
+            // fire. Transient heal failure keeps today's error+retry.
+            val surfaced = SessionPolicy.healErrorToSurface(
+                err as BridgeError.NeedsPage,
+                (healed.exceptionOrNull() as? BridgeException)?.error,
+            )
+            if (SessionPolicy.requiresLogout(surfaced)) {
+                SessionRepository.logout()
+                return Result.failure(healed.exceptionOrNull()!!)
             }
             return res
         }
-        if (isSessionFailure(res.exceptionOrNull())) {
+        if (SessionPolicy.requiresLogout(err)) {
             SessionRepository.logout()
         }
         return res

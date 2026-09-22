@@ -24,7 +24,7 @@ object SessionRefresher {
     private var inFlight: Deferred<Result<Unit>>? = null
 
     /** Supplied by MainActivity (the page owner). Null after logout teardown. */
-    var pageHost: (() -> LoginWebViewManager?)? = null
+    var pageHost: (() -> RefreshChannel?)? = null
 
     suspend fun refresh(): Result<Unit> {
         val flight = mutex.withLock {
@@ -44,24 +44,34 @@ object SessionRefresher {
         if ((err as? BridgeException)?.error !is BridgeError.NeedsPage) {
             return Result.failure(err ?: Exception("refresh failed"))
         }
-        // Slow path: revive the session page, capture, retry. The page posts
-        // token_refresh_result through the JS bridge on success.
+        // Slow path: ensure + revive the session page, capture, retry. The
+        // page posts token_refresh_result through the JS bridge on success.
         val host = pageHost?.invoke() ?: return Result.failure(
             BridgeException(BridgeError.NeedsPage("no session page")),
         )
-        val revived = host.reviveAndRefresh()
-        if (!revived) return Result.failure(
-            BridgeException(BridgeError.NeedsPage("session page revive failed")),
-        )
-        SessionRepository.refresh()
-        val s = SessionRepository.snapshot()
-        return if (s.authenticated) {
-            Result.success(Unit)
-        } else {
-            // Lost answer? Re-check the mirror before declaring failure.
-            val retry = BridgeClient.refreshToken()
-            if (retry.isSuccess) Result.success(Unit)
-            else Result.failure(retry.exceptionOrNull() ?: Exception("refresh failed"))
+        return when (host.reviveAndRefresh()) {
+            RefreshChannel.ReviveOutcome.CAPTURED -> {
+                SessionRepository.refresh()
+                val s = SessionRepository.snapshot()
+                if (s.authenticated) {
+                    Result.success(Unit)
+                } else {
+                    // Lost answer? Re-check the mirror before declaring failure.
+                    val retry = BridgeClient.refreshToken()
+                    if (retry.isSuccess) Result.success(Unit)
+                    else Result.failure(retry.exceptionOrNull() ?: Exception("refresh failed"))
+                }
+            }
+            // Rendered but tokenless: the web session itself is dead —
+            // definitive, like any SessionExpired (existing logout→GATE
+            // path owns the UX from here, never a dead retry).
+            RefreshChannel.ReviveOutcome.NO_SESSION -> Result.failure(
+                BridgeException(BridgeError.SessionExpired("web session dead — interactive login required")),
+            )
+            // Never rendered (offline/slow): transient, today's behavior.
+            RefreshChannel.ReviveOutcome.PAGE_DEAD -> Result.failure(
+                BridgeException(BridgeError.NeedsPage("session page unreachable")),
+            )
         }
     }
 }
