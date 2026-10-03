@@ -121,6 +121,7 @@ gtk = { version = "0.18", optional = true }
 
 [profile.dev]
 opt-level = 1
+debug = false
 
 [profile.release]
 opt-level     = 3

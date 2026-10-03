@@ -1902,8 +1902,7 @@ dioxus-mobile Rust code is untouched and still builds.
   started-but-never-foregrounded services on slow starts. Now plain
   `startService` (playUrl foregrounds itself) with a 5s poll. Rule: never
   `startForegroundService` without a guaranteed prompt `startForeground`.
-- **Search top result + explicit badge + quality selectors (2026-09-21):**
-  search promotes an exact (else prefix) name match artist > album >
+- **Search top result + explicit badge + quality selectors (2026-09-21):**  search promotes an exact (else prefix) name match artist > album >
   track to the front, removed from its section (Kotlin-only, server order
   otherwise kept); `Track.explicit` is parsed core-side all along — it was
   only dropped at the Kotlin model, so the badge is model + `item_track`
@@ -1915,6 +1914,73 @@ dioxus-mobile Rust code is untouched and still builds.
   High), caps never fail a playable track; cache already keys on quality.
   Settings UI reuses manual row-click binding (RadioButtons aren't
   RadioGroup children). `cargo test` 112/112, clippy 0, gradle green.
+- **Opus/WebM proxy outage (2026-09-21, fixed):** opus stalled to the
+  20s prepare watchdog while AAC played. Root causes, all in the local
+  Range-proxy: (1) seeks beyond the cached prefix DELETED the valid
+  partial and teed tail bytes at file offset 0 — WebM needs tail spans
+  (Cues) while MP4 headers sit up front, hence the format split; (2)
+  206s claimed Content-Length for bytes not yet on disk (truncated body
+  → player stall); (3) Content-Range reported `bytes 0-…` for tail
+  bytes; full files answered 206 not 200; 416s lacked Content-Range;
+  suffix ranges misparsed; everything was octet-stream. Fix: pure
+  `RangeServe` (parse/decide/file+fetch heads/MIME — no Android
+  imports) executes every serving decision; gaps are pass-through
+  (never stored, never deleted), only restarts/appends tee; spans and
+  lengths are always truthful; MIME comes from the resolver format tag.
+  Regression net: `app/src/test/.../RangeServeTest.java` (plain-JVM
+  `main()`, no JUnit — offline build; run command in its header, 87
+  checks). Rule: the proxy file holds a valid `[0, have)` prefix or
+  nothing — any write outside it is cache poisoning by definition.
+- **Opus still stalled — lock starvation (2026-09-21, fixed):** span
+  truthfulness wasn't enough: `serveLocked` held the per-key lock across
+  the WHOLE body transfer, so the second player connection (WebM tail
+  seek for Cues, required to COMPLETE prepare) queued behind a
+  minutes-long throttled fill → prepare starved into the watchdog, then
+  stagefright's own long timeout × one retry ≈ the reported minute.
+  AAC needs no tail seek (front-loaded moov), hence the format split.
+  Fix: the lock now covers only atomic decide-and-claim (snapshot + tee
+  registration, ms); body transfer runs lock-free with one tee session
+  per key (`TeeGate` — losers transparently downgrade to pass-through);
+  file sends clamp to the live length; redirects followed manually (max
+  5) with Range re-applied per hop (HttpURLConnection drops request
+  headers on cross-host redirects); `resolveRedirect` handles query-only
+  refs RFC-correctly (both JDK resolvers strip the last segment there).
+  Threaded TeeGate + redirect cases in the same test file.
+- **Opus fixed-timestamp skips — gir throttle wall (2026-09-21, fixed):**
+  opus tracks skipped at deterministic timestamps (0:46 on a 3:39 song)
+  while AAC played. Logcat showed why: catch-up "succeeded" with ZERO
+  growth (`Advanced(newHave=786432)` = refill of the same 3 windows),
+  then served `206 bytes 0-786431/3705030` — and 786432/3705030 × 219s
+  is exactly 46.5s: the player played the stub to EOS and `onCompletion`
+  skipped. Live measurement proved the wall: `gir=yes` links enforce a
+  per-(IP, content) transfer budget (~0.5–1MB, then hard 403s with NO
+  refill over minutes — even across fresh URLs) PLUS a
+  sequential-from-zero frontier (a jump to 786432 403s on a virgin URL).
+  Fresh budget + reset frontier per URL makes proxy-side completion
+  mathematically impossible — do NOT retry that direction (a
+  trickle/pipe prototype was built, measured against the wall, and
+  removed). Fix is resolver-side: YouTube excludes `gir=yes` URLs from
+  candidacy (`is_throttled_url`, exact query-param match) in muxed picks,
+  adaptive picks (both cap bands — a cap must never promote an unplayable
+  URL), and `pick_piped_audio`; with nothing usable the candidate yields
+  NextCandidate so piped/saavn/audius/soundcloud get their turn, else an
+  honest NOT_FOUND (better than a 46s tease-then-skip). Selection is
+  factored into pure `select_muxed`/`select_adaptive` (cipher-recovery
+  path preserved) with JSON-fixture tests: 119/119 Rust, clippy 0,
+  gradle green, 125 JVM checks. Frozen 786KB prefixes self-heal: the new
+  resolve carries a different qualityKey, so the stale-tier path drops
+  file+row and fills clean. Device DB proved opus never completed once
+  (5 stubs, all complete=0) vs 33 completed AAC tracks — the exclusion
+  broke nothing that worked; "opus before" was always tease-then-skip.
+  Follow-up (capability): AAC-instead-of-opus is same-tier
+  (muxed-144k-AAC ≈ opus-146k, both Normal) — the real gap is NOT_FOUND
+  coverage, fixed by an over-cap clean-muxed fallback (strict muxed →
+  strict adaptive → over-cap muxed, honestly labeled → degraded
+  adaptive → NextCandidate) plus live fallthrough legs (Saavn/Audius
+  alive, SoundCloud self-scrapes; Piped 8/8 public instances dead —
+  probation skips it fast). 120/120 Rust. Rule: never hand the player a
+  URL class proven uncompletable — exclusion at selection beats heroics
+  downstream.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

@@ -20,9 +20,11 @@
 //! self-contained.
 //!
 //! We deliberately prefer the progressive muxed format over the audio-only
-//! adaptive formats: the adaptive URLs carry `gir=yes` and are IP-bound +
-//! throttled by YouTube (sustained downloads 403 after ~1MB), whereas the
-//! muxed URL serves the entire file with a plain GET.
+//! adaptive formats — and exclude `gir=yes` URLs from candidacy entirely:
+//! they enforce a per-(IP, content) transfer budget (~0.5–1MB, then hard
+//! 403s with no refill, measured live) plus a sequential-from-zero
+//! frontier, so serving one freezes the proxy prefix and skips mid-track.
+//! The muxed URL serves the entire file with a plain GET.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -219,8 +221,160 @@ pub(crate) fn format_for_mime(mime: &str) -> AudioFormat {
     }
 }
 
+/// Whether a stream URL is throttle-poisoned: `gir=yes` links enforce a
+/// per-(client-IP, content) transfer budget (~0.5–1MB, then hard 403s with
+/// no refill — measured live, including across fresh URLs) plus a
+/// sequential-from-zero frontier. Serving one freezes the proxy prefix
+/// (~768KB) and the player skips at the stub end, deterministically (0:46
+/// on a 3:39 track); proxy-side completion is mathematically impossible
+/// (fresh budget per URL, frontier reset per URL). Such URLs are never
+/// playable through us — excluded from candidacy so the chain can try
+/// other providers. Matched as an exact query param (a path containing
+/// "gir=yes" must NOT match). Pure (unit-tested).
+pub(crate) fn is_throttled_url(url: &str) -> bool {
+    let q = url.split('?').nth(1).unwrap_or("").split('#').next().unwrap_or("");
+    if q.is_empty() {
+        return false;
+    }
+    q.split('&').any(|p| p == "gir=yes")
+}
+
+/// Adaptive selection outcome (preserves the cipher-recovery path:
+/// a best entry with an empty URL still routes to `piped_recovery`).
+#[derive(Debug)]
+enum AdaptivePick {
+    Playable { url: String, format: AudioFormat, quality: Quality },
+    Encrypted,
+    None,
+}
+
+/// Muxed pick over `streamingData.formats`: smallest video container
+/// whose URL is present, unthrottled, and (in strict mode) within the
+/// ceiling. Non-strict mode drops only the ceiling requirement — the
+/// honest-degrade fallback when adaptive has nothing usable (a clean
+/// over-cap muxed that plays beats skipping a playable video). Pure.
+fn select_muxed(
+    data: &serde_json::Value,
+    capped: bool,
+    ceiling: u64,
+    strict_cap: bool,
+) -> Option<(String, AudioFormat, Quality)> {
+    let muxed = data
+        .get("formats")?
+        .as_array()?
+        .iter()
+        .filter(|f| {
+            f.get("mimeType")
+                .and_then(|m| m.as_str())
+                .map(|m| m.starts_with("video/"))
+                .unwrap_or(false)
+        })
+        // Smallest mux, not largest: we play audio, and the old
+        // max-bitrate pick downloaded the biggest video container
+        // whenever higher-resolution muxes existed — multiples
+        // of the bytes (and disk) for zero audible benefit.
+        // Missing bitrates sort last (unknown size, not free).
+        .min_by_key(|f| {
+            f.get("bitrate")
+                .and_then(|b| b.as_u64())
+                .unwrap_or(u64::MAX)
+        })?;
+    let url = muxed
+        .get("url")
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    if url.is_empty() || is_throttled_url(&url) {
+        return None;
+    }
+    let bitrate = muxed.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
+    // Strict: an over-ceiling (or unknown-bitrate) mux yields to the
+    // adaptive pick below, which has real variants to choose from.
+    // Non-strict (fallback only): any clean muxed plays, honestly labeled.
+    // Uncapped: today's pick, untouched.
+    if !strict_cap || !capped || (bitrate > 0 && bitrate <= ceiling) {
+        Some((
+            url,
+            AudioFormat::Aac,
+            quality_for_bitrate(bitrate),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Adaptive pick over `streamingData.adaptiveFormats`: best audio URL
+/// that is present-or-encrypted, unthrottled, and (preferably) within
+/// the ceiling. Throttled entries are excluded, not degraded to — a cap
+/// must never promote an unplayable URL. Pure.
+fn select_adaptive(
+    data: &serde_json::Value,
+    capped: bool,
+    ceiling: u64,
+) -> AdaptivePick {
+    let formats = match data.get("adaptiveFormats").and_then(|f| f.as_array()) {
+        Some(f) => f,
+        None => return AdaptivePick::None,
+    };
+    // Capped: best variant within the ceiling; uncapped: best overall
+    // (today's max_by_key). An empty within-cap set falls through to
+    // the degraded pick below — a cap never fails the candidate.
+    // Entries with missing URLs stay eligible (empty routes to cipher
+    // recovery, as today); throttled URLs never do.
+    let usable = |f: &&serde_json::Value| {
+        f.get("mimeType")
+            .and_then(|m| m.as_str())
+            .map(|m| m.starts_with("audio/"))
+            .unwrap_or(false)
+            && f.get("url")
+                .and_then(|u| u.as_str())
+                .map(|u| !is_throttled_url(u))
+                .unwrap_or(true)
+    };
+    let in_cap: Vec<_> = formats
+        .iter()
+        .filter(usable)
+        .filter(|f| {
+            !capped
+                || f.get("bitrate").and_then(|b| b.as_u64()).is_some_and(|b| b <= ceiling)
+        })
+        .collect();
+    let best_audio = if capped && in_cap.is_empty() {
+        formats
+            .iter()
+            .filter(usable)
+            .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
+    } else {
+        in_cap
+            .into_iter()
+            .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
+    };
+    match best_audio {
+        None => AdaptivePick::None,
+        Some(fmt) => {
+            let url = fmt
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string();
+            if url.is_empty() {
+                return AdaptivePick::Encrypted;
+            }
+            let mime = fmt.get("mimeType").and_then(|m| m.as_str()).unwrap_or("");
+            let bitrate = fmt.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
+            AdaptivePick::Playable {
+                url,
+                format: format_for_mime(mime),
+                quality: quality_for_bitrate(bitrate),
+            }
+        }
+    }
+}
+
 /// Best non-video audio stream from a Piped `/streams` payload as
-/// `(url, bitrate, mime)`. Pure (unit-tested).
+/// `(url, bitrate, mime)`. Throttled (`gir=yes`) URLs are excluded like
+/// direct InnerTube ones — Piped sometimes returns raw googlevideo URLs
+/// carrying the same poison. Pure (unit-tested).
 pub(crate) fn pick_piped_audio(val: &serde_json::Value) -> Option<(String, u64, String)> {
     val.get("audioStreams")?
         .as_array()?
@@ -232,7 +386,7 @@ pub(crate) fn pick_piped_audio(val: &serde_json::Value) -> Option<(String, u64, 
         })
         .filter_map(|s| {
             let url = s.get("url")?.as_str()?.to_string();
-            if url.is_empty() {
+            if url.is_empty() || is_throttled_url(&url) {
                 return None;
             }
             let bitrate = s.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
@@ -316,11 +470,11 @@ impl YoutubeProvider {
         };
         // Prefer the progressive muxed format (`streamingData.formats`).
         //
-        // The adaptive audio-only formats (`adaptiveFormats`) are served from
-        // googlevideo URLs with `gir=yes`, which are IP-bound and throttled:
-        // a sustained download 403s after ~1MB, so a full multi-MB song can't
-        // be fetched. The progressive muxed format has no such restriction —
-        // a plain GET returns the entire file. It carries an AAC audio track
+        // Throttled (`gir=yes`) URLs are excluded from candidacy entirely
+        // (see `is_throttled_url`): they hard-wall mid-track through any
+        // proxy, so serving one guarantees a fixed-timestamp skip. The
+        // progressive muxed format has no such restriction — a plain GET
+        // returns the entire file. It carries an AAC audio track
         // (128kbps, the 360p muxed container), which rodio decodes fine.
         // Bitrate ceiling from the advisory cap (bands mirror
         // quality_for_bitrate so the pick and the label always agree).
@@ -331,107 +485,57 @@ impl YoutubeProvider {
             _ => u64::MAX,
         };
         let capped = ceiling != u64::MAX;
-        if let Some(muxed) = data
-            .get("formats")
-            .and_then(|f| f.as_array())
-            .and_then(|f| {
-                f.iter()
-                    .filter(|f| {
-                        f.get("mimeType")
-                            .and_then(|m| m.as_str())
-                            .map(|m| m.starts_with("video/"))
-                            .unwrap_or(false)
-                    })
-                    // Smallest mux, not largest: we play audio, and the old
-                    // max-bitrate pick downloaded the biggest video container
-                    // whenever higher-resolution muxes existed — multiples
-                    // of the bytes (and disk) for zero audible benefit.
-                    // Missing bitrates sort last (unknown size, not free).
-                    .min_by_key(|f| {
-                        f.get("bitrate")
-                            .and_then(|b| b.as_u64())
-                            .unwrap_or(u64::MAX)
-                    })
-            })
-        {
-            let url = muxed
-                .get("url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("")
-                .to_string();
-            if !url.is_empty() {
-                let bitrate = muxed.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
-                // Capped: an over-ceiling (or unknown-bitrate) mux yields
-                // to the adaptive pick below, which has real variants to
-                // choose from. Uncapped: today's pick, untouched.
-                let muxed_fits = !capped || (bitrate > 0 && bitrate <= ceiling);
-                if muxed_fits {
-                    return StreamOutcome::Playable {
-                        url,
-                        format: AudioFormat::Aac,
-                        quality: quality_for_bitrate(bitrate),
-                    };
-                }
-            }
+        if let Some((url, format, quality)) = select_muxed(data, capped, ceiling, true) {
+            return StreamOutcome::Playable {
+                url,
+                format,
+                quality,
+            };
         }
-        // Fallback: best audio-only adaptive format (`adaptiveFormats`).
-        // Note: these `gir=yes` URLs are throttled (~1MB cap) on sustained
-        // downloads and may fail for full-length tracks.
-        let formats = match data.get("adaptiveFormats").and_then(|f| f.as_array()) {
-            Some(f) => f,
-            None => {
-                return StreamOutcome::NextCandidate("no streaming formats found".into());
+        // Fallback: best usable audio-only adaptive format
+        // (`adaptiveFormats`). Throttled entries are excluded, not
+        // degraded to (a cap must never promote an unplayable URL); with
+        // nothing usable left the candidate is skipped so the chain can
+        // try other providers — a 46s-tease-then-skip is worse than an
+        // honest miss.
+        if data
+            .get("adaptiveFormats")
+            .and_then(|f| f.as_array())
+            .is_none()
+        {
+            return StreamOutcome::NextCandidate("no streaming formats found".into());
+        }
+        match select_adaptive(data, capped, ceiling) {
+            AdaptivePick::Playable {
+                url,
+                format,
+                quality,
+            } => {
+                return StreamOutcome::Playable {
+                    url,
+                    format,
+                    quality,
+                };
             }
-        };
-        // Capped: best variant within the ceiling; uncapped: best overall
-        // (today's max_by_key). An empty within-cap set falls through to
-        // the degraded pick below — a cap never fails the candidate.
-        let in_cap: Vec<_> = formats
-            .iter()
-            .filter(|f| {
-                f.get("mimeType")
-                    .and_then(|m| m.as_str())
-                    .map(|m| m.starts_with("audio/"))
-                    .unwrap_or(false)
-            })
-            .filter(|f| {
-                !capped
-                    || f.get("bitrate").and_then(|b| b.as_u64()).is_some_and(|b| b <= ceiling)
-            })
-            .collect();
-        let best_audio = if capped && in_cap.is_empty() {
-            formats
-                .iter()
-                .filter(|f| {
-                    f.get("mimeType")
-                        .and_then(|m| m.as_str())
-                        .map(|m| m.starts_with("audio/"))
-                        .unwrap_or(false)
-                })
-                .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
-        } else {
-            in_cap
-                .into_iter()
-                .max_by_key(|f| f.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0))
-        };
-        if let Some(fmt) = best_audio {
-            let url = fmt
-                .get("url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("")
-                .to_string();
-            if url.is_empty() {
+            AdaptivePick::Encrypted => {
                 // Signature-encrypted: recover the same video through Piped
                 // instead of failing (Phase A cipher path).
                 return self.piped_recovery(video_id).await;
             }
-            let mime = fmt.get("mimeType").and_then(|m| m.as_str()).unwrap_or("");
-            let bitrate = fmt.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
-            return StreamOutcome::Playable {
-                url,
-                format: format_for_mime(mime),
-                quality: quality_for_bitrate(bitrate),
-            };
+            AdaptivePick::None => {
+                // Last resort before skipping the candidate: a clean
+                // over-cap muxed that plays (honestly labeled) beats
+                // abandoning a playable video to a strict cap.
+                if let Some((url, format, quality)) =
+                    select_muxed(data, capped, ceiling, false)
+                {
+                    return StreamOutcome::Playable {
+                        url,
+                        format,
+                        quality,
+                    };
+                }
+            }
         }
         StreamOutcome::NextCandidate("no audio stream found in streaming formats".into())
     }
@@ -600,5 +704,136 @@ mod tests {
             AudioFormat::Opus
         );
         assert_eq!(format_for_mime("audio/mp4"), AudioFormat::Aac);
+    }
+
+    #[test]
+    fn throttled_urls_detected_as_exact_query_param() {
+        assert!(is_throttled_url(
+            "https://rr1.googlevideo.com/x?expire=1&gir=yes&clen=9"
+        ));
+        assert!(is_throttled_url(
+            "https://rr1.googlevideo.com/x?clen=9&gir=yes"
+        ));
+        assert!(!is_throttled_url(
+            "https://rr1.googlevideo.com/x?expire=1&gir=no"
+        ));
+        assert!(!is_throttled_url(
+            "https://rr1.googlevideo.com/x?expire=1"
+        ));
+        assert!(!is_throttled_url("https://host.test/gir=yes/file"));
+        assert!(!is_throttled_url(""));
+        assert!(!is_throttled_url("not a url"));
+    }
+
+    fn stream_data(muxed: serde_json::Value, adaptive: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "formats": muxed, "adaptiveFormats": adaptive })
+    }
+
+    fn muxed(url: &str, bitrate: u64) -> serde_json::Value {
+        serde_json::json!({ "mimeType": "video/mp4", "bitrate": bitrate, "url": url })
+    }
+
+    fn adapt(url: &str, bitrate: u64) -> serde_json::Value {
+        serde_json::json!({ "mimeType": "audio/webm; codecs=\"opus\"", "bitrate": bitrate, "url": url })
+    }
+
+    const GIR: &str = "https://rr1.googlevideo.com/x?expire=1&gir=yes";
+    const CLEAN: &str = "https://rr1.googlevideo.com/x?expire=1";
+
+    #[test]
+    fn muxed_gir_yields_to_clean_adaptive() {
+        // Throttled muxed is skipped even though muxed ranks first.
+        let data = stream_data(
+            serde_json::json!([muxed(GIR, 143_886)]),
+            serde_json::json!([adapt(CLEAN, 146_555)]),
+        );
+        assert!(select_muxed(&data, false, u64::MAX, true).is_none());
+        match select_adaptive(&data, false, u64::MAX) {
+            AdaptivePick::Playable { url, .. } => assert_eq!(url, CLEAN),
+            other => panic!("expected playable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clean_muxed_beats_gir_adaptive() {
+        let data = stream_data(
+            serde_json::json!([muxed(CLEAN, 143_886)]),
+            serde_json::json!([adapt(GIR, 146_555)]),
+        );
+        let (url, _, _) = select_muxed(&data, false, u64::MAX, true).unwrap();
+        assert_eq!(url, CLEAN);
+    }
+
+    #[test]
+    fn all_gir_selects_nothing() {
+        let data = stream_data(
+            serde_json::json!([muxed(GIR, 143_886)]),
+            serde_json::json!([adapt(GIR, 146_555), adapt(GIR, 54_402)]),
+        );
+        assert!(select_muxed(&data, false, u64::MAX, true).is_none());
+        assert!(matches!(
+            select_adaptive(&data, false, u64::MAX),
+            AdaptivePick::None
+        ));
+        // Capped or not, poison stays excluded (never promoted by degrade).
+        assert!(matches!(
+            select_adaptive(&data, true, 127_999),
+            AdaptivePick::None
+        ));
+    }
+
+    #[test]
+    fn encrypted_adaptive_still_routes_to_recovery() {
+        let data = stream_data(
+            serde_json::json!([]),
+            serde_json::json!([{ "mimeType": "audio/mp4", "bitrate": 128000, "url": "" }]),
+        );
+        assert!(matches!(
+            select_adaptive(&data, false, u64::MAX),
+            AdaptivePick::Encrypted
+        ));
+    }
+
+    #[test]
+    fn capped_muxed_yields_to_clean_adaptive() {
+        // Over-ceiling muxed yields (today's behavior), gir muxed never wins.
+        let data = stream_data(
+            serde_json::json!([muxed(CLEAN, 500_000)]),
+            serde_json::json!([adapt(CLEAN, 130_567)]),
+        );
+        assert!(select_muxed(&data, true, 255_999, true).is_none());
+        match select_adaptive(&data, true, 255_999) {
+            AdaptivePick::Playable { url, .. } => assert_eq!(url, CLEAN),
+            other => panic!("expected playable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pick_piped_audio_rejects_throttled() {
+        let v = serde_json::json!({ "audioStreams": [
+            { "url": "https://x/gir?gir=yes", "bitrate": 999999, "mimeType": "audio/mp4", "videoOnly": false },
+            { "url": "https://x/aac", "bitrate": 128000, "mimeType": "audio/mp4", "videoOnly": false },
+        ] });
+        let (url, _, _) = pick_piped_audio(&v).unwrap();
+        assert_eq!(url, "https://x/aac");
+    }
+
+    #[test]
+    fn over_cap_muxed_rescued_when_adaptive_all_gir() {
+        // Strict cap excludes the clean muxed and gir poisons adaptive —
+        // the fallback serves the muxed honestly labeled instead of
+        // abandoning a playable video.
+        let data = stream_data(
+            serde_json::json!([muxed(CLEAN, 143_886)]),
+            serde_json::json!([adapt(GIR, 54_402)]),
+        );
+        assert!(select_muxed(&data, true, 127_999, true).is_none());
+        assert!(matches!(
+            select_adaptive(&data, true, 127_999),
+            AdaptivePick::None
+        ));
+        let (url, _, quality) = select_muxed(&data, true, 127_999, false).unwrap();
+        assert_eq!(url, CLEAN);
+        assert_eq!(quality, Quality::Normal);
     }
 }

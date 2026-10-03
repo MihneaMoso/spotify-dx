@@ -35,9 +35,14 @@ import kotlinx.coroutines.withContext
  *   pinned (exempt unless everything is pinned). Stats live in the
  *   `cache_entries` Room table; files in `filesDir/audiocache`.
  *
- * Threading: one daemon acceptor + pooled connection handlers; per-key
- * locks serialize file access. The single player means one active stream;
- * the guards still hold under overlap.
+ * Threading: one daemon acceptor + pooled connection handlers.
+ * The per-key lock NEVER spans network IO — it covers only the atomic
+ * decide-and-claim instant (snapshot + tee registration, milliseconds).
+ * File mutation is coordinated by TeeGate (one tee session per key);
+ * body transfer runs lock-free, so a second player connection (e.g. a
+ * WebM tail seek for Cues, required to complete prepare) never queues
+ * behind a minutes-long fill. File sends clamp to the live length, so
+ * races resolve as truthful short spans, never corrupt ones.
  */
 object AudioCache {
     private const val TAG = "SpotifyDxCache"
@@ -51,6 +56,8 @@ object AudioCache {
     private const val DIR = "audiocache"
     private const val CHUNK = 64 * 1024
     private const val UA = "stagefright/1.2 (Linux;Android 14)"
+    private const val MAX_REDIRECTS = 5
+    private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
 
     sealed interface Source {
         data class Disk(val path: String) : Source
@@ -76,8 +83,16 @@ object AudioCache {
     @Volatile
     private var port: Int = 0
 
+    /** Host only (never query — URLs carry session tokens). */
+    private fun hostOf(url: String): String = runCatching {
+        URL(url).host
+    }.getOrDefault("bad-url")
+
     /** Fresh upstream URL per key (registered on every play start). */
     private val upstream = ConcurrentHashMap<String, String>()
+
+    /** Resolver format tag per key (`provider/format/…` quality keys) for MIME. */
+    private val formats = ConcurrentHashMap<String, String>()
 
     private val locks = ConcurrentHashMap<String, Any>()
 
@@ -120,6 +135,7 @@ object AudioCache {
             // nothing cached.
             val liveKey = "$key-live"
             upstream[liveKey] = upstreamUrl
+            rememberFormat(liveKey, qualityKey)
             return Source.Proxy("http://127.0.0.1:$port/$liveKey")
         }
         val entry = try {
@@ -147,9 +163,19 @@ object AudioCache {
         }
         upstream[key] = upstreamUrl
         notePlayAsync(key, qualityKey)
+        rememberFormat(key, qualityKey)
         Log.i(TAG, "MISS $key (proxying, have=${file.takeIf { it.isFile }?.length() ?: 0} B)")
         return Source.Proxy("http://127.0.0.1:$port/$key")
     }
+
+    /** Remembers the resolver format tag for player-facing MIME types. */
+    private fun rememberFormat(key: String, qualityKey: String) {
+        val format = qualityKey.split("/").getOrNull(1)?.takeIf { it.isNotEmpty() }
+        if (format == null) formats.remove(key) else formats[key] = format
+    }
+
+    private fun mimeFor(key: String): String =
+        RangeServe.mimeForFormat(formats[key])
 
     /** Fire-and-forget play stats (count + recency drive LRU + pinning). */
     private fun notePlayAsync(key: String, qualityKey: String) {
@@ -233,187 +259,338 @@ object AudioCache {
                 // though only our player should ever connect. Replace-only
                 // (no trim): legit keys pass through byte-identical.
                 .replace(Regex("[^A-Za-z0-9_.-]"), "_")
-            var rangeStart: Long? = null
-            var rangeEnd: Long? = null
+            var rangeSpec: String? = null
             while (true) {
                 val line = input.readLine() ?: break
                 if (line.isEmpty()) break
                 if (line.startsWith("Range:", ignoreCase = true)) {
-                    val spec = line.substringAfter(":").trim().removePrefix("bytes=")
-                    val (a, b) = spec.split("-", limit = 2) + listOf("", "")
-                    rangeStart = a.toLongOrNull()
-                    rangeEnd = b.toLongOrNull()
+                    rangeSpec = line.substringAfter(":").trim()
                 }
             }
             if (key.isEmpty()) {
                 reply(s, 404, "Not Found", emptyMap(), null)
                 return
             }
+            // Pure parse (suffix ranges, garbage → full request, never throws).
+            val req = RangeServe.parseRange(rangeSpec)
             try {
-                serve(s, key, rangeStart, rangeEnd)
+                serve(s, key, req)
             } finally {
                 // Ephemeral pass-through keys never repeat: drop them.
-                if (key.endsWith("-live")) upstream.remove(key)
+                if (key.endsWith("-live")) {
+                    upstream.remove(key)
+                    formats.remove(key)
+                }
             }
         }
     }
 
-    private fun serve(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?) {
-        // Lock-free fast path: fully-cached spans serve without the per-key
-        // lock, so a seek never stalls behind an in-progress download (the
-        // lock below spans whole-track network fetches). The snapshot may
-        // lag a concurrent append by ms — serveLocked re-checks under lock
-        // on fallthrough. Runs on pool threads: blocking index read is fine.
+    private fun serve(sock: Socket, key: String, req: RangeServe.RangeReq) {
+        // Lock-free fast path first (read-only snapshot); the locked path
+        // below never spans network IO, so a second player connection
+        // (WebM tail seek for Cues, needed to COMPLETE prepare) never
+        // queues behind a minutes-long fill. Runs on pool threads:
+        // blocking index reads are fine.
+        serving.add(key)
         try {
-            if (tryServeCached(sock, key, reqStart, reqEnd)) return
-        } catch (e: Exception) {
-            Log.w(TAG, "fast path $key: ${e.message}")
-        }
-        val lock = lockFor(key)
-        synchronized(lock) {
-            serving.add(key)
             try {
-                serveLocked(sock, key, reqStart, reqEnd)
+                if (tryServeCached(sock, key, req)) return
             } catch (e: Exception) {
-                Log.w(TAG, "serve $key: ${e.message}")
-            } finally {
-                serving.remove(key)
+                Log.w(TAG, "fast path $key: ${e.message}")
             }
+            serveLocked(sock, key, req)
+        } catch (e: Exception) {
+            Log.w(TAG, "serve $key: ${e.message}")
+        } finally {
+            serving.remove(key)
         }
         scope.launch { evictIfNeeded() }
     }
 
     /** Serves a fully-cached span with no locking (read-only snapshot). */
-    private fun tryServeCached(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?): Boolean {
+    private fun tryServeCached(sock: Socket, key: String, req: RangeServe.RangeReq): Boolean {
         val file = fileFor(key)
         if (!file.isFile) return false
         val have = file.length()
         if (have == 0L) return false
-        serving.add(key)
-        try {
-            val total = runBlocking(Dispatchers.IO) { dao().entry(key) }?.totalBytes ?: -1
-            if (total <= 0) return false
-            val start = reqStart ?: 0
-            if (start >= have) return false
-            val end = minOf(reqEnd ?: (total - 1), total - 1)
-            if (end < start) return false
-            sendFile(sock, file, start, end, total)
+        val total = runBlocking(Dispatchers.IO) { dao().entry(key) }?.totalBytes ?: -1
+        // The file only ever holds a valid [0, have) prefix (gaps are
+        // never teed, partials never deleted mid-stream), so a ServeSpan
+        // against this snapshot stays valid even as appends land
+        // (sendFile clamps to the live length anyway).
+        val d = RangeServe.decide(req, have, total, upstream.containsKey(key))
+        if (d is RangeServe.Decision.ServeSpan) {
+            sendFile(sock, file, d, mimeFor(key), req.isFull)
             return true
-        } finally {
-            serving.remove(key)
         }
-    }
-
-    private fun serveLocked(sock: Socket, key: String, reqStart: Long?, reqEnd: Long?) {
-        val file = fileFor(key)
-        val have = if (file.isFile) file.length() else 0
-        val meta = runBlocking(Dispatchers.IO) { dao().entry(key) }
-        val total = meta?.totalBytes ?: -1
-
-        // Pure-file fast path: requested span already on disk with known total.
-        if (have > 0 && total > 0) {
-            val start = reqStart ?: 0
-            if (start < have) {
-                val end = minOf(reqEnd ?: (total - 1), total - 1)
-                sendFile(sock, file, start, end, total)
-                return
-            }
-        } else if (have > 0 && reqStart != null && reqStart < have && total <= 0) {
-            // Total unknown but the span is cached: serve to EOF, close-delimited.
-            sendFile(sock, file, reqStart, have - 1, -1)
-            return
-        }
-
-        // Need upstream: pass-through (ephemeral key) or stream-and-store.
-        val url = upstream[key] ?: run {
-            // No upstream registered: serve whatever is cached, else 502.
-            if (have > 0) {
-                val start = (reqStart ?: 0).coerceAtMost(have - 1)
-                sendFile(sock, file, start, have - 1, total)
-            } else {
-                reply(sock, 502, "Bad Gateway", emptyMap(), null)
-            }
-            return
-        }
-        fetchAndTee(sock, key, url, file, have, reqStart, reqEnd, store = !key.endsWith("-live"))
+        return false
     }
 
     /**
-     * Fetches upstream (forwarding Range, resuming partial files) while
-     * teeing bytes to disk + socket. Handles stale partials (server
-     * ignores Range → restart from zero) and 416s.
+     * Atomic decide under one short lock hold (no network inside, no slot
+     * held across the fetch — the slot is acquired lazily around the
+     * actual tee / catch-up instead. Holding it across fetchAndServe
+     * deadlocked the in-band catch-up against its own request: 15s in the
+     * wait loop, then 502, on every throttled first fetch.)
      */
-    private fun fetchAndTee(
+    private data class Claim(
+        val total: Long,
+        val decision: RangeServe.Decision,
+    )
+
+    private fun serveLocked(sock: Socket, key: String, req: RangeServe.RangeReq) {
+        val file = fileFor(key)
+        val claim = synchronized(lockFor(key)) {
+            val have = if (file.isFile) file.length() else 0
+            val total = runBlocking(Dispatchers.IO) { dao().entry(key) }?.totalBytes ?: -1
+            val d = RangeServe.decide(req, have, total, upstream.containsKey(key))
+            Claim(total, d)
+        }
+        when (val d = claim.decision) {
+            is RangeServe.Decision.ServeSpan ->
+                sendFile(sock, file, d, mimeFor(key), req.isFull)
+            is RangeServe.Decision.FetchSpan ->
+                fetchAndServe(sock, key, file, d, mimeFor(key), claim.total)
+            is RangeServe.Decision.Fail ->
+                if (d.code == 416) {
+                    val h = RangeServe.unsatisfiableHead(d.total)
+                    val out = sock.getOutputStream()
+                    writeHead(out, h.code, h.message, h.headers)
+                    out.flush()
+                } else {
+                    reply(sock, d.code, "Error", emptyMap(), null)
+                }
+        }
+    }
+
+    /**
+     * Opens an upstream connection following redirects (max 5) with
+     * [rangeHeader] re-applied per hop. Returns a connected connection or
+     * null on transport failure (caller replies 502). The caller owns
+     * disconnecting (streamBody does on the body path).
+     */
+    private fun openUpstream(url: String, rangeHeader: String?): HttpURLConnection? {
+        var current = url
+        var hops = 0
+        while (true) {
+            val c = try {
+                (URL(current).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                    setRequestProperty("User-Agent", UA)
+                    rangeHeader?.let { setRequestProperty("Range", it) }
+                    instanceFollowRedirects = false
+                }
+            } catch (e: Exception) {
+                return null
+            }
+            val code = try {
+                c.connect()
+                c.responseCode
+            } catch (e: Exception) {
+                Log.i(TAG, "open ${hostOf(current)} ${rangeHeader ?: "full"} failed: ${e.message}")
+                runCatching { c.disconnect() }
+                return null
+            }
+            if (code !in REDIRECT_CODES) return c
+            if (hops >= MAX_REDIRECTS) {
+                runCatching { c.disconnect() }
+                return null
+            }
+            val loc = c.getHeaderField("Location")
+            c.disconnect()
+            if (loc == null) return null
+            current = RangeServe.resolveRedirect(current, loc) ?: return null
+            hops++
+        }
+    }
+
+    /**
+     * Fetches the decided span upstream and serves it, lock-free (the tee
+     * slot was claimed atomically in serveLocked, or this is pass-through).
+     * Gaps (seek-ahead) are pure pass-through: the prefix file is NEVER
+     * deleted and the span is NEVER teed into it. A 403 on a span fetch
+     * (throttled links refuse non-sequential windows) triggers one
+     * sequential catch-up + local serve instead of surfacing the 502 that
+     * used to starve WebM prepares of their tail Cues.
+     */
+    private fun fetchAndServe(
         sock: Socket,
         key: String,
-        url: String,
         file: File,
-        have: Long,
-        reqStart: Long?,
-        reqEnd: Long?,
-        store: Boolean,
+        fetch: RangeServe.Decision.FetchSpan,
+        mime: String,
+        knownTotal: Long,
     ) {
-        // Resume only when the request continues exactly where we left off;
-        // anything else restarts the file (stale partial from an expired URL
-        // is unusable mid-file).
-        val resumeAt = if (store && have > 0 && (reqStart == null || reqStart == 0L || reqStart == have)) {
-            if (reqStart == null || reqStart == 0L) {
-                if (have > 0) file.delete()
-                0L
-            } else {
-                have
-            }
-        } else {
-            if (store && have > 0 && reqStart != null && reqStart < have) {
-                // Span already cached but total unknown (handled above when
-                // total known) — fall through to plain upstream fetch.
-            }
-            if (store) file.delete()
-            0L
+        val url = upstream[key] ?: run {
+            reply(sock, 502, "Bad Gateway", emptyMap(), null)
+            return
         }
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15000
-            readTimeout = 30000
-            setRequestProperty("User-Agent", UA)
-            if (resumeAt > 0) setRequestProperty("Range", "bytes=$resumeAt-")
-            else if (reqStart != null) {
-                val end = reqEnd?.let { "-$it" } ?: "-"
-                setRequestProperty("Range", "bytes=$reqStart$end")
-            }
-            instanceFollowRedirects = true
+        val store = fetch.store && !key.endsWith("-live")
+        // Throttled links 403 full GETs without Range: normalize to
+        // bytes=0- (identical semantics). Response handling still treats
+        // it as the full fetch the player asked for.
+        val fwdHeader = fetch.rangeHeader ?: "bytes=0-"
+        val connection = openUpstream(url, fwdHeader) ?: run {
+            reply(sock, 502, "Bad Gateway", emptyMap(), null)
+            return
         }
+        // Already fetched inside openUpstream (cached — no second request).
         val code = try {
-            conn.connect()
-            conn.responseCode
+            connection.responseCode
         } catch (e: Exception) {
+            runCatching { connection.disconnect() }
+            reply(sock, 502, "Bad Gateway", emptyMap(), null)
+            return
+        }
+        Log.i(TAG, "fetch $key host=${hostOf(url)} fwd=${fwdHeader} code=$code")
+        if (code == 403) {
+            // Sequential-only upstream refused the window (throttled
+            // links 403 full GETs, open ranges, oversized windows, and
+            // non-sequential spans alike): catch the prefix up in bounded
+            // sequential windows, then serve locally. One recovery per
+            // request — anything unrecoverable stays a 502.
+            connection.disconnect()
+            Log.i(TAG, "fetch $key 403, catching up")
+            if (serveViaCatchUp(sock, key, file, fetch, mime, knownTotal)) return
             reply(sock, 502, "Bad Gateway", emptyMap(), null)
             return
         }
         if (code == 416) {
-            reply(sock, 416, "Range Not Satisfiable", emptyMap(), null)
+            connection.disconnect()
+            val h = RangeServe.unsatisfiableHead(knownTotal)
+            val out = sock.getOutputStream()
+            writeHead(out, h.code, h.message, h.headers)
+            out.flush()
             return
         }
         if (code != 200 && code != 206) {
+            connection.disconnect()
             reply(sock, 502, "Bad Gateway", emptyMap(), null)
             return
         }
-        if (resumeAt > 0 && code == 200) {
-            // Server ignored Range: the partial is unusable — restart clean.
-            file.delete()
-            streamBody(sock, key, conn, file, 0, store, restart = true)
-            return
+        // Span start we asked for (null = full fetch or verbatim suffix):
+        // drives the truthfulness check on relayed Content-Range below.
+        val askedStart = fetch.rangeHeader
+            ?.removePrefix("bytes=")
+            ?.substringBefore("-")
+            ?.toLongOrNull()
+        // Server ignored Range but we asked mid-span: the body starts at 0,
+        // not at askedStart. Retee from zero when storing (the stale
+        // partial is unusable); otherwise serve without touching the file.
+        // The slot is acquired lazily HERE (never held across the fetch —
+        // holding it earlier deadlocked the in-band catch-up against its
+        // own request); losers transparently become pass-through.
+        val rangeIgnored = code == 200 && (askedStart ?: 0) > 0
+        val effectiveStart: Long? = if (rangeIgnored) null else askedStart
+        var teeHeld = false
+        try {
+            if (store) {
+                teeHeld = TeeGate.tryAcquire(key)
+                if (teeHeld && (fetch.deleteFirst || rangeIgnored)) {
+                    file.delete()
+                }
+            }
+            streamBody(sock, key, connection, file, code, effectiveStart, teeHeld, mime, fetch.rangeHeader == null)
+        } finally {
+            if (teeHeld) TeeGate.release(key)
         }
-        val total = parseTotal(conn, resumeAt)
-        streamBody(sock, key, conn, file, resumeAt, store, restart = false, total = total)
     }
 
-    private fun parseTotal(conn: HttpURLConnection, offset: Long): Long {
-        conn.getHeaderField("Content-Range")?.let { cr ->
-            // "bytes S-E/T"
-            cr.substringAfter("/").trim().toLongOrNull()?.let { return it }
+    /**
+     * Sequential-catch-up recovery for 403'd spans (throttled links refuse
+     * non-sequential windows): tee the valid prefix forward to the span
+     * end, then serve locally. Returns false when unrecoverable (caller
+     * replies 502). Exactly one recovery per request — no loops.
+     */
+    private fun serveViaCatchUp(
+        sock: Socket,
+        key: String,
+        file: File,
+        fetch: RangeServe.Decision.FetchSpan,
+        mime: String,
+        knownTotal: Long,
+    ): Boolean {
+        val url = upstream[key] ?: return false
+        // Catch-up span for the refused fetch (pure parse in RangeServe).
+        val span = SeqFill.catchUpSpan(fetch.rangeHeader, knownTotal) ?: return false
+        val spanStart = span.first
+        val spanEnd: Long? = span.second.takeIf { it != Long.MAX_VALUE }
+        val targetEnd = span.second
+        // Catch-up writes need the tee slot. If a live fill owns it,
+        // wait boundedly instead of failing: its own progress may cover
+        // the span (re-decide sees it), else the slot frees and we fill.
+        // Either way this returns served-or-502 within ~15s, never wedged.
+        val deadline = android.os.SystemClock.uptimeMillis() + 15_000
+        var advanced: SeqFill.Outcome.Advanced? = null
+        var lastOutcome: SeqFill.Outcome = SeqFill.Outcome.Unreachable
+        while (true) {
+            if (TeeGate.tryAcquire(key)) {
+                try {
+                    val opener = SeqFill.Opener { u, r -> openUpstream(u, r) }
+                    val haveNow = if (file.isFile) file.length() else 0
+                    when (val o = SeqFill.catchUp(opener, url, file, haveNow, targetEnd)) {
+                        is SeqFill.Outcome.Advanced -> {
+                            advanced = o
+                            lastOutcome = o
+                            upsertProgress(key, file, o.total)
+                        }
+                        is SeqFill.Outcome.Unreachable -> {
+                            lastOutcome = o
+                        }
+                    }
+                } finally {
+                    TeeGate.release(key)
+                }
+                break
+            }
+            // Slot busy: re-decide on live state (the fill may have covered
+            // the span already — then serve without any catch-up at all).
+            val haveNow = if (file.isFile) file.length() else 0
+            val totalNow =
+                runBlocking(Dispatchers.IO) { dao().entry(key) }?.totalBytes ?: knownTotal
+            val again = RangeServe.decide(
+                RangeServe.RangeReq(spanStart, spanEnd, null), haveNow, totalNow, true,
+            )
+            if (again is RangeServe.Decision.ServeSpan) {
+                sendFile(sock, file, again, mime, false)
+                return true
+            }
+            if (android.os.SystemClock.uptimeMillis() >= deadline) break
+            try {
+                Thread.sleep(200)
+            } catch (e: InterruptedException) {
+                break
+            }
         }
-        conn.getHeaderField("Content-Length")?.toLongOrNull()?.let { return it + offset }
-        return -1
+        val adv = advanced
+        val len = if (file.isFile) file.length() else 0
+        Log.i(TAG, "catchup $key outcome=$lastOutcome len=$len spanStart=$spanStart")
+        if (adv == null || len <= spanStart) return false
+        val end = minOf(spanEnd ?: (len - 1), len - 1)
+        if (end < spanStart) return false
+        val total = adv.total.takeIf { it > 0 } ?: knownTotal
+        sendFile(sock, file, RangeServe.Decision.ServeSpan(spanStart, end, total), mime, fetch.rangeHeader == null)
+        return true
+    }
+
+    /** Persists catch-up progress (bytes + best-known total, rarely complete). */
+    private fun upsertProgress(key: String, file: File, total: Long) {
+        runBlocking(Dispatchers.IO) {
+            runCatching {
+                val dao = dao()
+                val prev = dao.entry(key)
+                val len = file.length()
+                val known = if (total > 0) total else (prev?.totalBytes ?: -1)
+                dao.upsert(
+                    (prev ?: CacheEntry(trackId = key)).copy(
+                        bytes = len,
+                        totalBytes = known,
+                        complete = known > 0 && len >= known,
+                    ),
+                )
+            }
+        }
     }
 
     private fun streamBody(
@@ -421,62 +598,68 @@ object AudioCache {
         key: String,
         conn: HttpURLConnection,
         file: File,
-        offset: Long,
+        code: Int,
+        spanStart: Long?,
         store: Boolean,
-        restart: Boolean,
-        total: Long = -1,
+        mime: String,
+        fullFetch: Boolean,
     ) {
-        // 206 when resuming or when the player sought; 200 for full fetches.
-        val partial = offset > 0 || conn.responseCode == 206
-        // Length unknown until headers arrive: omit Content-Length and let
-        // connection-close delimit (MediaPlayer tolerates it mid-buffering).
-        val headers = mutableMapOf(
-            "Content-Type" to "application/octet-stream",
-            "Accept-Ranges" to "bytes",
-            "Connection" to "close",
-        )
-        val out = sock.getOutputStream()
-        val raf = if (store) {
-            if (restart) file.delete()
-            RandomAccessFile(file, "rw").apply { if (!restart) seek(length()) }
+        // Truthful head from the upstream response (relays Content-Range
+        // only when it matches the span asked for — never invents spans).
+        // Full live fills always go close-delimited (liveFullHead): any
+        // declared length a stalled transfer can't satisfy becomes a
+        // phantom EOS with a fixed-timestamp skip. Suffix fetches are NOT
+        // full (their span resolves server-side) and keep the relay.
+        val head = if (fullFetch) {
+            RangeServe.liveFullHead(mime)
         } else {
-            null
+            RangeServe.fetchHead(
+                spanStart,
+                code,
+                conn.getHeaderField("Content-Range"),
+                conn.getHeaderField("Content-Length"),
+                mime,
+            )
+        }
+        val out = sock.getOutputStream()
+        writeHead(out, head.code, head.message, head.headers)
+        Log.i(TAG, "stream $key ${head.code} ${head.headers["Content-Range"] ?: "full"} len=${head.headers["Content-Length"] ?: "?"} ${head.headers["Content-Type"]}")
+        // Tee guard: body bytes land at spanStart (0 for full fetches).
+        // Anything else means the file and the span disagree — serve only,
+        // never write mid-file gaps (that poisoned the prefix cache).
+        val base = spanStart ?: 0
+        var doStore = store
+        var raf: RandomAccessFile? = null
+        if (doStore) {
+            if (!file.isFile || file.length() != base) {
+                if (base == 0L) {
+                    file.delete()
+                } else {
+                    doStore = false
+                }
+            }
+            if (doStore) {
+                raf = RandomAccessFile(file, "rw").apply { if (base > 0) seek(base) }
+            }
         }
         try {
-            // We learn the servable span only after headers: for 206 the
-            // Content-Range pins it; for 200 we stream to EOF.
-            if (partial) {
-                val cr = conn.getHeaderField("Content-Range")
-                val spanTotal = cr?.substringAfter("/")?.trim()?.toLongOrNull() ?: total
-                if (spanTotal > 0) {
-                    val end = conn.getHeaderField("Content-Range")
-                        ?.substringBefore("/")?.substringAfter("-")?.trim()?.toLongOrNull()
-                        ?: (spanTotal - 1)
-                    headers["Content-Range"] = "bytes $offset-$end/$spanTotal"
-                    headers["Content-Length"] = "${end - offset + 1}"
-                }
-                writeHead(out, 206, "Partial Content", headers)
-            } else {
-                conn.getHeaderField("Content-Length")?.let { headers["Content-Length"] = it }
-                writeHead(out, 200, "OK", headers)
-            }
             val buf = ByteArray(CHUNK)
-            var written = 0L
             conn.inputStream.use { ins ->
                 while (true) {
                     val n = ins.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
                     raf?.write(buf, 0, n)
-                    written += n
                 }
             }
             out.flush()
-            if (store) {
+            Log.i(TAG, "stream $key done stored=$doStore file=${file.length()}")
+            if (doStore) {
                 val finalLen = file.length()
-                val finalTotal = total.takeIf { it > 0 }
-                    ?: conn.getHeaderField("Content-Range")?.substringAfter("/")?.trim()?.toLongOrNull()
-                    ?: -1
+                val finalTotal =
+                    conn.getHeaderField("Content-Range")?.substringAfter("/")?.trim()?.toLongOrNull()
+                        ?: conn.getHeaderField("Content-Length")?.toLongOrNull()?.let { it + base }
+                        ?: -1
                 val complete = finalTotal > 0 && finalLen >= finalTotal
                 runBlocking(Dispatchers.IO) {
                     val dao = dao()
@@ -497,24 +680,30 @@ object AudioCache {
         }
     }
 
-    private fun sendFile(sock: Socket, file: File, start: Long, end: Long, total: Long) {
-        val out = sock.getOutputStream()
-        val headers = mutableMapOf(
-            "Content-Type" to "application/octet-stream",
-            "Accept-Ranges" to "bytes",
-            "Connection" to "close",
+    private fun sendFile(
+        sock: Socket,
+        file: File,
+        span: RangeServe.Decision.ServeSpan,
+        mime: String,
+        fullRequest: Boolean,
+    ) {
+        // Clamp to the live length: a concurrent restart may have replaced
+        // the file after decide. A vanished file aborts silently (the
+        // player re-requests); a shortened one serves truthfully.
+        val len = file.length()
+        if (len <= span.start) return
+        val end = minOf(span.end, len - 1)
+        val head = RangeServe.fileHead(
+            span.start, end, span.total, mime,
+            fullRequest && end == span.end,
         )
-        if (total > 0) {
-            headers["Content-Range"] = "bytes $start-$end/$total"
-            headers["Content-Length"] = "${end - start + 1}"
-            writeHead(out, 206, "Partial Content", headers)
-        } else {
-            writeHead(out, 200, "OK", headers)
-        }
+        val out = sock.getOutputStream()
+        writeHead(out, head.code, head.message, head.headers)
+        Log.i(TAG, "file ${file.name} ${head.code} ${head.headers["Content-Range"] ?: "full"} len=${head.headers["Content-Length"] ?: "?"}")
         RandomAccessFile(file, "r").use { raf ->
-            raf.seek(start)
+            raf.seek(span.start)
             val buf = ByteArray(CHUNK)
-            var left = end - start + 1
+            var left = end - span.start + 1
             while (left > 0) {
                 val n = raf.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
                 if (n < 0) break
