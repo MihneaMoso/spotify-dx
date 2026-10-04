@@ -108,11 +108,13 @@ pub fn Library() -> Element {
         })
         .collect();
     // Playable liked tracks as owned (id, track) rows.
-    let playable_rows: Vec<(String, crate::spotify::models::Track)> = liked
+    let playable_rows: Vec<crate::spotify::models::Track> = liked
         .iter()
         .filter_map(|s| s.playable().cloned())
-        .map(|t| (t.id.clone(), t))
         .collect();
+    // Shared occurrence-disambiguated keys (see track_row_keys): duplicate
+    // ids keep stable identity instead of remounting.
+    let liked_keys = crate::ui::components::track_row_keys(&playable_rows);
 
     rsx! {
         div { class: "page library",
@@ -193,9 +195,9 @@ pub fn Library() -> Element {
                         if playable_rows.is_empty() {
                             div { class: "empty-state", "Nothing liked yet." }
                         }
-                        for (n, (_kid, t)) in playable_rows.iter().enumerate() {
+                        for (n, (t, lkey)) in playable_rows.iter().zip(liked_keys.iter()).enumerate() {
                             crate::ui::components::TrackRow {
-                                key: "{t.id}",
+                                key: "{lkey}",
                                 track: t.clone(),
                                 index: Some(n as u32 + 1),
                                 onplay: crate::player::launch_track,

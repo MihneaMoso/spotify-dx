@@ -44,6 +44,21 @@ object SessionRefresher {
         if ((err as? BridgeException)?.error !is BridgeError.NeedsPage) {
             return Result.failure(err ?: Exception("refresh failed"))
         }
+        // Fast path: mint straight from the cookie jar (~1s, no page
+        // load). Falls through to the WebView revive on any failure —
+        // the revive stays authoritative (server time, DOM signals).
+        val direct = SessionTokenFetch.fetchDirect()
+        if (direct != null) {
+            val payload = org.json.JSONObject()
+                .put("access_token", direct.token)
+                .put("expires_at_ms", direct.expiresAtMs)
+            BridgeClient.notifySession(payload.toString())
+            SessionRepository.refresh()
+            if (BridgeClient.refreshToken().isSuccess) return Result.success(Unit)
+            // Notified but the mirror disagrees: fall through to the
+            // revive rather than failing (same lost-answer rule as
+            // CAPTURED below).
+        }
         // Slow path: ensure + revive the session page, capture, retry. The
         // page posts token_refresh_result through the JS bridge on success.
         val host = pageHost?.invoke() ?: return Result.failure(

@@ -357,9 +357,18 @@ enum Transcode {
 /// discover HTML → asset URLs → first `client_id:"<32 alnum>"` match.
 /// Pure network walk, no key needed (this IS the bootstrap).
 async fn scrape_client_id(client: &reqwest::Client) -> Option<String> {
+    use std::sync::OnceLock;
+    // Compiled once: per-scrape Regex::new billed compile cost against the
+    // 20s scrape budget on the slowest path.
+    static RE_ASSETS: OnceLock<Regex> = OnceLock::new();
+    static RE_KEY: OnceLock<Regex> = OnceLock::new();
+    let re_assets = RE_ASSETS.get_or_init(|| {
+        Regex::new(r"https://a-v2\.sndcdn\.com/assets/[0-9]+-[a-z0-9]+\.js").expect("asset regex")
+    });
+    let re_key = RE_KEY.get_or_init(|| {
+        Regex::new(r#"client_id:"([A-Za-z0-9]{20,})""#).expect("key regex")
+    });
     let html = client.get(DISCOVER).send().await.ok()?.text().await.ok()?;
-    let re_assets = Regex::new(r"https://a-v2\.sndcdn\.com/assets/[0-9]+-[a-z0-9]+\.js").ok()?;
-    let re_key = Regex::new(r#"client_id:"([A-Za-z0-9]{20,})""#).ok()?;
     // Dedup: same bundle may be referenced twice.
     let mut seen = std::collections::HashSet::new();
     // Cap: pages reference dozens of bundles but the key lives in the

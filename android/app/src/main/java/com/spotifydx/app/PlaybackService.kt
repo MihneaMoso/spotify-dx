@@ -181,7 +181,7 @@ class PlaybackService : Service(),
                     Log.w(TAG, "prepare timed out, releasing")
                     releasePlayer()
                     PlayerRepository.onServiceState(false)
-                    ToastBus.error("Couldn't load song — check your connection")
+                    ToastBus.errorRes(R.string.toast_no_connection)
                 }
             }
         }
@@ -290,7 +290,7 @@ class PlaybackService : Service(),
             PlayerRepository.retryAfterError()
         } else {
             if (transient) Log.w(TAG, "media error retry already used, stopping")
-            ToastBus.error("Playback failed (error $what)")
+            ToastBus.errorRes(R.string.toast_playback_failed, what)
             PlayerRepository.onServiceState(false)
             releasePlayer()
         }

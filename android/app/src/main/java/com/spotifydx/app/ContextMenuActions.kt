@@ -30,7 +30,7 @@ object ContextMenuActions {
                 return@launch
             }.filter { it.playable }
             if (tracks.isEmpty()) {
-                ToastBus.error("Nothing playable")
+                ToastBus.errorRes(R.string.toast_nothing_playable)
                 return@launch
             }
             val first = tracks.first()
@@ -51,13 +51,15 @@ object ContextMenuActions {
                 return@launch
             }.filter { it.playable }
             if (tracks.isEmpty()) {
-                ToastBus.error("Nothing to queue")
+                ToastBus.errorRes(R.string.toast_nothing_to_queue)
                 return@launch
             }
             PlayerRepository.playNext(tracks)
-            ToastBus.error(
-                if (tracks.size == 1) "Will play next" else "${tracks.size} tracks will play next",
-            )
+            if (tracks.size == 1) {
+                ToastBus.errorRes(R.string.toast_will_play_next_one)
+            } else {
+                ToastBus.errorRes(R.string.toast_will_play_next_many, tracks.size)
+            }
         }
     }
 
@@ -69,19 +71,21 @@ object ContextMenuActions {
                 return@launch
             }.filter { it.playable }
             if (tracks.isEmpty()) {
-                ToastBus.error("Nothing to queue")
+                ToastBus.errorRes(R.string.toast_nothing_to_queue)
                 return@launch
             }
             tracks.forEach { PlayerRepository.enqueue(it) }
-            ToastBus.error(
-                if (tracks.size == 1) "Added to queue" else "${tracks.size} tracks added to queue",
-            )
+            if (tracks.size == 1) {
+                ToastBus.errorRes(R.string.toast_added_to_queue_one)
+            } else {
+                ToastBus.errorRes(R.string.toast_added_to_queue_many, tracks.size)
+            }
         }
     }
 
     // TODO(gql-POST): needs a core playlist-mutation (reads-only today).
     fun saveToPlaylist() {
-        ToastBus.error("Not implemented yet")
+        ToastBus.errorRes(R.string.toast_not_implemented)
     }
 
     /**
@@ -99,11 +103,11 @@ object ContextMenuActions {
                 return@launch
             }.filter { it.playable }
             if (tracks.isEmpty()) {
-                ToastBus.error("Nothing to download")
+                ToastBus.errorRes(R.string.toast_nothing_to_download)
                 return@launch
             }
             val dm = ctx.getSystemService(DownloadManager::class.java) ?: run {
-                ToastBus.error("Downloads unavailable")
+                ToastBus.errorRes(R.string.toast_downloads_unavailable)
                 return@launch
             }
             var ok = 0
@@ -139,25 +143,25 @@ object ContextMenuActions {
                     failed += 1
                 }
             }
-            ToastBus.error(
-                when {
-                    ok > 0 && failed == 0 ->
-                        if (ok == 1) "Downloading to Downloads/SpotifyDX" else "Downloading $ok tracks"
-                    ok > 0 -> "Downloading $ok tracks ($failed failed)"
-                    else -> "Download failed"
-                },
-            )
+            when {
+                ok > 0 && failed == 0 && ok == 1 ->
+                    ToastBus.errorRes(R.string.toast_downloading_one)
+                ok > 0 && failed == 0 ->
+                    ToastBus.errorRes(R.string.toast_downloading_many, ok)
+                ok > 0 -> ToastBus.errorRes(R.string.toast_downloading_partial, ok, failed)
+                else -> ToastBus.errorRes(R.string.toast_download_failed)
+            }
         }
     }
 
     // TODO(gql-POST): needs a core library-mutation (reads-only today).
     fun saveToLibrary() {
-        ToastBus.error("Not implemented yet")
+        ToastBus.errorRes(R.string.toast_not_implemented)
     }
 
     // TODO(gql-POST): needs a core like-mutation (reads-only today).
     fun like() {
-        ToastBus.error("Not implemented yet")
+        ToastBus.errorRes(R.string.toast_not_implemented)
     }
 
     /** Native share sheet with the open.spotify.com link. */

@@ -14,6 +14,8 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 
 /**
@@ -164,18 +166,26 @@ class ContextMenuSheet : BottomSheetDialogFragment() {
         init {
             // Artist rows arrive without covers (tracks only carry
             // artist names + IDs) — backfill from the cached artist page
-            // and rebind just those rows. Dismissal cancels the scope, so
-            // a closed sheet never touches a dead adapter.
+            // and rebind just those rows. Fetches fan out concurrently
+            // (one bridge round-trip each, in parallel — not N× serial);
+            // results apply in index order with one rebind pass.
+            // Dismissal cancels the scope, so a closed sheet never
+            // touches a dead adapter.
             this@ContextMenuSheet.lifecycleScope.launch {
-                rows.forEachIndexed { i, r ->
-                    if (r is Row.Nav && r.kind == "artist" && r.cover.isEmpty()) {
-                        val url = MusicRepository.artistPage(r.id).getOrNull()
-                            ?.optJSONObject("artist")?.let { Models.artist(it).imageUrl }
-                            .orEmpty()
-                        if (url.isNotEmpty()) {
-                            r.cover = url
-                            notifyItemChanged(i)
-                        }
+                val pending = rows.mapIndexedNotNull { i, r ->
+                    if (r is Row.Nav && r.kind == "artist" && r.cover.isEmpty()) i to r.id else null
+                }
+                val covers = pending.map { (i, id) ->
+                    async {
+                        i to MusicRepository.artistPage(id)
+                            .getOrNull()?.optJSONObject("artist")
+                            ?.let { Models.artist(it).imageUrl }.orEmpty()
+                    }
+                }.awaitAll()
+                for ((i, url) in covers) {
+                    if (url.isNotEmpty()) {
+                        (rows[i] as? Row.Nav)?.cover = url
+                        notifyItemChanged(i)
                     }
                 }
             }

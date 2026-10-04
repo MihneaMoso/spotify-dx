@@ -1,4 +1,7 @@
 # CI pre-commit check — proposal (pending review)
+>
+> > STATUS: proposal only — `scripts/check-workflows.sh` was never created
+> > (parked, not implemented). Nothing below is enforced anywhere.
 
 ## Problem
 

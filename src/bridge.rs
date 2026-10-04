@@ -108,8 +108,12 @@ fn set_bootstrap_restoring(v: bool) {
 fn push_event(kind: &str, payload_json: &str) {
     let mut q = events().lock().unwrap_or_else(|e| e.into_inner());
     if q.len() < 64 {
+        // kind via serde (never raw interpolation): a future dynamic kind
+        // with a quote would otherwise break the envelope + pollEvents.
+        let kind = serde_json::Value::String(kind.to_string());
         q.push(format!(
-            "{{\"kind\":\"{kind}\",\"payload\":{payload_json}}}"
+            "{{\"kind\":{},\"payload\":{payload_json}}}",
+            serde_json::to_string(&kind).unwrap_or_default()
         ));
     }
 }
@@ -1251,8 +1255,12 @@ macro_rules! phase_stub {
 /// core `Track` object (rows/cards always pass the visible object —
 /// play-with-metadata, zero network). Stream-URL cache first, ordered
 /// provider failover behind it (sole active provider: YouTube-muxed,
-/// §6.9). Needs a live session (product promise) but no Spotify token —
-/// resolution itself is token-free. `Ok(None)` → `NOT_FOUND`.
+/// §6.9). Deliberately NOT gated on a fresh Spotify token: resolution is
+/// token-free (no Spotify API call), so an expired session must never
+/// block playback — the previous gate turned every post-expiry tap into
+/// an instant NEEDS_PAGE that the player couldn't heal (only screens
+/// heal), forcing the user through a manual sign-in + retry loop before
+/// any new song would play.
 #[allow(unsafe_code)]
 #[no_mangle]
 pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
@@ -1261,9 +1269,7 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
     arg: JString<'a>,
 ) -> JString<'a> {
     guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
+        // No need_fresh_token gate (see doc above): token-free resolution.
         let raw = rust_str(&mut *env, &arg);
         let v: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v,

@@ -66,4 +66,20 @@
     <string name="cred_tidal">Tidal token (reserved)</string>
     <string name="cred_deezer">Deezer ARL (reserved)</string>
     <string name="profile_name_hint">Display name</string>
+    <string name="toast_nothing_playable">Nothing playable</string>
+    <string name="toast_nothing_to_queue">Nothing to queue</string>
+    <string name="toast_will_play_next_one">Will play next</string>
+    <string name="toast_will_play_next_many">%d tracks will play next</string>
+    <string name="toast_added_to_queue_one">Added to queue</string>
+    <string name="toast_added_to_queue_many">%d tracks added to queue</string>
+    <string name="toast_not_implemented">Not implemented yet</string>
+    <string name="toast_nothing_to_download">Nothing to download</string>
+    <string name="toast_downloads_unavailable">Downloads unavailable</string>
+    <string name="toast_downloading_one">Downloading to Downloads/SpotifyDX</string>
+    <string name="toast_downloading_many">Downloading %d tracks</string>
+    <string name="toast_downloading_partial">Downloading %d tracks (%d failed)</string>
+    <string name="toast_download_failed">Download failed</string>
+    <string name="toast_no_connection">Couldn\'t load song — check your connection</string>
+    <string name="toast_playback_failed">Playback failed (error %d)</string>
+    <string name="queue_count">%d songs</string>
 </resources>

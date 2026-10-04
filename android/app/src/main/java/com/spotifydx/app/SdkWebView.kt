@@ -180,13 +180,9 @@ class SdkWebViewDriver(
         return withTimeoutOrNull(timeoutMs) { readySignal.await() }
     }
 
-    // -- Relay: client-side transport (resume/pause/step in place) -------------
+    // -- Relay: client-side transport (resume/pause in place) -----------------
     fun play() = relay("play")
     fun pause() = relay("pause")
-    fun next() = relay("next")
-    fun prev() = relay("prev")
-    fun seek(ms: Long) = relay("seek", ms.toString())
-    fun setVolume(v: Float) = relay("volume", v.toString())
 
     private fun relay(call: String, arg: String = "") {
         val wv = webView
@@ -205,13 +201,5 @@ class SdkWebViewDriver(
         deviceId = null
         bootFailed = false
         readySignal = CompletableDeferred()
-    }
-
-    fun attachHidden() {
-        val wv = webView ?: return
-        if (wv.parent == null) {
-            wv.visibility = View.GONE
-            container.addView(wv, FrameLayout.LayoutParams(1, 1))
-        }
     }
 }

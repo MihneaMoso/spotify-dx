@@ -75,6 +75,27 @@ const TABLE_CHUNK: usize = 60;
 /// and grows in chunks via an inline "Show all" affordance. True windowed
 /// virtualization lands with the Phase-4 store work if lists grow past a few
 /// hundred rows; this keeps first paint cheap without scroll plumbing.
+/// Stable identity keys for track rows (never the row index): the first
+/// occurrence keeps the bare id, repeats get `id-2`, `id-3`, … — shared by
+/// every page rendering `TrackRow` so duplicate ids neither remount rows
+/// (re-entering the artwork fetch path) nor defeat stable identity.
+pub fn track_row_keys(tracks: &[crate::spotify::models::Track]) -> Vec<String> {
+    let mut occurrences: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    tracks
+        .iter()
+        .map(|t| {
+            let n = occurrences.entry(t.id.as_str()).or_insert(0);
+            *n += 1;
+            if *n > 1 {
+                format!("{}-{n}", t.id)
+            } else {
+                t.id.clone()
+            }
+        })
+        .collect()
+}
+
 #[component]
 pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) -> Element {
     let mut visible = use_signal(|| TABLE_CHUNK);
@@ -82,12 +103,8 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
     let total = tracks.len();
     let shown = (*visible.peek()).min(total);
 
-    // Stable identity keys (never the row index): inserts/removes move
-    // rows instead of remounting every row below the edit — each remount
-    // re-entered the artwork fetch/encode path. Genuine duplicate ids in
-    // one list get a per-id occurrence disambiguator.
-    let mut occurrences: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    // Stable identity keys via the shared disambiguator (see track_row_keys).
+    let keys = track_row_keys(&tracks[..shown]);
     let rows: Vec<Element> = tracks
         .iter()
         .take(shown)
@@ -95,13 +112,7 @@ pub fn TrackTable(tracks: Vec<crate::spotify::models::Track>, numbered: bool) ->
         .map(|(i, t)| {
             let index = numbered.then_some(i as u32 + 1);
             let track = t.clone();
-            let n = occurrences.entry(track.id.clone()).or_insert(0);
-            *n += 1;
-            let key = if *n > 1 {
-                format!("{}-{}", track.id, n)
-            } else {
-                track.id.clone()
-            };
+            let key = keys[i].clone();
             rsx! {
                 TrackRow {
                     key: "{key}",

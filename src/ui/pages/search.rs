@@ -138,15 +138,16 @@ pub fn Search() -> Element {
         })
     };
 
-    let song_rows: Vec<Element> = snapshot
-        .tracks
-        .iter()
-        .take(6)
-        .map(|t| {
-            let track = t.clone();
+    let shown_tracks: Vec<_> = snapshot.tracks.iter().take(6).cloned().collect();
+    let song_keys = crate::ui::components::track_row_keys(&shown_tracks);
+    let song_rows: Vec<Element> = shown_tracks
+        .into_iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let key = song_keys[i].clone();
             rsx! {
                 TrackRow {
-                    key: "{track.id}",
+                    key: "{key}",
                     track: track,
                     index: None,
                     onplay: crate::player::launch_track,

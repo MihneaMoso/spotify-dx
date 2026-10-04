@@ -243,7 +243,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 // Echo queue header: current track + queue size.
                 qTitle.text = t?.name ?: "Not playing"
                 qSub.text = t?.artistNames ?: ""
-                qCount.text = "${st.queue.size} songs"
+                qCount.text = qCount.context.getString(R.string.queue_count, st.queue.size)
                 if (t != null && qThumb.getTag(R.id.sheet_queue_thumb) != t.coverUrl) {
                     qThumb.setTag(R.id.sheet_queue_thumb, t.coverUrl)
                     ArtworkLoader.load(qThumb, t.coverUrl)

@@ -158,6 +158,11 @@ object MusicRepository {
         // cleared the core token, making the session unrecoverable and every
         // retry dead. Revive once and retry the read instead.
         if (SessionPolicy.onDataError(err) is SessionPolicy.DataAction.HealThenRetry) {
+            // Smart-cast on the checked value: `onDataError` decides the
+            // branch, so a future new healable error must not become a
+            // ClassCastException here (a crash where an error toast belonged).
+            val needsPage = err as? BridgeError.NeedsPage
+                ?: return res
             val healed = SessionRefresher.refresh()
             if (healed.isSuccess) {
                 return withContext(Dispatchers.IO) { block() }
@@ -169,12 +174,14 @@ object MusicRepository {
             // dead token is cleared, so the gate condition can actually
             // fire. Transient heal failure keeps today's error+retry.
             val surfaced = SessionPolicy.healErrorToSurface(
-                err as BridgeError.NeedsPage,
+                needsPage,
                 (healed.exceptionOrNull() as? BridgeException)?.error,
             )
             if (SessionPolicy.requiresLogout(surfaced)) {
                 SessionRepository.logout()
-                return Result.failure(healed.exceptionOrNull()!!)
+                return Result.failure(
+                    healed.exceptionOrNull() ?: Exception("session refresh failed"),
+                )
             }
             return res
         }

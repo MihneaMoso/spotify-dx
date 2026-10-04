@@ -297,12 +297,6 @@ class SearchFragment : Fragment() {
         ViewModelProvider(this)[SearchViewModel::class.java]
     }
 
-    /** Forwards a fresh top-bar query into this live (cached) screen. */
-    fun submitExternal(query: String) {
-        view?.findViewById<EditText>(R.id.search_box)?.setText(query)
-        vm.submit(query)
-    }
-
     override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View =
         i.inflate(R.layout.fragment_search, c, false)
 

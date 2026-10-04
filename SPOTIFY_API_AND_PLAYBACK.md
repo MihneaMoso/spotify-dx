@@ -1,4 +1,13 @@
 # Spotify API architecture & dual-engine playback
+>
+> > SUPERSEDED (2026-08): §1 below describes the old `/v1` request pipeline
+> > (`cached_get_json`, `live_get_json`, `pipeline_load`, `classify`,
+> > `get_featured_playlists`, `get_new_releases`, `get_recommendations`,
+> > `get_artist*`), which was removed as dead. All user/library/home/browse/
+> > search reads now go through Spotify's internal GraphQL API
+> > (`api-partner.spotify.com/pathfinder`) — see RULES.md §6.8b and
+> > docs/ARCHITECTURE.md §7. Do not reintroduce `/v1` reads from this doc;
+> > they 429 after a handful of requests.
 
 This document explains, for this repo (`spotify-dx`, shared Rust core +
 native UIs):

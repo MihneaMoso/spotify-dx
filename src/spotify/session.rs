@@ -69,7 +69,9 @@ pub async fn ensure_token() -> Result<String> {
     // every authenticated load with no dioxus runtime available.
     if dioxus::core::Runtime::try_current().is_none() {
         if let Some((token, expires_at_ms)) = crate::auth::token_store::load() {
-            let now_ms = Utc::now().timestamp_millis() as u64;
+            // `.max(0)`: a pre-epoch clock would wrap `as u64` into a huge
+            // value and accept a dead token as fresh (same rule as bridge).
+            let now_ms = Utc::now().timestamp_millis().max(0) as u64;
             if expires_at_ms > now_ms + 60_000 {
                 return Ok(token);
             }

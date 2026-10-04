@@ -193,7 +193,6 @@ install_android() {
 # ---------------------------------------------------------------------------
 main() {
     have curl || die "curl is required (macOS/Linux usually include it)"
-    ! have uname || true
 
     local target os arch
     target="$(detect_target)"

@@ -6,19 +6,23 @@ import kotlinx.coroutines.flow.asSharedFlow
 
 /**
  * Error-to-toast bus (§10.1 shell, §15 ARCHITECTURE): user-facing errors with
- * timed auto-dismiss (stale timers cannot clear newer errors — the toast view
- * tags each message with a generation) and manual dismiss.
+ * timed auto-dismiss (each new toast cancels the previous dismiss timer —
+ * see MainActivity.showToast) and manual dismiss.
  */
 object ToastBus {
-    data class Toast(val message: String, val generation: Long)
+    data class Toast(val message: String)
 
-    private var generation = 0L
     private val _toasts = MutableSharedFlow<Toast>(extraBufferCapacity = 8)
     val toasts: SharedFlow<Toast> = _toasts.asSharedFlow()
 
     fun error(message: String) {
-        generation += 1
-        _toasts.tryEmit(Toast(message, generation))
+        _toasts.tryEmit(Toast(message))
+    }
+
+    /** Resource-backed toast (keeps user copy in strings.xml, not logic). */
+    fun errorRes(@androidx.annotation.StringRes resId: Int, vararg args: Any) {
+        val msg = runCatching { AppState.ctx().getString(resId, *args) }.getOrNull()
+        error(msg ?: "Something went wrong")
     }
 
     fun fromBridge(e: Throwable) {

@@ -134,8 +134,14 @@ pub fn extract_id_from_url(url: &str) -> Option<String> {
         }
         return None;
     }
-    // Generic: last path segment
-    url.rsplit('/').next().map(|s| s.to_string())
+    // Generic: last path segment, minus any query/fragment (tracking
+    // params like `?x=1` are not part of the ID) — and never empty (a
+    // trailing slash yields no ID, not an empty one).
+    url.rsplit('/')
+        .next()
+        .map(|s| s.split(['?', '#']).next().unwrap_or(s))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -158,6 +164,23 @@ mod tests {
     fn extract_generic_path() {
         let url = "https://example.com/track/abc123";
         assert_eq!(extract_id_from_url(url).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn extract_generic_strips_query_and_fragment() {
+        assert_eq!(
+            extract_id_from_url("https://tidal.com/browse/12345?x=1").unwrap(),
+            "12345"
+        );
+        assert_eq!(
+            extract_id_from_url("https://example.com/track/abc123#frag").unwrap(),
+            "abc123"
+        );
+    }
+
+    #[test]
+    fn extract_generic_rejects_trailing_slash() {
+        assert!(extract_id_from_url("https://example.com/track/").is_none());
     }
 
     #[test]

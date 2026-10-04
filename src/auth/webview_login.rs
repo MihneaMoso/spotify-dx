@@ -152,7 +152,10 @@ const POLL_JS: &str = r#"
       return origFetch(input, init).then(function (resp) {
         try {
           var url = typeof input === 'string' ? input : ((input && input.url) || '');
-          if (url.indexOf('access_token') !== -1 || url.indexOf('clientToken') !== -1 || url.indexOf('token') !== -1) {
+          // Narrow: only the two endpoints that return {accessToken}.
+          // The old bare-'token' match also hooked CSRF/clientToken
+          // traffic and clone-read every such body for nothing.
+          if (url.indexOf('/api/token') !== -1 || url.indexOf('get_access_token') !== -1) {
             resp.clone().text().then(function (text) {
               try {
                 var d = JSON.parse(text);

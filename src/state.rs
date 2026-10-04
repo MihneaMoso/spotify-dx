@@ -277,12 +277,18 @@ pub fn format_duration(ms: u64) -> String {
 }
 
 /// Mix entropy into a u64 -- used only to seed a local queue shuffle.
+/// Full timestamp (secs + nanos) plus a per-call counter: nanos alone
+/// repeated the same "shuffle" for calls inside one sub-second tick (and
+/// a clock error pinned every shuffle to one order).
 fn shuffle_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0x9e3779b9)
+        .map(|d| d.as_secs().wrapping_mul(1_000_000_000).wrapping_add(d.subsec_nanos() as u64))
+        .unwrap_or(0x9e3779b9);
+    stamp.wrapping_add(CALLS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
 /// In-place Fisher-Yates using a seeded PRNG. O(n), no allocations.

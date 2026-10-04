@@ -207,7 +207,9 @@ fn engine_thread(rx: std::sync::mpsc::Receiver<EngineMsg>) {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Build a fresh `FilterSet` from blocklist content and exception rules, then
-/// compile it into an `Engine`.  Returns the engine and the number of rules.
+/// compile it into an `Engine`.  Returns the engine and the estimated rule
+/// count (submitted non-blank rule lines — the parser silently drops invalid
+/// ones, so this is an upper bound, not an engine census).
 pub fn build_engine(blocklist_text: &str) -> Engine {
     let (engine, _count) = build_engine_with_count(blocklist_text);
     engine
@@ -221,6 +223,11 @@ fn build_engine_with_count(blocklist_text: &str) -> (Engine, usize) {
     //    `Hosts` format.  Mixing them in one `add_filter_list` call silently
     //    drops the non-matching format.
     let (adguard_text, hosts_text) = split_blocklist_formats(blocklist_text);
+    // Count what is actually submitted (per split format), not raw input
+    // lines: the split itself re-homes lines, and a stale `+ 13` constant
+    // drifts whenever the curated lists below change.
+    let mut rule_count =
+        count_filter_lines(&adguard_text) + count_filter_lines(&hosts_text);
     if !hosts_text.is_empty() {
         filter_set.add_filter_list(
             hosts_text,
@@ -254,7 +261,6 @@ fn build_engine_with_count(blocklist_text: &str) -> (Engine, usize) {
         spotify_ad_rules.push_str(rule);
         spotify_ad_rules.push('\n');
     }
-    filter_set.add_filter_list(spotify_ad_rules, ParseOptions::default());
 
     // 3. Add ALWAYS_ALLOW as exception rules so the engine itself enforces the
     //    whitelist — no secondary check needed at the call site.
@@ -265,12 +271,10 @@ fn build_engine_with_count(blocklist_text: &str) -> (Engine, usize) {
     for domain in WILDCARD_ALLOW {
         exceptions.push_str(&format!("@@||{domain}^\n"));
     }
+    // Count before the moves below consume the strings.
+    rule_count += count_filter_lines(&spotify_ad_rules) + count_filter_lines(&exceptions);
+    filter_set.add_filter_list(spotify_ad_rules, ParseOptions::default());
     filter_set.add_filter_list(exceptions, ParseOptions::default());
-
-    let rule_count = count_filter_lines(blocklist_text)
-        + 13 // curated ad rules
-        + ALWAYS_ALLOW.len()
-        + WILDCARD_ALLOW.len();
 
     let engine = Engine::new_with_filter_set(filter_set);
     (engine, rule_count)

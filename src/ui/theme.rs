@@ -81,6 +81,9 @@ mod tests {
     fn every_theme_variant_has_a_css_hook() {
         // Alternate themes need an explicit override block keyed off the
         // data-theme attribute value; the default theme rides on :root.
+        // Single-element loop by design: adding a second theme variant
+        // is a one-line change, not a test rewrite.
+        #[allow(clippy::single_element_loop)]
         for theme in [ThemeName::Onyx] {
             let needle = format!(":root[data-theme=\"{}\"]", theme.attr_value());
             assert!(
@@ -140,6 +143,9 @@ mod tests {
                 "shell grid lost `{area}` in `{selector}`"
             );
         }
+        // Single-element loop by design (see above): new grid rows join
+        // the array instead of needing a new assertion.
+        #[allow(clippy::single_element_loop)]
         for needle in ["\"sidenav main   np\""] {
             assert!(CSS.contains(needle), "shell grid lost `{needle}`");
         }

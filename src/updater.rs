@@ -236,7 +236,14 @@ async fn download_to(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let part = dest.with_extension("part");
+    // Explicit `.part` suffix (not `with_extension`, which would turn
+    // `….tar.gz` into `…tar.part` and collide across concurrent downloads
+    // sharing a directory).
+    let part = dest.with_extension(
+        dest.extension()
+            .map(|e| format!("{}.part", e.to_string_lossy()))
+            .unwrap_or_else(|| "part".to_string()),
+    );
     let file = tokio::fs::File::create(&part)
         .await
         .map_err(|e| format!("create file failed: {e}"))?;

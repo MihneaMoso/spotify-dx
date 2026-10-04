@@ -75,7 +75,7 @@ regex           = "1"
 # keychain/filesystem/DNS, and the local symphonia + rodio/cpal pipeline.
 # Replaced on wasm by the `platform` seam (browser fetch, localStorage, WebAudio).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio         = { version = "1", features = ["full", "sync"] }
+tokio         = { version = "1", features = ["full"] }
 reqwest       = { version = "0.12", default-features = false, features = ["json","cookies","gzip","brotli","stream","rustls-tls"] }
 hickory-resolver = { version = "0.24", default-features = false, features = ["dns-over-https-rustls","tokio-runtime"] }
 keyring       = { version = "3", features = ["sync-secret-service", "linux-native"] }   # cross-platform keychain
@@ -111,7 +111,10 @@ android_logger   = "0.14"
 # Matches the jni version wry 0.53.5 pins (its `on_webview_created` /
 # `dispatch` callbacks use these exact `jni` types) so the android_views
 # view-layering manager can drive wry's Android view tree without a second
-# jni copy resolving into the binary.
+# jni copy resolving into the binary. NOTE (2026-10): the second-copy goal
+# is NOT currently achieved — Cargo.lock also resolves jni 0.22.4 via
+# android-activity 0.6.1 and webbrowser 1.2.4. Aligning those is future
+# work; this pin only keeps OUR direct dep on wry's version.
 jni              = { version = "0.21" }
 
 # The login flow hosts the real open.spotify.com page in a GTK window (Linux).

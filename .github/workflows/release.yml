@@ -26,7 +26,10 @@ name: release
 
 on:
   push:
-    tags: ["v*", "[0-9]+.[0-9]+.[0-9]*"]
+    # NOTE: tag filters are globs, not regex — a second pattern like
+    # "[0-9]+.[0-9]+.[0-9]*" would match literal `+` chars only, so bare
+    # semver tags intentionally do NOT trigger here (release.sh tags vX.Y.Z).
+    tags: ["v*"]
 
 # Allow the "publish" job to create the GitHub Release and attach assets.
 permissions:
@@ -271,7 +274,9 @@ jobs:
           }
           bt="${ANDROID_HOME}/build-tools/34.0.0"
           apk_dir="android/app/build/outputs/apk/release"
-          apk="$(ls "${apk_dir}"/app-release-unsigned.apk 2>/dev/null || ls "${apk_dir}"/app-release.apk | head -1)"
+          # `|| true`: under `set -e` a no-match glob would kill the
+          # step with ls's error before the diagnostic below can fire.
+          apk="$( { ls "${apk_dir}"/app-release-unsigned.apk 2>/dev/null || ls "${apk_dir}"/app-release.apk 2>/dev/null || true; } | head -1)"
           [ -n "${apk}" ] && [ -f "${apk}" ] || { echo "no release APK in ${apk_dir}" >&2; exit 1; }
           # Asset basename MUST stay app-release-unsigned-signed.apk: the
           # updater matches releases by ANDROID_TOKEN (src/updater.rs).
@@ -305,15 +310,20 @@ jobs:
       - name: Install Rust toolchain (wasm32)
         uses: dtolnay/rust-toolchain@stable
         with:
+          # Pinned — see pages.yml: floating `stable` + a stale `target/`
+          # restore produced wasm-bindgen failures on a tree verified
+          # clean locally. Re-pin deliberately after local verification.
+          toolchain: 1.97.1
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:
+          # Registry only, never `target/` (stale restores across lock
+          # changes caused phantom wasm-bindgen failures — see pages.yml).
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-wasm32-

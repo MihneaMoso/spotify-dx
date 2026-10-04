@@ -537,7 +537,7 @@ mod tests {
         let s2 = store.clone();
         let joiner = tokio::spawn(async move {
             s2.resolve("f".into(), false, |k| async move {
-                Ok::<Vec<u8>, AppError>(format!("{k}").into_bytes())
+                Ok::<Vec<u8>, AppError>(k.to_string().into_bytes())
             })
             .await
         });

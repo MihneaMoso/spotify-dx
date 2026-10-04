@@ -64,6 +64,9 @@ pub fn Liked() -> Element {
         .iter()
         .filter_map(|s| s.playable().cloned())
         .collect();
+    // Shared occurrence-disambiguated keys (see track_row_keys): stable
+    // across reorder, unlike the old index-suffixed keys.
+    let liked_keys = crate::ui::components::track_row_keys(&playable);
     let first_track = playable.first().cloned();
     let shuffle_pool = playable.clone();
 
@@ -90,9 +93,9 @@ pub fn Liked() -> Element {
             }
 
             div { class: "track-list",
-                for (i, t) in playable.into_iter().enumerate() {
+                for (i, (t, lkey)) in playable.into_iter().zip(liked_keys.into_iter()).enumerate() {
                     TrackRow {
-                        key: "{t.id}-{i}",
+                        key: "{lkey}",
                         track: t,
                         index: Some((i + 1) as u32),
                         onplay: crate::player::launch_track,

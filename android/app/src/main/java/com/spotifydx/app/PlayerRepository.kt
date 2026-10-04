@@ -621,8 +621,24 @@ object PlayerRepository {
                     return@launch
                 }
                 val err = res.exceptionOrNull()
-                val code = (err as? BridgeException)?.error
-                    ?.let { it as? BridgeError.Core }?.code
+                val bridgeErr = (err as? BridgeException)?.error
+                val code = (bridgeErr as? BridgeError.Core)?.code
+                // Session heal (screens parity): resolution is token-free
+                // now, but a stale core (or a future gate) can still answer
+                // NEEDS_PAGE. Heal silently once and retry — never bounce
+                // the user to a retry button for this (the pre-fix expiry
+                // playback hell: every post-expiry tap failed instantly and
+                // only a screen retry could heal it).
+                if (url.isNullOrEmpty() && bridgeErr is BridgeError.NeedsPage && attempt == 0) {
+                    Log.i(TAG, "resolve needs session, healing silently once")
+                    if (SessionRefresher.refresh().isSuccess) {
+                        if (seq != resolveSeq) return@launch
+                        playViaOpen(track, 1, seq)
+                        return@launch
+                    }
+                    // Heal failed: fall through to the failure handling
+                    // below (rollback + toast), exactly as today.
+                }
                 // Transient network failures get ONE backoff retry; region
                 // blocks (NOT_FOUND) and session/premium errors never do.
                 val transient = url.isNullOrEmpty() && (code == "NET" || code == "TIMEOUT")

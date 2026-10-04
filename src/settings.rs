@@ -308,10 +308,12 @@ mod tests {
     #[test]
     fn roundtrips_through_disk() {
         let path = temp_path("roundtrip");
-        let mut s = Settings::default();
-        s.theme = ThemeName::Onyx;
-        s.volume = 0.42;
-        s.engine = EnginePreference::Open;
+        let s = Settings {
+            theme: ThemeName::Onyx,
+            volume: 0.42,
+            engine: EnginePreference::Open,
+            ..Default::default()
+        };
         s.save_to(&path).expect("save");
 
         let loaded = Settings::load_from(&path).expect("load");

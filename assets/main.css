@@ -1324,7 +1324,7 @@ button.ghost:active { transform: scale(0.97); }
 
 .login-retry {
   background: var(--blue-3);
-  color: var(--on-accent-ink);
+  color: var(--on-accent);
   border: none;
   padding: 0.75rem 2rem;
   border-radius: 999px;
@@ -1580,7 +1580,7 @@ button.ghost:active { transform: scale(0.97); }
   height: 100%;
   cursor: pointer;
 }
-.settings-error { color: #e35; font-size: 12px; margin-top: 8px; }
+.settings-error { color: var(--danger-strong); font-size: 12px; margin-top: 8px; }
 
 /* Software & updates (settings) */
 .update-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }

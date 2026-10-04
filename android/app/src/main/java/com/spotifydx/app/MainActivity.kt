@@ -762,7 +762,7 @@ class MainActivity : AppCompatActivity() {
         if (barDuration?.text?.toString() != duration) barDuration?.text = duration
     }
 
-    // -- Toast (generation-guarded auto-dismiss) --------------------------------------------
+    // -- Toast (cancel-previous auto-dismiss) --------------------------------------------
     private fun showToast(t: ToastBus.Toast) {
         toastView.text = t.message
         toastView.visibility = View.VISIBLE

@@ -75,8 +75,6 @@ class QueueTimelineAdapter(
 
     fun nowPosition(): Int = windows.indexOfFirst { it.kind == RowKind.NOW }
 
-    fun entryAt(pos: Int): QueueEntry? = windows.getOrNull(pos)
-
     /** Drag session start (called by the drag helper on select). */
     fun beginDrag() {
         dragging = true
@@ -116,12 +114,6 @@ class QueueTimelineAdapter(
         val removed = windows.removeAt(pos)
         notifyItemRemoved(pos)
         return removed
-    }
-
-    /** Undo support: splices an entry back at its old slot. */
-    fun insertAt(pos: Int, entry: QueueEntry) {
-        windows.add(pos.coerceIn(0, windows.size), entry)
-        notifyItemInserted(pos.coerceIn(0, windows.size - 1))
     }
 
     override fun getItemCount(): Int = windows.size

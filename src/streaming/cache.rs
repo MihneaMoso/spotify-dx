@@ -111,8 +111,10 @@ pub fn put(track_id: &str, provider: &str, url: &str, format: &str, quality: &st
         if let Some(pos) = guard.order.iter().position(|k| k == &key) {
             guard.order.remove(pos);
         }
-        // FIFO eviction when at capacity.
-        if guard.memory.len() >= MEMORY_CAP {
+        // FIFO eviction when at capacity — for NEW keys only: re-caching
+        // a live key must not evict an innocent entry (each update-at-cap
+        // otherwise shrank the effective cap by one).
+        if !guard.memory.contains_key(&key) && guard.memory.len() >= MEMORY_CAP {
             if let Some(oldest) = guard.order.first().cloned() {
                 guard.memory.remove(&oldest);
                 guard.order.remove(0);
@@ -159,6 +161,9 @@ pub fn load_from_disk() {
         // Dedupe per key (same rule as put): a repeat load must not append
         // second order slots — duplicates halved the effective cap and
         // evicted live entries early. Live in-memory rows are preserved.
+        // Live in-memory rows are preserved; enforce the cap after the
+        // load so disk rows can never overshoot it (a full disk file +
+        // warm memory otherwise exceeded MEMORY_CAP until the next put).
         for (key, entry) in entries
             .into_iter()
             .filter(|(_, v)| !v.is_expired())
@@ -169,6 +174,14 @@ pub fn load_from_disk() {
             }
             guard.memory.insert(key.clone(), entry);
             guard.order.push(key);
+        }
+        while guard.memory.len() > MEMORY_CAP {
+            if let Some(oldest) = guard.order.first().cloned() {
+                guard.memory.remove(&oldest);
+                guard.order.remove(0);
+            } else {
+                break;
+            }
         }
     }
 }

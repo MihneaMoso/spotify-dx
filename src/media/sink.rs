@@ -111,6 +111,10 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
     let mixer = mixer_sink.mixer();
 
     let mut current_player: Option<rodio::Player> = None;
+    // Last commanded volume: Volume commands apply to the live player AND
+    // land here, so a set arriving while idle (no player yet) is not lost —
+    // the next Play applies it instead of the stale spawn-time value.
+    let mut volume = initial_vol;
 
     loop {
         // Publish the current playback position so the UI clock stays accurate.
@@ -174,7 +178,7 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
                     state.duration_ms.store(duration_ms, Ordering::Relaxed);
 
                     let player = rodio::Player::connect_new(mixer);
-                    player.set_volume(initial_vol);
+                    player.set_volume(volume);
                     player.append(decoder);
                     state.is_buffering.store(false, Ordering::Relaxed);
                     state.is_playing.store(true, Ordering::Relaxed);
@@ -201,6 +205,7 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
                     }
                 }
                 SinkCommand::Volume(v) => {
+                    volume = v;
                     if let Some(ref p) = current_player {
                         p.set_volume(v);
                     }

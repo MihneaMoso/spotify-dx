@@ -16,7 +16,7 @@ pub use card::MediaCard;
 pub use nav::{BottomNav, SideNav};
 pub use now_playing::NowPlayingView;
 pub use player_bar::PlayerBar;
-pub use primitives::{Duration, HeroHeader, SectionHeader, SkeletonShelves, TrackTable};
+pub use primitives::{track_row_keys, Duration, HeroHeader, SectionHeader, SkeletonShelves, TrackTable};
 pub use progress_bar::{ProgressBar, VolumeBar};
 pub use toast::Toast;
 pub use top_bar::TopBar;

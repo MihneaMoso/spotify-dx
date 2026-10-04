@@ -1,7 +1,9 @@
 // --- Theme dropdown logic ---
 window.toggleThemeDropdown = function () {
     const dropdown = document.getElementById("theme-dropdown");
+    if (!dropdown) return;
     const parent = dropdown.closest(".dropdown");
+    if (!parent) return;
     const isOpen = parent.classList.contains("show");
     document
         .querySelectorAll(".dropdown.show")
@@ -11,7 +13,7 @@ window.toggleThemeDropdown = function () {
         dropdown.style.display === "block" ? "none" : "block";
 };
 
-// --- Change Ace theme dynamically ---
+// --- Change Pico theme dynamically ---
 function changeTheme(themeName) {
     const picolink = document.getElementById('picolink');
     picolink.setAttribute("href", `css/pico.${themeName}.min.css`);
@@ -21,8 +23,8 @@ function changeTheme(themeName) {
     // Hide dropdown after selection
     const dropdown = document.getElementById("theme-dropdown");
     if (dropdown) dropdown.style.display = "none";
-    const parent = dropdown.closest(".dropdown");
-    parent.classList.remove("show");
+    const parent = dropdown ? dropdown.closest(".dropdown") : null;
+    if (parent) parent.classList.remove("show");
 
 }
 window.changeTheme = changeTheme;
@@ -33,6 +35,7 @@ document.addEventListener("click", function (event) {
     const btn = document.getElementById("theme-dropdown-btn");
     if (!dropdown || !btn) return;
     const parent = dropdown.closest(".dropdown");
+    if (!parent) return;
     if (
         !dropdown.contains(event.target) &&
         !btn.contains(event.target) &&

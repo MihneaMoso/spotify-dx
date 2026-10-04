@@ -6,7 +6,7 @@ the real Spotify login page inside the app, keeps you logged in across
 restarts, and renders the whole UI as fast native components.
 **Every signed-in user gets full-track playback** — Premium accounts use the
 official Web Playback SDK, free accounts use an open multi-source engine
-(YouTube → Piped → JioSaavn → Audius → SoundCloud, plus an optional
+(YouTube → Invidious → JioSaavn → Audius → SoundCloud, plus an optional
 user-keyed lossless tier). An in-process AdGuard blocklist drops
 third-party ad/tracker requests.
 
@@ -26,7 +26,7 @@ third-party ad/tracker requests.
    token hand-over is needed. On **Android** (owned Kotlin app, see below),
    the open engine plays through the platform media stack (foreground
    service + media session). **Free accounts** get full-track playback
-   through an open multi-source engine (YouTube → Piped → JioSaavn →
+   through an open multi-source engine (YouTube → Invidious → JioSaavn →
    Audius → SoundCloud, plus optional user-keyed Qobuz lossless) instead.
 5. Every outbound request goes through an in-process **Brave-style ad-block
    engine** (`adblock/`); third-party ad/tracker hosts are dropped before
@@ -41,7 +41,7 @@ third-party ad/tracker requests.
 - [x] Request store: in-flight coalescing, memory TTL cache, disk stale-while-revalidate
 - [x] Disk-cached artwork (SHA-256 keyed, 128-file LRU, 30-day TTL)
 - [x] Web Playback SDK boot via hidden WebView (desktop) with shared cookie jar
-- [x] Open multi-source engine (YouTube → Piped → JioSaavn → Audius → SoundCloud + optional Qobuz lossless) for free-tier full-track playback
+- [x] Open multi-source engine (YouTube → Invidious → JioSaavn → Audius → SoundCloud + optional Qobuz lossless) for free-tier full-track playback (Piped's public instances are currently all unreachable, so it is skipped fast — see RULES.md)
 - [x] Android: owned Kotlin app (`android/`) over a versioned JNI bridge — gate, 9 screens, login WebView, foreground playback service + media session, self-updater, Room-persisted history/queue/state (see `docs/KOTLIN_MIGRATION.md`)
 - [x] Player bar: play/pause, next/prev, seek, volume, shuffle/repeat
 - [x] Pages: Home (featured + new releases + recommended), Search (debounced), Library, Playlist, Album, Artist
@@ -55,7 +55,7 @@ Prerequisites: Rust 1.75+, and on Linux `pkg-config`, `libwebkit2gtk-4.1-dev` (�
 ```bash
 # Linux/macOS desktop (default) — no credentials needed
 cargo build --release
-cargo run --release
+# (agents: never `cargo run` — see AGENTS.md; the user runs `dx serve`)
 
 # Web (WASM) — bundles to `dist/`; login/playback still live-validation-pending
 cargo build --no-default-features --features web
@@ -181,7 +181,7 @@ src/
   auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
   media/       audio.rs (symphonia decode), images.rs (disk-cached artwork), sink.rs (rodio audio output)
   player/      PlaybackEngine trait, SDK bootstrap (native wry renderers) / Connect API fallback
-  streaming/   Open engine: provider trait, YouTube/Piped/JioSaavn/Audius/SoundCloud (+ Qobuz credential tier), ISRC enrichment, resolver, URL cache
+  streaming/   Open engine: provider trait, YouTube/Invidious/JioSaavn/Audius/SoundCloud (+ Qobuz credential tier), ISRC enrichment, resolver, URL cache
   spotify/     API client, models, request store (coalescing + SWR), playback API
   ui/          pages, components, router, theme, inline icons
   app.rs       login gate / routed shell

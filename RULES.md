@@ -61,9 +61,13 @@ stays the user's job.
   dependency install includes it).
 - **Audio stack (Phase-0 decision):** decoding = `symphonia 0.6` (features:
   flac,aac,mp3,isomp4,ogg,pcm); sound-card sink = `rodio 0.22`.
-  **rodio MUST stay `default-features = false, features = ["playback"]`** — its
-  default decoder features pull in symphonia 0.5, which would duplicate the entire
-  codec stack alongside our direct 0.6 dependency.
+  **Rodio carries symphonia 0.5 regardless:** our `rodio` enables the `mp4`
+  feature, which pulls `symphonia-isomp4` + `symphonia-aac` 0.5.5 alongside
+  the direct 0.6 dependency (verified in Cargo.lock — `default-features =
+  false` does NOT prevent it; the duplication is inherent to rodio 0.22 +
+  `mp4`, not to default features). The `mp4` feature is load-bearing:
+  `media/sink.rs` decodes with `rodio::Decoder` (rodio's symphonia-backed
+  decoder), so dropping it breaks muxed-18 playback — do not flip it.
 - Symphonia 0.6 broke hard from 0.5 (learned the expensive way): `Probe::probe()`
   returns `Box<dyn FormatReader>` directly (no `ProbedMetadata`); `MediaSource` needs
   `is_seekable()`/`byte_len()` (no `len()`); decoders are per-media-type
@@ -2089,6 +2093,46 @@ dioxus-mobile Rust code is untouched and still builds.
   edits. FURAM now resolves end-to-end (official video, both caps,
   verified live through the real code path before shipping). Opus-251
   without ratebypass stays excluded (wall re-proven same day). 148/148.
+- **Expiry retry hell (2026-10-04, fixed):** post-expiry plays failed
+  instantly and only a screen retry could heal: `resolveStream` was gated
+  on a fresh Spotify token although resolution is token-free, and
+  `playViaOpen` had zero heal logic (only screens heal via
+  `withSessionCheck`) — every new song needed a manual sign-in + retry
+  loop, each retry paying a full 10–15s open.spotify.com page load
+  (timeouts → PAGE_DEAD → retry; ~2min total). Fix, three layers:
+  (1) gate removed from `resolveStream` (bridge.rs) — playback never
+  blocks on session state; (2) `playViaOpen` heals NeedsPage silently
+  once + retries (screens parity; also covers a stale `.so` that still
+  gates); (3) `SessionTokenFetch` fast path mints `/api/token` straight
+  from the cookie jar + local TOTP (~1s, same key/params as POLL_JS)
+  before the WebView revive, which stays the fallback. Watchdog +
+  screens ride the same fast path, so expiry heals silently in the
+  background. Verified: 148/148 both feature sets, Gradle green (device
+  needs the user's `build-kotlin.sh` for the core half). Rule: a
+  token-free operation must never hold a token gate, and every user-
+  facing failure needs a silent-heal path — never a retry button for
+  session state.
+- **Full codebase review (2026-10-04, 55 findings, user-approved batch):**
+  CI first: both web jobs failed at wasm-bindgen ("import doesn't have
+  an adapter listed") while `dx build --platform web --release` succeeded
+  locally on dx 0.7.10 — environmental, NOT the user's `debug = false`
+  (native desktop/Android jobs were all green; the flag only strips local
+  debuginfo and stays). Fixed by pinning the toolchain to 1.97.1
+  (locally verified), dropping `target/` from CI caches (stale restores
+  across lock changes = phantom wasm failures), and pinning pages dx to
+  0.7.10. APPLIED (behavior-preserving): updater-module deletion (+ dead
+  stage-updater.sh), dead-method deletion, ToastBus generation removal,
+  cache re-put/load caps, odesli strip (+tests), session max(0), shuffle
+  seed counter, updater .part suffix, adblock submitted-line count,
+  soundcloud OnceLock regexes, push_event serde kind, narrowed fetch
+  hook (both JS copies, verbatim kept), shared track_row_keys, sink
+  pending volume, parallel artist-cover fetch, heal-path smart-cast,
+  strings.xml extraction + errorRes, fast-path 5s budgets, 4 clippy
+  warnings → 0, all doc/workflow/CSS/manifest/JS fixes. PARKED per the
+  no-behavior-change constraint (report §3/5/6/7/10–14/16–18/23/24/26/
+  28/29/34/37/38): each needs an observable change (error values, UI,
+  timing, deletion of live paths) — implement only with explicit
+  per-finding approval naming the accepted behavior delta.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in
