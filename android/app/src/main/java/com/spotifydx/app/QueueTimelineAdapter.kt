@@ -22,9 +22,9 @@ import java.util.Collections
  *   are exact at every instant of a gesture. Repository state re-syncs
  *   the list only when idle ([setTimeline] while dragging stashes and
  *   applies on drop — Echo's `LaunchedEffect(queueWindows)` resync).
- * - Taps follow Echo: PAST seeks back, NEXT seeks forward (both preserve
+ * - Taps mean play: PAST seeks back, NEXT seeks forward (both preserve
  *   the full timeline around the new current — see
- *   `PlayerRepository.seekTimelinePosition`), NOW toggles playback.
+ *   `PlayerRepository.seekTimelinePosition`), NOW restarts from the top.
  * - NOW is highlighted and never swipe-dismissed, but drags like every
  *   other row: the drop commit re-splits past/upcoming around the current
  *   track's id, so the playing object is untouched and cross-current
@@ -147,7 +147,7 @@ class QueueTimelineAdapter(
             subtitle.text = t.artistNames.ifEmpty { "Unknown artist" }
             duration.text = TrackAdapter.formatDuration(t.durationMs)
             TrackAdapter.bindExplicit(explicitBadge, t.explicit)
-            // Context menu on every row incl. NOW (tap still toggles —
+            // Context menu on every row incl. NOW (tap restarts it —
             // HoldToOpen only fires on a 2s stationary hold, and the dots
             // are a separate target from the row click).
             more.setOnClickListener { onMenu(t) }

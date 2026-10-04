@@ -1981,6 +1981,114 @@ dioxus-mobile Rust code is untouched and still builds.
   probation skips it fast). 120/120 Rust. Rule: never hand the player a
   URL class proven uncompletable — exclusion at selection beats heroics
   downstream.
+- **Wrong-song playback — duration-less hole (2026-10-04, fixed):**
+  "FURAM CURENT" (3:32) played a different song while showing the right
+  title. Device forensics proved it: the cached file was an h264+AAC
+  MP4 of 146s (2:27), 8.4MB — impossible for a 212s track at any YouTube
+  AAC bitrate (caps at ~6.8MB), so the video was longer/mismatched and
+  the duration gate should have rejected it. Root cause: duration-less
+  candidates (live/premiere/degen uploads with no length) rode the
+  `duration_accepts` legacy-accept — the same hole Saavn already closed.
+  Fix: `has_usable_duration` (track-known ⇒ candidate must carry one),
+  enforced in the YouTube candidate loop and the Invidious streams gate;
+  plus textual verification on Invidious picks (`word_tokens` +
+  `strip_bracketed` + `title_matches`: all track-title words in the video
+  title, one artist word in title/author — biased strict, false rejects
+  just try the next video). Real f5.si ranking fixtures in tests
+  (official accepted; remix/OU-OU/Bombardieri/same-title-different-song
+  rejected). 136/136 Rust, clippy 0. Poison cleanup: 4 complete rows
+  with impossible implied bitrates for lossy keys (317–496kbps on
+  youtube/aac: FURAM/Solid/E Amarata/Covrigi) had files deleted via adb;
+  their DB rows self-clean on next play through the existing orphaned-row
+  path (no DB surgery). YouTube-direct keeps relevance ranking (no
+  textual gate) — duration fix sufficed for the proven case. Rule: a
+  complete cache row whose bytes contradict the track duration is poison
+  by definition — implied bitrate above the codec ceiling trips it.
+- **Total playback outage — stale duration parser (2026-10-04, fixed):**
+  every song failed with NOT_FOUND right after the duration-gate change.
+  Root cause was NOT the gate but the parser under it: `parse_length_secs`
+  read only `lengthText.simpleText`, while InnerTube search now serves
+  `lengthText.runs[0].text` — so every candidate parsed duration-less
+  (the gate then correctly rejected them all; device log showed
+  "duration unknown for …" on every resolve). Fix: `length_text` reads
+  both shapes (simpleText first, runs fallback) + regression tests with
+  the live shape. Lesson: a gate is only as good as its sensor — when a
+  validation layer suddenly rejects everything, check the sensor before
+  the rule. Same session: SoundCloud's client_id moved out of the first
+  5 JS bundles (key verified live) — `MAX_ASSETS` 5→12, still bounded by
+  the 20s scrape budget. 136/136 Rust, clippy 0.
+- **Wrong-song persists + FURAM recall (2026-10-04, fixed):** E Amarata
+  (173s) played Bombardierii Amărâți (186s file pulled + ffprobed —
+  byte-identical to that track's row): 12.5s inside the duration
+  tolerance, same-root titles ("amarata"≠"amărăți") — duration-only
+  gating is mathematically insufficient for genre clusters. Fix:
+  textual verification on the YouTube path too (videoDetails
+  title/author, same strict `title_matches`; unparseable details can't
+  verify either) + variant accumulation to the cap on BOTH providers
+  (junk-filled variant 1 hid better variants 2/3 — the FURAM recall bug;
+  shared `fanout_queries` helper with abort semantics, call-counted
+  early-stop test). Title fns live once in `providers/common.rs` with
+  real-device fixtures (E Amarata + FURAM cluster). 141/141 Rust,
+  clippy 0. Poison file deleted (row self-cleans). Queue NOW-tap
+  toggle (pre-existing Echo parity) replaced with restart-from-top
+  (`restartCurrent`: seek 0 + ensure playing) per explicit demand —
+  tapping anything in the queue now always means play. Rule: identity
+  needs TWO independent signals (duration + title) — one signal fails
+  exactly where languages rhyme and lengths cluster.
+- **Outage from the duration gate (2026-10-04, fixed):** the gate shipped
+  over a stale sensor (`lengthText.simpleText` gone from InnerTube — now
+  `runs[0].text`), rejecting every candidate into a total NOT_FOUND
+  outage. Fixed by reading both shapes + live-shape regression tests.
+  Same session: SoundCloud client_id moved past the first 5 JS bundles
+  (key verified live) — `MAX_ASSETS` 5→12 under the 20s budget.
+  Tolerance widened ±15s→±30s for version drift (radio/remix/extended;
+  mixes still die; textual is the precision net). 143/143 Rust, clippy 0.
+- **Invidious silently dead — gir filter misfire (2026-10-04, fixed):**
+  zero invidious rows ever on-device despite working search. Device-trace
+  forensics (temporary per-candidate logging, since removed) showed gates
+  passing and `pick` returning None on responses CONTAINING proxied 251:
+  proxied instance URLs forward the upstream query string INCLUDING
+  `gir=yes`, and the filter couldn't tell proxy from googlevideo. Fix:
+  `is_throttled_url` requires a googlevideo host (behavior identical for
+  direct URLs); Invidious picks verified with a real f5.si fixture
+  (proxied gir accepted, raw googlevideo gir still rejected). 145/145
+  Rust, clippy 0. Rule: filters must match the enforcement domain, not
+  just the flag — forwarded baggage isn't enforcement.
+- **Per-track negative provider cache (2026-10-04, added):** fallthrough
+  itself verified correct in code (every non-Success continues), so
+  repeated failures were re-burning full chains. `resolve` now skips
+  (track, provider) pairs with a recent NotFound (6h TTL, 2000-entry cap
+  with purge, empty track IDs exempt, Errors/cooldowns never recorded —
+  only content verdicts). Unit-tested (skip/expiry/zero-TTL/empty-ID).
+  148/148 Rust, clippy 0. Exhaustion table for all-gir niche tracks
+  (live-verified per leg): youtube correct-miss, invidious dead
+  pool/probe, piped dead instances, Saavn catalog miss (919 results,
+  none relevant), audius indie-only, soundcloud alive-but-absent —
+  silence there is honest; only a live Invidious instance (same catalog)
+  can serve them. Rule: cache the deterministic miss, never the
+  transient failure.
+- **Failure atomicity — the tap chaos (2026-10-04, fixed):** tapping a
+  failing track wedged state and service apart: `play()` committed the
+  new track instantly, resolve failed, `isPlaying=false` landed — while
+  the untouched service kept playing the OLD audio. Every later tap
+  diverged further (the reported "tapping pauses/plays at random").
+  Fix: pre-play snapshots (`beginResolve`) + generation guard; failures
+  roll back track/queue/history/log/position/flag and re-persist,
+  superseded failures touch nothing (not even toasts/retries). Failed
+  taps are now no-ops + toast; old audio keeps playing coherently. No
+  JUnit offline — device repro is the test (failing track while another
+  plays). Rule: optimistic UI must carry a rollback, or the failure
+  mode IS the bug.
+- **ratebypass OVERRIDES gir (2026-10-04, fixed — the actual fix):**
+  fresh measurement showed FURAM's muxed-18 carrying BOTH flags — and a
+  full multi-MB fetch sailed through (all 206s). The bypass flag restores
+  the plain-GET contract. But the exemption edit silently failed to apply
+  (docs+tests updated, body untouched — caught only by re-running the
+  single test, which failed). Lesson: re-run the pinpoint test AFTER
+  every edit touching its function, never trust one green suite across
+  edits. FURAM now resolves end-to-end (official video, both caps,
+  verified live through the real code path before shipping). Opus-251
+  without ratebypass stays excluded (wall re-proven same day). 148/148.
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

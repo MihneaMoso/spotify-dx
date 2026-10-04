@@ -364,7 +364,9 @@ async fn scrape_client_id(client: &reqwest::Client) -> Option<String> {
     let mut seen = std::collections::HashSet::new();
     // Cap: pages reference dozens of bundles but the key lives in the
     // first few — unbounded sequential 8s-timeout fetches stall resolves.
-    const MAX_ASSETS: usize = 5;
+    // (Oct 2026: the key moved to a later bundle — 12 covers the page;
+    // SCRAPE_BUDGET still bounds the total.)
+    const MAX_ASSETS: usize = 12;
     let mut checked = 0;
     for m in re_assets.find_iter(&html) {
         if checked >= MAX_ASSETS {
@@ -450,4 +452,5 @@ mod tests {
             .unwrap();
         assert_eq!(prog["url"].as_str(), Some("https://x/prog"));
     }
+
 }

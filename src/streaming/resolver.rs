@@ -20,6 +20,70 @@ pub struct ResolvedStream {
     pub provider: String,
 }
 
+/// Negative provider cache: (track_id, provider) pairs whose last
+/// verdict was NotFound, with expiry. A provider that deterministically
+/// lacks a track must not be re-asked on every play — each retry burns
+/// seconds per resolve and hammers struggling instances for a known
+/// answer. Recorded ONLY on NotFound (a content verdict); transport
+/// errors and cooldowns are transient by nature and never enter here
+/// (provider-level cooldowns already cover those). TTL bounds staleness
+/// if content appears later. Skips the key entirely when empty (unkeyed
+/// streams must never share negative state). Native only (needs a clock).
+#[cfg(not(target_arch = "wasm32"))]
+const NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+/// Bound (entries are tiny; purge runs on insert).
+#[cfg(not(target_arch = "wasm32"))]
+const NEGATIVE_CAP: usize = 2000;
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NegativeCache {
+    ttl: std::time::Duration,
+    map: std::collections::HashMap<(String, String), std::time::Instant>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NegativeCache {
+    fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            ttl,
+            map: std::collections::HashMap::new(),
+        }
+    }
+
+    /// True when this provider was a recent deterministic miss for track.
+    fn skip(&self, track_id: &str, provider: &str, now: std::time::Instant) -> bool {
+        if track_id.is_empty() {
+            return false;
+        }
+        match self.map.get(&(track_id.to_string(), provider.to_string())) {
+            Some(&exp) => exp > now,
+            None => false,
+        }
+    }
+
+    /// Record a deterministic miss; purges expired entries past the cap.
+    fn record(&mut self, track_id: &str, provider: &str, now: std::time::Instant) {
+        if track_id.is_empty() {
+            return;
+        }
+        if self.map.len() >= NEGATIVE_CAP {
+            self.map.retain(|_, exp| *exp > now);
+        }
+        self.map.insert(
+            (track_id.to_string(), provider.to_string()),
+            now + self.ttl,
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static NEGATIVE: std::sync::OnceLock<std::sync::Mutex<NegativeCache>> = std::sync::OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn negative() -> &'static std::sync::Mutex<NegativeCache> {
+    NEGATIVE.get_or_init(|| std::sync::Mutex::new(NegativeCache::new(NEGATIVE_TTL)))
+}
+
 /// Resolve a Spotify track to a playable audio URL.
 ///
 /// Checks the cache first, then tries the provider chain in order.
@@ -76,6 +140,20 @@ pub async fn resolve(
             tracing::debug!("provider {} unavailable, skipping", provider.name());
             continue;
         }
+        // Negative cache: a recent deterministic miss for THIS track
+        // skips the provider (fallthrough continues below regardless).
+        #[cfg(not(target_arch = "wasm32"))]
+        if negative()
+            .lock()
+            .map(|n| n.skip(track_id, provider.name(), std::time::Instant::now()))
+            .unwrap_or(false)
+        {
+            tracing::debug!(
+                "provider {} negative-cached for {track_id}, skipping",
+                provider.name()
+            );
+            continue;
+        }
         tracing::debug!("trying provider: {}", provider.name());
         match provider.resolve(&query).await {
             Resolution::Success {
@@ -113,6 +191,13 @@ pub async fn resolve(
             }
             Resolution::NotFound => {
                 tracing::debug!("provider {} not found for {track_id}", provider.name());
+                // Deterministic miss: remember it (TTL'd) so replays skip
+                // this provider for this track. Errors/cooldowns never
+                // land here — only content verdicts.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Ok(mut n) = negative().lock() {
+                    n.record(track_id, provider.name(), std::time::Instant::now());
+                }
                 continue;
             }
             Resolution::Error(e) => {
@@ -195,6 +280,42 @@ fn build_query(track: &crate::spotify::models::Track) -> TrackQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{Duration, Instant};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn negative_cache_skips_until_expiry() {
+        let mut c = NegativeCache::new(Duration::from_secs(3600));
+        let now = Instant::now();
+        assert!(!c.skip("t1", "invidious", now));
+        c.record("t1", "invidious", now);
+        assert!(c.skip("t1", "invidious", now));
+        // Other tracks/providers unaffected.
+        assert!(!c.skip("t2", "invidious", now));
+        assert!(!c.skip("t1", "youtube", now));
+        // Expired entries stop skipping.
+        assert!(!c.skip("t1", "invidious", now + Duration::from_secs(3601)));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn negative_cache_zero_ttl_never_skips() {
+        let mut c = NegativeCache::new(Duration::ZERO);
+        let now = Instant::now();
+        c.record("t1", "invidious", now);
+        assert!(!c.skip("t1", "invidious", now));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn negative_cache_ignores_empty_track_ids() {
+        let mut c = NegativeCache::new(Duration::from_secs(3600));
+        let now = Instant::now();
+        c.record("", "invidious", now);
+        assert!(!c.skip("", "invidious", now));
+        assert!(c.map.is_empty());
+    }
     use crate::spotify::models::{AlbumRef, ArtistRef, Track};
 
     fn mk_track(id: &str, name: &str, artist: &str) -> Track {

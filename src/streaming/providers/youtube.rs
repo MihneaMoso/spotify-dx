@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use super::common::{fanout_queries, title_matches, Fetch};
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
 /// InnerTube API endpoints.
@@ -51,9 +52,12 @@ const USER_AGENT: &str = "com.google.android.youtube/20.10.38 (Linux; U; Android
 const MAX_CANDIDATES: usize = 6;
 /// Max search result entries scanned per query variant.
 const MAX_RESULTS_PER_QUERY: usize = 5;
-/// Duration mismatch tolerance: rejects wrong uploads (10-min "song" videos)
-/// without dropping legit live/extended versions.
-const DURATION_TOLERANCE_MS: u64 = 15_000;
+/// Duration mismatch tolerance: rejects wrong uploads (mixes, hour-long
+/// compilations) without dropping legit radio/remix/extended versions
+/// (±30s admits version drift; the precision instrument is textual
+/// matching, not this band). Shared by YouTube-direct, Qobuz, and
+/// Invidious gates.
+const DURATION_TOLERANCE_MS: u64 = 30_000;
 
 pub struct YoutubeProvider {
     client: reqwest::Client,
@@ -171,10 +175,7 @@ impl YoutubeProvider {
 /// Parse `lengthText` (`simpleText` "3:44" / "1:02:03") to seconds.
 /// Pure (unit-tested).
 fn parse_length_secs(video: &serde_json::Value) -> Option<u64> {
-    let text = video
-        .get("lengthText")
-        .and_then(|l| l.get("simpleText"))
-        .and_then(|s| s.as_str())?;
+    let text = length_text(video)?;
     let mut secs = 0u64;
     let parts: Vec<&str> = text.split(':').collect();
     if parts.len() > 3 || parts.is_empty() {
@@ -184,6 +185,23 @@ fn parse_length_secs(video: &serde_json::Value) -> Option<u64> {
         secs = secs.checked_mul(60)?.checked_add(p.parse::<u64>().ok()?)?;
     }
     Some(secs)
+}
+
+/// Length text across InnerTube shapes: legacy `simpleText` and the
+/// current `runs[0].text` (the ANDROID search dropped `simpleText`,
+/// which silently zeroed every candidate duration until this read both).
+/// Pure (unit-tested).
+fn length_text(video: &serde_json::Value) -> Option<String> {
+    let l = video.get("lengthText")?;
+    if let Some(s) = l.get("simpleText").and_then(|s| s.as_str()) {
+        return Some(s.to_string());
+    }
+    l.get("runs")?
+        .as_array()?
+        .first()?
+        .get("text")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 /// Internal stream outcome: distinguishes "try the next video" (content
@@ -221,22 +239,28 @@ pub(crate) fn format_for_mime(mime: &str) -> AudioFormat {
     }
 }
 
-/// Whether a stream URL is throttle-poisoned: `gir=yes` links enforce a
-/// per-(client-IP, content) transfer budget (~0.5–1MB, then hard 403s with
-/// no refill — measured live, including across fresh URLs) plus a
-/// sequential-from-zero frontier. Serving one freezes the proxy prefix
-/// (~768KB) and the player skips at the stub end, deterministically (0:46
-/// on a 3:39 track); proxy-side completion is mathematically impossible
-/// (fresh budget per URL, frontier reset per URL). Such URLs are never
-/// playable through us — excluded from candidacy so the chain can try
-/// other providers. Matched as an exact query param (a path containing
-/// "gir=yes" must NOT match). Pure (unit-tested).
+/// Whether a stream URL is throttle-poisoned: `gir=yes` on a GOOGLEVIDEO
+/// host enforces a per-(client-IP, content) transfer budget (~0.5–1MB,
+/// then hard 403s with no refill — measured live, including across fresh
+/// URLs) plus a sequential-from-zero frontier. Serving one freezes the
+/// proxy prefix and skips mid-track. Such URLs are never playable through
+/// us — excluded from candidacy so the chain can try other providers.
+/// The host check is load-bearing: proxied (Invidious instance) URLs
+/// forward the upstream query string INCLUDING `gir=yes`, which is
+/// harmless there (enforcement happens on googlevideo hosts, never on
+/// the proxy) — excluding those broke all Invidious picks. Matched as an
+/// exact query param. Pure (unit-tested).
 pub(crate) fn is_throttled_url(url: &str) -> bool {
+    let host = url.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+    if !host.ends_with("googlevideo.com") {
+        return false;
+    }
     let q = url.split('?').nth(1).unwrap_or("").split('#').next().unwrap_or("");
     if q.is_empty() {
         return false;
     }
-    q.split('&').any(|p| p == "gir=yes")
+    let params: Vec<&str> = q.split('&').collect();
+    params.contains(&"gir=yes") && !params.contains(&"ratebypass=yes")
 }
 
 /// Adaptive selection outcome (preserves the cipher-recovery path:
@@ -371,6 +395,27 @@ fn select_adaptive(
     }
 }
 
+/// Authoritative title check over a player response: the candidate's
+/// `videoDetails` must name the track (see `common::title_matches`).
+/// Unparseable details can't verify → false (biased strict: a false
+/// reject tries the next candidate). Pure (unit-tested).
+fn details_match(val: &serde_json::Value, title: &str, artist: &str) -> bool {
+    let vtitle = val
+        .get("videoDetails")
+        .and_then(|d| d.get("title"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    if vtitle.is_empty() {
+        return false;
+    }
+    let vauthor = val
+        .get("videoDetails")
+        .and_then(|d| d.get("author"))
+        .and_then(|a| a.as_str())
+        .unwrap_or("");
+    title_matches(title, artist, vtitle, vauthor)
+}
+
 /// Best non-video audio stream from a Piped `/streams` payload as
 /// `(url, bitrate, mime)`. Throttled (`gir=yes`) URLs are excluded like
 /// direct InnerTube ones — Piped sometimes returns raw googlevideo URLs
@@ -415,16 +460,23 @@ pub(crate) fn duration_accepts(track_ms: u64, candidate_secs: Option<u64>) -> bo
     }
 }
 
+/// Whether a candidate carries a usable duration at all. Duration-less
+/// uploads (live streams, premieres, some age-gated/mismatched entries)
+/// must NOT ride the `duration_accepts` legacy-accept when OUR metadata
+/// has a duration — that hole played an 8:45 video for a 3:32 track
+/// (proven by file size on-device). Same rule Saavn already enforces.
+/// Track-unknown durations (0) keep legacy accept. Pure (unit-tested).
+pub(crate) fn has_usable_duration(track_ms: u64, candidate_secs: Option<u64>) -> bool {
+    track_ms == 0 || candidate_secs.is_some()
+}
+
 impl YoutubeProvider {
     /// Get a streamable audio URL for a YouTube video ID via InnerTube.
-    /// `max_quality` is the advisory bitrate ceiling (None = today's
-    /// behavior): the pick prefers variants within cap and degrades
-    /// honestly (real tier labeled) rather than failing the candidate.
-    async fn get_stream_url(
-        &self,
-        video_id: &str,
-        max_quality: Option<Quality>,
-    ) -> StreamOutcome {
+    /// `query` carries the advisory bitrate ceiling plus the track
+    /// identity for textual verification (same-language near-identical
+    /// titles with clustered durations defeat duration-only gating —
+    /// proven: a 186s wrong song served for a 173s track).
+    async fn get_stream_url(&self, video_id: &str, query: &TrackQuery) -> StreamOutcome {
         let body = serde_json::json!({
             "context": Self::innertube_context(),
             "videoId": video_id,
@@ -462,6 +514,13 @@ impl YoutubeProvider {
                 "InnerTube playability: {status} — {reason}"
             ));
         }
+        // Textual verification: the candidate's title must name the track
+        // (same-language near-identical titles with clustered durations
+        // defeat duration-only gating). Biased strict — false rejects try
+        // the next candidate; unparseable details can't verify either.
+        if !details_match(&val, &query.title, &query.artist) {
+            return StreamOutcome::NextCandidate(format!("title mismatch for {video_id}"));
+        }
         let data = match val.get("streamingData") {
             Some(d) => d,
             None => {
@@ -479,7 +538,7 @@ impl YoutubeProvider {
         // Bitrate ceiling from the advisory cap (bands mirror
         // quality_for_bitrate so the pick and the label always agree).
         // Uncapped = u64::MAX (today's behavior, bit-for-bit).
-        let ceiling: u64 = match max_quality {
+        let ceiling: u64 = match query.max_quality {
             Some(Quality::Low) => 127_999,
             Some(Quality::Normal) => 255_999,
             _ => u64::MAX,
@@ -583,39 +642,35 @@ impl Provider for YoutubeProvider {
     }
 
     async fn resolve(&self, query: &TrackQuery) -> Resolution {
-        // Ranked candidates across query variants (deduplicated, bounded).
-        // Later variants only run when earlier ones yield nothing, so the
-        // happy path still costs a single search call. Odesli (song.link) is
-        // deprecated (public API now returns 401) so the mapping shortcut is
-        // skipped in favor of the self-contained InnerTube search.
-        let mut seen = std::collections::HashSet::new();
-        let mut candidates: Vec<(String, Option<u64>)> = Vec::new();
-        for q in Self::search_queries(&query.title, &query.artist) {
-            if candidates.len() >= MAX_CANDIDATES {
-                break;
-            }
-            for (id, dur) in self.search_candidates(&q).await {
-                if seen.insert(id.clone()) {
-                    candidates.push((id, dur));
-                    if candidates.len() >= MAX_CANDIDATES {
-                        break;
-                    }
-                }
-            }
-            if !candidates.is_empty() {
-                break;
-            }
-        }
+        // Ranked candidates across query variants, accumulated to the cap
+        // (deduplicated). Later variants fill what earlier ones left thin —
+        // a junk-filled first variant must not hide better later ones —
+        // and stop early once full, so the happy path still costs a single
+        // search call. Odesli (song.link) is deprecated (public API now
+        // returns 401) so the mapping shortcut is skipped in favor of the
+        // self-contained InnerTube search.
+        let queries = Self::search_queries(&query.title, &query.artist).to_vec();
+        let (candidates, _aborted): (Vec<(String, Option<u64>)>, bool) = fanout_queries(
+            &queries,
+            MAX_CANDIDATES,
+            |(id, _): &(String, Option<u64>)| id.clone(),
+            |q| async { Fetch::Items(self.search_candidates(q).await) },
+        )
+        .await;
         if candidates.is_empty() {
             return Resolution::NotFound;
         }
         let mut last_reason = String::new();
         for (video_id, duration) in candidates {
+            if !has_usable_duration(query.duration_ms, duration) {
+                last_reason = format!("duration unknown for {video_id}");
+                continue;
+            }
             if !duration_accepts(query.duration_ms, duration) {
                 last_reason = format!("duration mismatch for {video_id}");
                 continue;
             }
-            match self.get_stream_url(&video_id, query.max_quality).await {
+            match self.get_stream_url(&video_id, query).await {
                 StreamOutcome::Playable {
                     url,
                     format,
@@ -628,7 +683,7 @@ impl Provider for YoutubeProvider {
                     };
                 }
                 StreamOutcome::NextCandidate(reason) => {
-                    last_reason = reason;
+                    last_reason = format!("{video_id}: {reason}");
                 }
                 StreamOutcome::Abort(reason) => {
                     return Resolution::Error(reason);
@@ -662,7 +717,16 @@ mod tests {
         assert_eq!(parse_length_secs(&v("1:02:03")), Some(3723));
         assert_eq!(parse_length_secs(&v("0:45")), Some(45));
         assert_eq!(parse_length_secs(&v("live")), None);
-        assert_eq!(parse_length_secs(&serde_json::json!({})), None);
+        assert!(parse_length_secs(&serde_json::json!({})).is_none());
+        // Current ANDROID shape: runs[0].text (simpleText gone).
+        let r = |s: &str| {
+            serde_json::json!({ "lengthText": { "runs": [{ "text": s }] } })
+        };
+        assert_eq!(parse_length_secs(&r("3:31")), Some(211));
+        assert_eq!(parse_length_secs(&r("1:02:03")), Some(3723));
+        assert_eq!(parse_length_secs(&r("live")), None);
+        assert!(parse_length_secs(&serde_json::json!({ "lengthText": {} })).is_none());
+        assert!(parse_length_secs(&serde_json::json!({ "lengthText": { "runs": [] } })).is_none());
     }
 
     #[test]
@@ -676,6 +740,56 @@ mod tests {
         assert!(duration_accepts(224_000, None));
         // Zero-length track metadata never rejects a real video.
         assert!(duration_accepts(0, Some(200)));
+    }
+
+    #[test]
+    fn usable_duration_required_when_track_known() {
+        // Duration-less uploads are rejected when our metadata has a
+        // duration (the 8:45-for-3:32 hole); unknown tracks keep accept.
+        assert!(!has_usable_duration(211_764, None));
+        assert!(has_usable_duration(211_764, Some(212)));
+        assert!(has_usable_duration(0, None));
+        assert!(has_usable_duration(0, Some(212)));
+    }
+
+    #[test]
+    fn band_admits_version_drift_rejects_mixes() {
+        // ±30s: the 195s remix of a 212s track passes (version drift);
+        // hour-long compilations still die; textual is the precision net.
+        assert!(duration_accepts(211_764, Some(195)));
+        assert!(duration_accepts(211_764, Some(240)));
+        assert!(!duration_accepts(211_764, Some(600)));
+        assert!(!duration_accepts(211_764, Some(30)));
+    }
+
+    #[test]
+    fn details_match_names_the_track() {
+        let v = |title: &str, author: &str| {
+            serde_json::json!({ "videoDetails": { "title": title, "author": author } })
+        };
+        assert!(details_match(
+            &v("Jean Gaoaza - E Amarata (Official Video)", "Jean Gaoaza"),
+            "E Amarata",
+            "Jean Gaoaza",
+        ));
+        assert!(!details_match(
+            &v(
+                "Jean Gaoaza - Bombardierii Amărâți (Official Video)",
+                "Jean Gaoaza"
+            ),
+            "E Amarata",
+            "Jean Gaoaza",
+        ));
+        assert!(!details_match(
+            &serde_json::json!({}),
+            "E Amarata",
+            "Jean Gaoaza",
+        ));
+        assert!(!details_match(
+            &serde_json::json!({ "videoDetails": {} }),
+            "E Amarata",
+            "Jean Gaoaza",
+        ));
     }
 
     #[test]
@@ -723,6 +837,19 @@ mod tests {
         assert!(!is_throttled_url("https://host.test/gir=yes/file"));
         assert!(!is_throttled_url(""));
         assert!(!is_throttled_url("not a url"));
+        // Proxied URLs forward the upstream query string INCLUDING gir —
+        // harmless (enforcement is per googlevideo host): must NOT match.
+        assert!(!is_throttled_url(
+            "https://invidious.f5.si/videoplayback?expire=1&gir=yes&clen=9"
+        ));
+        assert!(!is_throttled_url(
+            "https://invidious.f5.si/videoplayback?expire=1"
+        ));
+        // ratebypass OVERRIDES gir (measured: full multi-MB fetch, all
+        // 206s — the bypass flag restores the plain-GET contract).
+        assert!(!is_throttled_url(
+            "https://rr1.googlevideo.com/x?expire=1&gir=yes&ratebypass=yes&clen=9"
+        ));
     }
 
     fn stream_data(muxed: serde_json::Value, adaptive: serde_json::Value) -> serde_json::Value {
@@ -811,7 +938,7 @@ mod tests {
     #[test]
     fn pick_piped_audio_rejects_throttled() {
         let v = serde_json::json!({ "audioStreams": [
-            { "url": "https://x/gir?gir=yes", "bitrate": 999999, "mimeType": "audio/mp4", "videoOnly": false },
+            { "url": "https://rr1.googlevideo.com/x?gir=yes", "bitrate": 999999, "mimeType": "audio/mp4", "videoOnly": false },
             { "url": "https://x/aac", "bitrate": 128000, "mimeType": "audio/mp4", "videoOnly": false },
         ] });
         let (url, _, _) = pick_piped_audio(&v).unwrap();
@@ -836,4 +963,9 @@ mod tests {
         assert_eq!(url, CLEAN);
         assert_eq!(quality, Quality::Normal);
     }
+
+
+
+
+
 }

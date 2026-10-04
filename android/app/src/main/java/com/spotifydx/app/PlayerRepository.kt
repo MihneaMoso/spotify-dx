@@ -357,6 +357,45 @@ object PlayerRepository {
         commitTimeline(tl)
     }
 
+    /**
+     * Failure atomicity: every play mutates state optimistically (new
+     * track shows instantly) and resolves async. If resolution fails, the
+     * state must roll back to the pre-play snapshot — otherwise the UI
+     * shows the failed track as paused while the service still holds the
+     * old audio, and every later tap diverges further (the reported
+     * "tapping pauses/plays at random"). Snapshots are taken by
+     * [beginResolve] before any mutation; only the still-current
+     * generation may restore (superseded failures touch nothing).
+     */
+    private var pendingRestore: State? = null
+    private var resolveSeq = 0L
+
+    /** Snapshots pre-play state; returns this play's generation. */
+    private fun beginResolve(): Long {
+        pendingRestore = _state.value
+        resolveSeq++
+        return resolveSeq
+    }
+
+    /**
+     * Rolls back a failed play to its pre-play snapshot (track, queue,
+     * history, log, position, playing flag) and re-persists it (a failed
+     * play's debounced saves may already have landed). The service still
+     * holds the old audio, so post-restore state and service agree: the
+     * failed tap becomes a no-op plus a toast. (One accepted tradeoff: a
+     * failed context play drops its just-enqueued rest from the queue —
+     * re-tapping the album restores it; coherent state beats kept queue.)
+     */
+    private fun restoreFailure(prev: State) {
+        Log.i(TAG, "play failed, restoring ${prev.track?.name ?: "none"}")
+        pendingRestore = null
+        update { prev }
+        PlaybackStore.saveQueueSoon(prev.queue)
+        PlaybackStore.saveHistorySoon(prev.history)
+        PlaybackStore.savePlayLogSoon(prev.playLog)
+        PlaybackStore.saveLastSoon(prev.track, prev.positionMs, prev.source)
+    }
+
     /** Queue-first next-track (prefers the queue head over device skip). */
     fun advance(): Track? {
         val head = _state.value.queue.firstOrNull() ?: return null
@@ -389,9 +428,10 @@ object PlayerRepository {
     }
 
     fun play(track: Track, source: String = "") {
+        val seq = beginResolve()
         val prev = _state.value.track
         if (prev != null && prev.id != track.id) leaveForward(prev)
-        startTrack(track, source)
+        startTrack(track, source, seq)
     }
 
     /**
@@ -410,6 +450,7 @@ object PlayerRepository {
      * untouched here — fresh plays always start at 0 (see startTrack).
      */
     private fun resumeResolved(track: Track, source: String) {
+        val seq = beginResolve()
         update { s ->
             s.copy(
                 track = track,
@@ -418,11 +459,11 @@ object PlayerRepository {
                 audioTier = "",
             )
         }
-        dispatchPlay(track)
+        dispatchPlay(track, seq)
     }
 
     /** Shared track-launch tail (state flip + engine dispatch). */
-    private fun startTrack(track: Track, source: String) {
+    private fun startTrack(track: Track, source: String, seq: Long) {
         update { s ->
             s.copy(
                 track = track,
@@ -437,7 +478,7 @@ object PlayerRepository {
                 positionMs = 0,
             )
         }
-        dispatchPlay(track)
+        dispatchPlay(track, seq)
     }
 
     /**
@@ -452,7 +493,7 @@ object PlayerRepository {
         val tl = timeline()
         val e = tl.getOrNull(pos) ?: return
         when (e.kind) {
-            RowKind.NOW -> toggle()
+            RowKind.NOW -> restartCurrent()
             RowKind.NEXT -> {
                 val idx = tl.subList(0, pos).count { it.kind == RowKind.NEXT }
                 seekUpcoming(idx)
@@ -462,6 +503,17 @@ object PlayerRepository {
                 seekHistory(idx)
             }
         }
+    }
+
+    /**
+     * Tap the current row: restart it from the top and keep it playing.
+     * Tapping always means "play this" — never a pause toggle.
+     */
+    fun restartCurrent() {
+        val s = _state.value
+        if (s.track == null) return
+        seekTo(0)
+        if (!s.isPlaying) toggle()
     }
 
     /**
@@ -475,6 +527,7 @@ object PlayerRepository {
         val s = _state.value
         val q = s.queue
         if (idx !in q.indices) return
+        val seq = beginResolve()
         val skipped = q.subList(0, idx).toList()
         val track = q[idx]
         val rest = q.subList(idx + 1, q.size).toList()
@@ -484,7 +537,7 @@ object PlayerRepository {
         update { it.copy(track = track, queue = rest, history = hist, positionMs = 0) }
         PlaybackStore.saveHistorySoon(hist)
         PlaybackStore.saveQueueSoon(rest)
-        startTrack(track, s.source)
+        startTrack(track, s.source, seq)
     }
 
     /** Tap a past row: rows after it (and the outgoing current) return to upcoming. */
@@ -492,6 +545,7 @@ object PlayerRepository {
         val s = _state.value
         val h = s.history
         if (idx !in h.indices) return
+        val seq = beginResolve()
         val track = h[idx]
         val upcoming = h.subList(idx + 1, h.size).toList() +
             listOfNotNull(s.track?.takeIf { it.id.isNotEmpty() }) + s.queue
@@ -499,23 +553,23 @@ object PlayerRepository {
         update { it.copy(track = track, queue = upcoming, history = hist, positionMs = 0) }
         PlaybackStore.saveHistorySoon(hist)
         PlaybackStore.saveQueueSoon(upcoming)
-        startTrack(track, "History")
+        startTrack(track, "History", seq)
     }
 
-    private fun dispatchPlay(track: Track) {
+    private fun dispatchPlay(track: Track, seq: Long) {
         // New track = new last-played (position resets; timestamp = now).
         val s = _state.value
         PlaybackStore.saveLastSoon(track, 0, s.source)
         if (useSdkEngine()) {
             update { s -> s.copy(sdkActive = true, sdkDeviceId = null) }
-            playViaSdk(track)
+            playViaSdk(track, seq)
         } else {
             update { s -> s.copy(sdkActive = false, sdkDeviceId = null) }
-            playViaOpen(track)
+            playViaOpen(track, 0, seq)
         }
     }
 
-    private fun playViaOpen(track: Track, attempt: Int = 0) {
+    private fun playViaOpen(track: Track, attempt: Int = 0, seq: Long) {
         scope.launch {
             val res = withContext(Dispatchers.IO) { MusicRepository.resolveStream(track) }
             val json = res.getOrNull()
@@ -543,6 +597,7 @@ object PlayerRepository {
                 }
             }
             if (!url.isNullOrEmpty() && svc != null) {
+                if (seq == resolveSeq) pendingRestore = null
                 val format = json?.optString("format", "") ?: ""
                 val provider = json?.optString("provider", "") ?: ""
                 val quality = json?.optString("quality", "") ?: ""
@@ -558,7 +613,13 @@ object PlayerRepository {
                     if (cur.track?.id == track.id) cur.positionMs else 0
                 svc.playUrl(url, track, startMs, "$provider/$format/$quality")
             } else {
-                update { s -> s.copy(isPlaying = false) }
+                // Superseded plays (a newer tap started while this resolved)
+                // touch nothing: state, toasts, and retries all belong to
+                // the newer generation now.
+                if (seq != resolveSeq) {
+                    Log.i(TAG, "play superseded, ignoring failure for ${track.id}")
+                    return@launch
+                }
                 val err = res.exceptionOrNull()
                 val code = (err as? BridgeException)?.error
                     ?.let { it as? BridgeError.Core }?.code
@@ -568,7 +629,8 @@ object PlayerRepository {
                 if (transient && attempt == 0) {
                     Log.i(TAG, "resolve transient ($code), retrying once after backoff")
                     delay(1500)
-                    playViaOpen(track, 1)
+                    if (seq != resolveSeq) return@launch
+                    playViaOpen(track, 1, seq)
                     return@launch
                 }
                 when {
@@ -589,6 +651,13 @@ object PlayerRepository {
                         ToastBus.fromBridge(err ?: Exception("no player"))
                     }
                 }
+                // Roll back to the pre-play snapshot (see beginResolve):
+                // without this the UI shows the failed track as paused
+                // while the service still holds the old audio, and every
+                // later tap diverges further. Falls back to the old
+                // isPlaying=false when no snapshot exists.
+                pendingRestore?.let { restoreFailure(it) }
+                    ?: update { s -> s.copy(isPlaying = false) }
             }
         }
     }
@@ -600,30 +669,30 @@ object PlayerRepository {
      */
     fun retryAfterError() {
         val t = _state.value.track ?: return
-        playViaOpen(t, 1)
+        playViaOpen(t, 1, resolveSeq)
     }
 
     /** SDK path: ensure the hidden device, then Connect-play the URI on it.
      * Server-side start is confirmed by the `state` event stream. */
-    private fun playViaSdk(track: Track) {
+    private fun playViaSdk(track: Track, seq: Long) {
         val driver = sdkDriver
         if (driver == null) {
             Log.w(TAG, "SDK driver missing; falling back to open engine")
             update { s -> s.copy(sdkActive = false) }
-            playViaOpen(track)
+            playViaOpen(track, 0, seq)
             return
         }
         scope.launch {
             if (!driver.ensure()) {
                 update { s -> s.copy(isPlaying = false, sdkActive = false) }
                 ToastBus.error("Spotify player unavailable — using the open engine.")
-                playViaOpen(track)
+                playViaOpen(track, 0, seq)
                 return@launch
             }
             val device = driver.awaitDevice() ?: run {
                 update { s -> s.copy(isPlaying = false, sdkActive = false) }
                 ToastBus.error("Spotify device not ready yet — using the open engine.")
-                playViaOpen(track)
+                playViaOpen(track, 0, seq)
                 return@launch
             }
             update { s -> s.copy(sdkDeviceId = device) }
@@ -639,7 +708,7 @@ object PlayerRepository {
                     // Forced-SDK on a free account: say so, then fall back.
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("premium required"))
                     update { s -> s.copy(sdkActive = false) }
-                    playViaOpen(track)
+                    playViaOpen(track, 0, seq)
                 } else {
                     update { s -> s.copy(isPlaying = false) }
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("SDK play failed"))
@@ -685,9 +754,11 @@ object PlayerRepository {
     }
 
     fun nextTrack() {
+        if (_state.value.queue.firstOrNull() == null) return
+        val seq = beginResolve()
         val next = advance() ?: return
         // Queue-first advance in both engines; dispatch picks the transport.
-        dispatchPlay(next)
+        dispatchPlay(next, seq)
     }
 
     /**

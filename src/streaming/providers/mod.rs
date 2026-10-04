@@ -2,6 +2,7 @@
 
 pub mod audius;
 pub mod common;
+pub mod invidious;
 pub mod piped;
 pub mod qobuz;
 pub mod saavn;
@@ -19,12 +20,14 @@ use crate::streaming::provider::Provider;
 /// sunset and a direct revival needs real credentials to verify against.
 /// Qobuz revives when the user supplies credentials (Phase F); otherwise it
 /// is skipped at zero cost like TIDAL. Then YouTube (self-contained),
-/// Piped, Saavn, Audius, SoundCloud.
+/// Invidious (same catalog through proxied Opus), Piped, Saavn, Audius,
+/// SoundCloud.
 pub fn build_provider_chain() -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(tidal::TidalProvider::new()),
         Box::new(qobuz::QobuzProvider::new()),
         Box::new(youtube::YoutubeProvider::new()),
+        Box::new(invidious::InvidiousProvider::new()),
         Box::new(piped::PipedProvider::new()),
         Box::new(saavn::SaavnProvider::new()),
         Box::new(audius::AudiusProvider::new()),
@@ -39,6 +42,7 @@ pub const CACHE_PROBE_ORDER: &[&str] = &[
     "tidal",
     "qobuz",
     "youtube",
+    "invidious",
     "piped",
     "saavn",
     "audius",
