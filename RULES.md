@@ -1837,7 +1837,9 @@ dioxus-mobile Rust code is untouched and still builds.
   doesn't constrain movement; `isHideable=false` blocks only the
   downward escape; `isDraggable=false` freezes long menus too). Final:
   `fitToContents` (upward stops at content height) + peek/`minHeight`
-  floor + non-hideable + dragging on + opaque bg + explicit dim (the
+  floor + hideable-with-hidden-dismiss (swipe-down past peek closes like
+  ✕; the sheet never RESTS below peek) + dragging on + opaque bg +
+  explicit dim (the
   theme has no `bottomSheetDialogTheme` — the fallback was transparent
   and undimmed). Details in ARCHITECTURE.md §21.3.
 - **Echo pressed state = foreground ripple (2026-09-18):** `Selectable`

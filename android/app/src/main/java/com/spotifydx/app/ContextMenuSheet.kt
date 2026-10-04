@@ -40,6 +40,9 @@ class ContextMenuSheet : BottomSheetDialogFragment() {
     }
 
     private var target: MenuTarget? = null
+    /** onStart can re-run (stop → start); the behavior instance survives,
+     * so the dismiss callback must be added exactly once per dialog. */
+    private var dismissHookAdded = false
 
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
@@ -69,19 +72,39 @@ class ContextMenuSheet : BottomSheetDialogFragment() {
         // than the peek scrolls inside, drag reaches full expansion.
         val d = dialog as? BottomSheetDialog ?: return
         val peek = (resources.displayMetrics.heightPixels * 0.75).toInt()
-        // Bounded sheet contract (all three must hold together):
+        // Bounded sheet contract (all must hold together):
         // - fitToContents: expansion stops at the content height — a drag
         //   that hits the list end cannot push the sheet further up past
         //   what it should cover; over-tall content caps at full screen.
         // - peek + container minHeight: short menus still fill the same ¾
         //   boundary instead of wrapping into a stub with app showing below.
-        // - non-hideable: no downward escape into HIDDEN past the peek.
-        // Dragging itself stays fully enabled in both directions within
-        // those bounds, so long menus expand to full and scroll inside.
+        // - hideable + hidden-dismiss: a downward swipe past peek closes
+        //   the dialog exactly like the ✕ button (the behavior's own
+        //   hide animation IS the slide-down; dismiss only removes the
+        //   dimmed window afterwards). The sheet never RESTS below peek —
+        //   it settles at peek/expanded or dismisses, so the old
+        //   downward-escape past the lower limit stays impossible.
+        // Dragging up still expands (long menus reach full + scroll
+        // inside); only the downward exit changed (was: settle back).
         d.behavior.isFitToContents = true
         d.behavior.peekHeight = peek
-        d.behavior.isHideable = false
+        d.behavior.isHideable = true
         d.behavior.state = BottomSheetBehavior.STATE_COLLAPSED
+        if (!dismissHookAdded) {
+            dismissHookAdded = true
+            d.behavior.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
+                override fun onStateChanged(bottomSheet: View, newState: Int) {
+                    // Dragged past peek into HIDDEN: the slide-down already
+                    // played — finish like the ✕ button. Guarded: X-dismiss
+                    // and rotation paths must never double-dismiss.
+                    if (newState == BottomSheetBehavior.STATE_HIDDEN && isAdded) {
+                        dismissAllowingStateLoss()
+                    }
+                }
+
+                override fun onSlide(bottomSheet: View, slideOffset: Float) = Unit
+            })
+        }
         // Short menus (few actions, no nav rows) would otherwise wrap their
         // content and leave the app's bottom nav / mini player visible
         // below the sheet, with the sheet scrollable past its own edge.

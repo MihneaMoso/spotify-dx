@@ -1175,7 +1175,9 @@ present). Shipped fixes:
   and single-flag fixes each missed a direction): `fitToContents`
   (expansion stops at content height) + ¾ peek with container
   `minHeight` floor (short menus share the boundary) +
-  non-hideable (no downward escape) + fully enabled dragging (long
+  hideable-with-hidden-dismiss (swipe-down past peek closes like ✕; the
+  sheet never rests below peek — 2026-10-05 replaced the earlier
+  non-hideable clamp) + fully enabled dragging (long
   menus expand and scroll inside) + explicit opaque `menu_sheet_bg`
   and 0.5 window dim (the app theme defines no
   `bottomSheetDialogTheme`, and the style fallback resolved
