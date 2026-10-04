@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Full-screen player sheet: Echo Music player-view port (sanctioned
      layout revamp, revised to the Echo reference screenshot). Order mirrors
-     Echo: minimize + Playing-From header, large artwork, lyric one-liner,
+     Echo: minimize + Playing-From header + song menu (same dots as every
+     row), large artwork, lyric one-liner,
      title block, slider + times, bare (circle-free) transport, centered
      codec line, spacer pinning the Queue | Lyrics text row to the bottom,
      and the queue / lyrics sections expanding over everything. No volume
@@ -58,9 +59,14 @@
                 style="@style/EchoTitleMedium" />
         </LinearLayout>
 
-        <View
+        <ImageButton
+            android:id="@+id/sheet_more"
             android:layout_width="48dp"
-            android:layout_height="48dp" />
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="More options"
+            android:src="@drawable/ic_more_vert"
+            android:tint="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 
     <LinearLayout

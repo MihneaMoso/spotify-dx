@@ -114,6 +114,13 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         root.findViewById<ImageButton>(R.id.sheet_minimize)?.setOnClickListener {
             close()
         }
+        // Same song menu as every row's dots (queue, lists, cards): the
+        // current track's details dialog. No-op with no track loaded.
+        root.findViewById<ImageButton>(R.id.sheet_more)?.setOnClickListener {
+            PlayerRepository.state.value.track?.let {
+                ContextMenuHost.showMenu(activity.supportFragmentManager, MenuTarget.Song(it))
+            }
+        }
         play.setOnClickListener { PlayerRepository.toggle(); punch(play) }
         root.findViewById<ImageButton>(R.id.sheet_next)?.setOnClickListener {
             PlayerRepository.nextTrack(); punch(it)
