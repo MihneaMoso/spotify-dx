@@ -190,9 +190,9 @@ lists) drops third-party ad/tracker requests.
   feature for linux-gnu / macOS (arm64+x86_64) / windows-msvc, the owned
   Kotlin Android APK (`android-apk` job), and the web bundle — and publishes
   a GitHub Release. Because this is a GTK/WebKit GUI, Linux is **glibc with the
-  system webkit2gtk dev packages**, never musl. (The old
-  `docs/old/PLATFORM_PARITY.md` Connect-only matrix no longer applies:
-  Android has full open-engine playback via the Kotlin app.)## 6. Discoveries & gotchas (learned the hard way)
+  system webkit2gtk dev packages**, never musl. (Android has full
+  open-engine playback via the Kotlin app — no Connect-only matrix applies.)
+## 6. Discoveries & gotchas (learned the hard way)
 
 ### 6.1 The dioxus 0.6 → 0.7 migration (important!)
 
@@ -826,38 +826,12 @@ patterns in mind so new code doesn't reintroduce them):
   used). `src/platform/webview.rs` picks the right alias with `#[cfg(feature =
   "mobile")]` vs `#[cfg(all(desktop, not(mobile)))]` so webview_bridge builds on
   every native platform; both features can be on at once (`--features mobile`).
-- **Android cross-build works with a plain `.cargo/config.toml`** — no
-  `cargo-ndk` needed. `cargo-ndk` isn't installed here; instead `.cargo/
-  config.toml` sets `linker`/`ar` for `aarch64-linux-android`, plus two
-  **un-versioned symlinks** (`aarch64-linux-android-clang` →
-  `aarch64-linux-android21-clang`, `aarch64-linux-android-ar` → `llvm-ar`) created
-  in the NDK bin dir — `cc-rs` resolves those exact names and won't accept the
-  versioned ones. Command: `cargo check --no-default-features --features mobile
-  --target aarch64-linux-android` (pass with NDK bin on `$PATH`); verified clean
-   here on NDK `25.2.9519653`. iOS targets aren't rustup-installed so iOS cannot
-   build on this Linux host.
-- **Local Android link gotcha: `ld: unable to find library -laudio`.**
-   `dx build --platform android` wires its own linker (`-C linker=<dx bin>`),
-   which searches the **un-versioned** NDK lib dir
-   `sysroot/usr/lib/aarch64-linux-android/` (NOT the API-versioned `28/` subdir),
-   and that dir ships no `libaudio.so`/`libaaudio.so` stub. A crate links the
-   AAudio API via `-laudio` (resolves to `libaudio.so`), which is missing there →
-   the whole link fails. This does NOT affect CI's `dx build --platform android`
-   (runs before Gradle in `.github/workflows/release.yml`), so an APK builds fine
-   remotely. **Local workaround** (idempotent, edit the host NDK install):
-   ```
-   SYSROOT=$(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android
-   ln -sf  28/libaaudio.so  "$SYSROOT/libaaudio.so"   # real file lives in 28/
-   ln -sf  28/libaaudio.so  "$SYSROOT/libaudio.so"    # resolves `-laudio`
-   ```
-   (Do the same under `$SYSROOT/28/` if needed.) `-laudio` then resolves in both
-   the versioned and un-versioned search dirs. After the workaround, the full
-   local build is: `dx build --platform android --release --target
-   aarch64-linux-android` (compile+link `libmain.so`), `scripts/stage-updater.sh`,
-   then Gradle `assembleRelease -x lintVital*`, then `apksigner` with a generated
-   debug keystore. `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`NDK_HOME`
-   env vars are nice-to-have but `dx` overrides the linker to itself regardless —
-   the symlink is the load-bearing fix.
+- **Android cross-build goes through `scripts/android-ndk.sh`** (single-sourced
+  toolchain helper: API-30 sysroot, so `libaaudio.so` resolves and the old
+  `-laudio` link failure is gone) + `scripts/build-kotlin.sh` (core `.so`
+  + owned Gradle APK). The dx-era lore is dead: no `cargo-ndk`,
+  no un-versioned symlinks, no `dx` linker override, no `stage-updater.sh`,
+  no `libmain.so` — do not follow it.
 - **Android wry has NO multi-webview layering (the blank-white-screen bug).**
   In wry 0.53.5 the Android backend is single-view: every
   `WebViewBuilder::build(&window)` calls `Activity.setContentView(webview)`
@@ -1042,46 +1016,26 @@ patterns in mind so new code doesn't reintroduce them):
   `credentials: include` request mode is explicitly controllable (reqwest's wasm
   fetch backend doesn't expose that the same way).
 
-### 6.9d Android APK packaging — NO Android Studio, NO committed `android/` scaffold
+### 6.9d Android APK packaging — owned Gradle project, no Studio
 
-- **`dx build --platform android --release` auto-generates the entire Gradle
-  project** from a built-in template in the CLI (`assets/android/gen/` in
-  `dioxus-cli-<v>`: `settings.gradle`, root + app `build.gradle.kts`,
-  `AndroidManifest.xml`, `MainActivity`, mipmap icons). **There is no `android/`
-  directory to commit to this repo, and Android Studio is not required.**
-  Earlier assumption that we must recreate a dioxus-mobile scaffold in-repo was
-  WRONG — the CLI ships it. Verified in `dioxus-cli-0.6.2` source + the 0.7
-  mobile/bundle docs.
-- **`dx` only needs env vars** (no GUI): `ANDROID_NDK_HOME`/`NDK_HOME` + SDK as
-  `ANDROID_SDK_ROOT`/`ANDROID_SDK`/`ANDROID_HOME`, `JAVA_HOME` (a plain JDK 17;
-  Studio's JBR unneeded), and the rustup android target. Resolution order
-  confirmed in `dioxus_crate.rs:android_ndk/android_sdk` and
-  `cli/target.rs:152` (JAVA_HOME wins).
-- **APK output:** `dx build --platform android --release` writes the Gradle
-  project to `target/dx/<crate>/release/android/app/`, and the APK (a debug
-  build by default) to
-  `…/app/app/build/outputs/apk/{debug,release}/`. **The old `target/android/release/`
-  path the docs claim is wrong** for the 0.7.10 CLI — verified in
-  `packages/cli/src/build/android.rs` (`debug_apk_path`/`release_apk_path`).
-- **`dx build` runs `assembleDebug` unless `[bundle.android]` (jks) is set:**
-  in `assemble_android()`, the Gradle task is `assembleRelease` ONLY when
-  `release && config.bundle.android.is_some()`, else `assembleDebug`. With no
-  jks config, `dx build --platform android --release` still emits a *debug*
-  APK; producing a release APK requires running `./gradlew assembleRelease`
-  yourself (`-x lintVitalAnalyzeRelease -x lintVitalRelease
-  -x lintVitalReportRelease` to dodge the AGP 8.7 lint crash, Dioxus#5251),
-  which yields an *unsigned* `app-release-unsigned.apk` (no signingConfig) —
-  sign it with `apksigner` + a generated keystore.
-- **CI arch gotcha:** the default android triple follows the **host** arch
-  (`x86_64-linux-android` on x86_64 CI runners). Pass `--target
-  aarch64-linux-android` explicitly (or probe adb) or you silently get an
-  x86_64 APK. (Dioxus issue #4642 / comment `dx build --android --release
-  --target aarch64-linux-android`.)
-- **min_sdk_version must be ≥ 30** (Android 11): dioxus/tao call
-  `WindowManagerImpl.getCurrentWindowMetrics()` which only exists on API 30+;
-  older devices crash with `NoSuchMethodError`. Set it in `Dioxus.toml`
-  (`[mobile] min_sdk_version`); repo now has 30.
-- **CI (`.github/workflows/release.yml` `android-apk` + `web` jobs, Phase D):**
+The Android app is an owned Gradle project (`android/`: gate + 9 screens
++ shell + login WebView + playback service + updater) over the
+versioned JNI bridge, built by `scripts/build-kotlin.sh` (debug and
+release). No Android Studio, no `dx`-generated scaffold. (History: the
+0.7 CLI could generate the scaffold from a template and the repo once
+relied on it — that path, and its `stage-updater.sh`/NDK-env-var lore,
+is gone; git history has the details.)
+- **No GUI needed:** `ANDROID_SDK_ROOT`/`ANDROID_HOME`, NDK 25.2.9519653,
+  `JAVA_HOME` (plain JDK 17), and the rustup android targets.
+  `scripts/android-ndk.sh` is the single-sourced toolchain helper both
+  build scripts use.
+- **minSdk 30** (Android 11) in `android/app/build.gradle` and
+  `Dioxus.toml` (`[mobile] min_sdk_version`); the API-21 sysroot lacks
+  `libaaudio.so` (see `.cargo/config.toml` note).
+- **Agent builds stay offline:** `./gradlew assembleDebug --offline`
+  from `android/` (reuses the staged `.so` — Gradle never rebuilds
+  Rust). Full core+APK rebuilds are the user's `scripts/build-kotlin.sh`.
+- **CI (`.github/workflows/release.yml` `android-apk` + `web` jobs):**
   - cargo config files do **NOT** expand env vars, so CI overrides the
     machine-specific `.cargo/config.toml` NDK paths with the higher-precedence
     `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`/`_AR` env vars — no file edit.
@@ -1179,14 +1133,11 @@ patterns in mind so new code doesn't reintroduce them):
   `git describe --tags --abbrev=0` → Cargo version, leading `v` stripped.
   `updater::CURRENT_VERSION` is `env!("SPOTIFY_DX_VERSION")`; CI adds a build
   step. Never bump Cargo.toml's version to match a tag.
-- **Android self-update plumbing** (the `android-apk` CI job): after
-  `dx build --platform android`, run `scripts/stage-updater.sh`, which copies
-  `android/updater/src/main/kotlin/…/SpotifyDxUpdater.kt` +
-  `SpotifyDxFileProvider.kt` into the `app/src/main/kotlin` tree (idempotent
-  `cp -n`) and patches the debug AGP manifest (python3, marker
-  `<!-- spotify-dx-updater:provider -->`) with the FileProvider
-  (`authorities="com.spotifydx.app.updates"`, `file_paths`=filesDir/updates).
-  The Rust side calls `com/spotifydx/app/SpotifyDxUpdater.installApk` via JNI →
+- **Android self-update plumbing** (the `android-apk` CI job + first-class
+  sources under `android/app/...`): the FileProvider
+  (`authorities="com.spotifydx.app.updates"`, `file_paths`=filesDir/updates)
+  serves `updates/spotify-dx-update.apk`; the Rust side calls
+  `com/spotifydx/app/SpotifyDxUpdater.installApk` via JNI →
   `Intent.setDataAndType(FileProvider.getUriForFile(…, "updates/spotify-dx-update.apk"), "application/vnd.android.package-archive")`.
   Keep the Kotlin class name + method name in sync with `fire_install_intent`.
 - **The updater is desktop + Android only — wasm stubs it out.** Desktop deps
@@ -1304,13 +1255,13 @@ proxy** that holds the user's session cookie and mints tokens on their behalf
   var; update `auth/mod.rs` non-native `login()` + `web_login.rs` to use it;
   keep a graceful local fallback for dev.
 
-### 6.9h Kotlin migration — Phase 0 + Phase 1 (native core library + owned Kotlin app)
+### 6.9h Kotlin app — native core library + owned Kotlin UI
 
-Status: **Phase 0 gate green, Phase 1 shell smoke builds** (`docs/KOTLIN_MIGRATION.md`
-§14). The Kotlin app in `android/` is the primary Android build path
-(`scripts/build-kotlin.sh` → `scripts/build-android-install.sh` default;
-`DX_LEGACY=1` keeps the old dx renderer until the Phase 7 cutover). The
-dioxus-mobile Rust code is untouched and still builds.
+Status: **released and primary** — the Kotlin app in `android/` (gate +
+9 screens + shell + login WebView + playback service + updater) is the
+Android build path (`scripts/build-kotlin.sh`); the dioxus-mobile Rust
+code is untouched and still builds. (`docs/KOTLIN_MIGRATION.md` keeps
+the phase-by-phase design record.)
 
 - **Core extraction shape (deliberate deviation from §5):** `app` + `ui` live
   in the LIB (`src/lib.rs`), not binary-only. Reason: `app.rs`/`ui/*` use
@@ -1374,8 +1325,6 @@ dioxus-mobile Rust code is untouched and still builds.
   exist in `libspotify_dx.so` (`nm -D`), else the build fails here instead
   of at runtime. The staged `.so` under
   `android/app/src/main/jniLibs/<abi>/` is git-ignored (rebuilt every time).
-- **`android/updater/` staging sources are now first-class:** copied verbatim
-  into the owned project; `scripts/stage-updater.sh` is legacy-path-only.
 - **Login capture JS (`CaptureJs.kt`) is `POLL_JS` verbatim** (TOTP key,
   `0x98BADCFE`, fetch hook, relay, message vocabulary) with `window.ipc`
   backed by the `SpotifyDx` JavascriptInterface instead of the title ferry.
@@ -1505,15 +1454,10 @@ dioxus-mobile Rust code is untouched and still builds.
   `duration_accepts`, `pick_piped_audio`, mappings). Explicit content is
   NOT filtered anywhere (provider sets contentCheckOk/racyCheckOk) —
   misses are catalog gaps, not blocks.
-- **Provider expansion Phase B (Piped provider, 2026-09-10):**
-  `providers/piped.rs` sits after `youtube`: pinned API hosts + in-process
-  health (2 consecutive transport failures → 5min cooldown; content gaps
-  never blame the host), 8s client timeout, `/search?filter=videos` →
-  duration-gated pick → `/streams/{id}` → best non-video audio (shared
-  `pick_piped_audio`/`duration_accepts`/`quality_for_bitrate`/
-  `format_for_mime` now `pub(crate)` in `youtube.rs`). Region variance is
-  the point: content misses retry the next instance, transport failures
-  cool it. Unit-tested (URL parse, urlencode, response shape).
+- **Provider expansion Phase B (Piped provider, 2026-09-10):** built the
+  instance pool + health-cooldown mechanics — now dead detail: 8/8 public
+  instances unreachable, the chain skips Piped fast (see the 2026-10-04
+  negative-cache entry). Kept for the pattern, not the path.
 - **Provider expansion Phase D (Audius + SoundCloud, 2026-09-10):**
   `audius.rs` (after `saavn`): keyless `api.audius.co/v1` search →
   duration-gated pick (skips deleted/unlisted) → `/tracks/{id}/stream`
@@ -1581,14 +1525,8 @@ dioxus-mobile Rust code is untouched and still builds.
   art attached, NOT missing). Art comes from the same core gate as the UI
   (`MusicRepository.artwork` base64 → downsampled decode), one in-flight
   fetch with stale-track guard, re-publishing both surfaces on landing.
-- **Queue reorder (Phase 4, 2026-09-11, compile-verified):**
-  `QueueDrag` (`ItemTouchHelper` UP/DOWN, separate helper coexisting with
-  swipe's fling gestures) on both queue lists (Queue screen + sheet);
-  long-press lifts (0.7 alpha), drop commits via `moveQueue()` (bounds +
-  no-op guarded) into state AND the existing debounced persist — order
-  survives restarts. Manual `notifyItemMoved` gives live feedback while
-  the StateFlow `submitList` reconciles after.
-  (SUPERSEDED 2026-09-12 by the unified timeline below — kept for history.)
+- **Queue reorder (Phase 4, 2026-09-11):** SUPERSEDED by the unified
+  timeline below (session-local entries + moveVisual) — see it, not this.
 - **Unified queue timeline + session drag (Echo-modeled, 2026-09-12,
   verified on-device with adb draganddrop + dumps + restart):**
   one list (PAST played + NOW current + NEXT upcoming, `RowKind`/
@@ -1723,11 +1661,11 @@ dioxus-mobile Rust code is untouched and still builds.
   Pinned live: endpoint shape, key, and template verified against real
   responses before coding (wrong remembered keys do exist — verify, don't
   trust memory). Unit-tested incl. a fixed live decrypt vector.
-- **Release pipeline cut over (Phase 7, pending first tagged release):**
-  `release.yml` `android-apk` now builds the owned Kotlin app with a stable
-  key (see §6.9d). Until a tag is pushed and the published
-  `app-release-unsigned-signed.apk` is confirmed installable-as-update, the
-  updater's apply step remains live-untested. Verified 2026-09: check path
+- **Release pipeline cut over (Phase 7):** `release.yml` `android-apk`
+  builds the owned Kotlin app with a stable key (see §6.9d). Tags v0.2.9+
+  exist but publish was skipped (web job failed), so no
+  `app-release-unsigned-signed.apk` has ever published — the updater's
+  apply step remains live-untested until one does. Verified 2026-09: check path
   live ("Up to date (v0.1.10)"), settings survive force-stop, local
    `assembleRelease` + version stamping green (99999/9.9.9-test in aapt).
 - **In-app install rewritten (2026-09-18):** the old `ACTION_VIEW`-only
@@ -1849,22 +1787,14 @@ dioxus-mobile Rust code is untouched and still builds.
   per-touch wave animators that caused the jank are gone; only a single
   fire-time burst remains).
 - **Full review fixes (2026-09-19, 103 findings → all implemented):**
-  adblock engine now reloads live on refresh (text can't cross threads —
-  `EngineMsg::Reload` re-deserializes the persisted cache) + idempotent
-  spawn + count sidecar; `initCore` returns at once with a `restoring`
-  mirror flag (bootstrap on bridge rt); settings/token writes are
-  tmp+rename; GQL paging is one driver (unknown totals page on instead
-  of truncating); stream cache persists quality; tidal trimmed to a
-  parked stub; desktop player bar subscribes properly + shuffle wired to
-  `set_shuffle` (repeat disabled — no engine reads it); install/build
-  scripts fail closed (Android digest, unzip, scoped APK find, guarded
-  deploy dir). One reported claim rejected on verification: no SWR
-  thundering herd — `leader()` dedupes via the inflight map
-  (`calls==1` test proves it). `cargo test` 112/112, clippy 0, gradle
-  `assembleDebug` green.
+  past-review ledger (adblock reload, initCore restoring flag, tmp+rename
+  writes, single GQL paging driver, quality-keyed stream cache, tidal stub,
+  player-bar subscribe, fail-closed scripts). Live rules live in code now;
+  see the 2026-10-04 review entries for the current ledger format.
 - **Recently played + history sheet (2026-09-20):** Home's second list
-  is the live `PlayerRepository.history` (last 30, most-recent-first —
-  not the feed's liked snapshot); Library's header button opens
+  is the live `PlayerRepository.playLog` (last 30, most-recent-first —
+  not the feed's liked snapshot; split off `history` 2026-09-21, see
+  below); Library's header button opens
   `HistorySheet` (full history, recency-sorted, tap-to-play + menus).
   History cap raised 50→100. Play origin labels: "Recently Played" /
   "History".
