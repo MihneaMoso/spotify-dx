@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -34,8 +35,14 @@ object UpdateCenter {
     fun checkAtBootIfEnabled() {
         if (bootCheckDone) return
         bootCheckDone = true
-        if (!SettingsStore.settings.value.autoCheckUpdates) return
-        check()
+        // Await the stored settings: reading the value synchronously here
+        // sees the opt-in default (the bridge load lands later), which
+        // fired one update check per cold start for opted-out users.
+        scope.launch {
+            SettingsStore.loaded.first { it }
+            if (!SettingsStore.settings.value.autoCheckUpdates) return@launch
+            check()
+        }
     }
 
     fun check() {

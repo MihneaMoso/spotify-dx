@@ -88,11 +88,14 @@ impl Fail {
             Fail::PremiumRequired(m) => AppError::PremiumRequired(m),
             Fail::NoBridgeSession => AppError::NoBridgeSession,
             Fail::Forbidden(m) => AppError::Forbidden(m),
-            Fail::Network(m) => AppError::Spotify(m),
+            Fail::Network(m) => AppError::Other(anyhow::anyhow!(m)),
             Fail::Spotify(m) => AppError::Spotify(m),
             #[cfg(feature = "desktop")]
             Fail::Webview(m) => AppError::Webview(m),
-            Fail::Generic(m) => AppError::Spotify(m),
+            // Generic (ex-Other) round-trips to Other, not Spotify: a
+            // transport/misc failure must never masquerade as a Spotify
+            // API error for followers matching on the variant.
+            Fail::Generic(m) => AppError::Other(anyhow::anyhow!(m)),
         }
     }
 }

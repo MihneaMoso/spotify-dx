@@ -446,9 +446,14 @@ fn remaining_offsets(total: u32, limit: u32, max_pages: u32) -> Vec<u32> {
 
 /// Shared full-collection fan-out (playlist + album detail): page 0 reveals
 /// the total, remaining offsets fan out concurrently (offsets are
-/// independent). One implementation so ordering, error (fail-whole-call,
-/// never silently gappy), and cap behavior can't drift between the two.
+/// independent). One implementation so ordering, error, and cap behavior
+/// can't drift between the two.
 ///
+/// Error policy is per-page tolerant, not fail-whole-call: each page gets
+/// one retry, and a twice-failed page is skipped (warn-logged) while the
+/// good pages still land. A single transient 429/5xx on page 87/100 must
+/// not discard a 99%-complete fetch — partial tracks beat a wholesale
+/// error, and the UI already renders partial legs elsewhere.
 /// Unknown totals (server omitted `totalCount`) don't truncate at one page:
 /// that leg falls back to sequential paging until a short page, bounded by
 /// `MAX_PAGES` — slower, but complete instead of a silent half list.
@@ -483,11 +488,25 @@ where
     let mut tracks = parse_items(&first);
     let Some(total) = total_of(&first) else {
         // Unknown total: page sequentially until a short page (bounded).
+        // Same per-page tolerance as the fan-out below: retry once, then
+        // stop with what we have instead of discarding good pages.
         let mut offset = PAGE_LIMIT;
         let mut total = raw_len(&first) as u32;
         let mut last_full = raw_len(&first) >= PAGE_LIMIT as usize;
         while last_full && offset / PAGE_LIMIT < MAX_PAGES {
-            let page = fetch_page(offset).await?;
+            let mut attempt = fetch_page(offset).await;
+            if attempt.is_err() {
+                attempt = fetch_page(offset).await;
+            }
+            let page = match attempt {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::warn!(
+                        "collect_paged_tracks: stopping sequential walk at offset {offset} after retry: {e}"
+                    );
+                    break;
+                }
+            };
             let n = raw_len(&page);
             tracks.extend(parse_items(&page));
             total = total.saturating_add(n as u32);
@@ -503,11 +522,22 @@ where
         let fetch_ref = &fetch_page;
         let parse_ref = &parse_items;
         let pages: Vec<Vec<crate::spotify::models::Track>> =
-            futures::future::try_join_all(offsets.iter().map(|&off| async move {
-                let data = fetch_ref(off).await?;
-                Ok::<_, AppError>(parse_ref(&data))
+            futures::future::join_all(offsets.iter().map(|&off| async move {
+                let mut attempt = fetch_ref(off).await;
+                if attempt.is_err() {
+                    attempt = fetch_ref(off).await;
+                }
+                match attempt {
+                    Ok(data) => parse_ref(&data),
+                    Err(e) => {
+                        tracing::warn!(
+                            "collect_paged_tracks: dropping page at offset {off} after retry: {e}"
+                        );
+                        Vec::new()
+                    }
+                }
             }))
-            .await?;
+            .await;
         for page in pages {
             tracks.extend(page);
         }

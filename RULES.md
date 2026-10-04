@@ -122,7 +122,7 @@ lists) drops third-party ad/tracker requests.
 | `auth/` | Web-session sign-in: `webview_login.rs` (desktop GTK window hosting `open.spotify.com`, cookie capture via the internal `get_access_token` endpoint), keychain persistence (`token_store.rs`), refresh/init flows (`mod.rs`). |
 | `spotify/` | API models (`models.rs` — incl. `SavedTrack` envelope for `/me/tracks`), filtered HTTP client (`client.rs`), endpoints (`api.rs` — thin wrappers delegating to GQL), GraphQL persisted-query client (`gql.rs` — `api-partner.spotify.com/pathfinder`, used for user playlists + liked songs + saved albums + home + search + album/artist detail), playback endpoint (`player_api.rs`), session helpers (`session.rs`), request store (`store.rs` — in-flight coalescing, memory TTL, disk SWR). |
 | `adblock/` | Brave-style ad-block engine (`engine.rs` — `adblock` crate `Engine` on a dedicated `!Send` thread with `mpsc` channel IPC), blocklist fetch/cache (`adguard_api.rs`), cosmetic CSS scaffold (`mod.rs::cosmetic`). Facade: `should_block(url)`, `record_drop()`, `stats_snapshot()`. |
-| `player/` | `mod.rs` dispatch (native renderers → webview_bridge; wasm → Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC), `engine.rs` (`PlaybackEngine` trait). `should_use_open_engine()` checks `EnginePreference`; `play_uri()` routes to `open_play_uri()` via the streaming engine. |
+| `player/` | `mod.rs` dispatch (native renderers → webview_bridge; wasm → Connect API), `playback_sdk.rs` (embedded SDK HTML/JS), `webview_bridge.rs` (hidden WebView + IPC). The old `PlaybackEngine` dispatch trait (`engine.rs`) was deleted 2026-10 as dead — zero implementors; dispatch lives in free functions + `should_use_open_engine()`. `play_uri()` routes to `open_play_uri()` via the streaming engine. |
 | `ui/` | `router.rs` (incl. `/liked`, `/queue`, `/settings`), `theme.rs` (tokens mirrored from CSS + drift-guard tests incl. the custom-property linter), `icons.rs` (inline SVG), `components/`, `pages/`. |
 | `ui/components/` | `app_layout.rs` (shell + sidebar resize), `top_bar.rs` (history/search/user menu — avatar image or initial + name from `PROFILE`), `nav.rs` (`SideNav`/`BottomNav`), `now_playing.rs` (right column), `player_bar.rs`, `progress_bar.rs`, `primitives.rs` (`SectionHeader`/`HeroHeader`/`TrackTable`/`SkeletonShelves`), `album_art.rs`, `card.rs` (MediaCard w/ `extra_class`), `track_row.rs`, `toast.rs`. |
 | `ui/pages/` | `login.rs`, `home.rs`, `search.rs`, `library.rs`, `liked.rs`, `queue.rs`, `settings.rs` (incl. Profile section — name + avatar upload — and Software & updates section), `playlist.rs`, `album.rs`, `artist.rs`. |
@@ -1344,7 +1344,9 @@ dioxus-mobile Rust code is untouched and still builds.
   helpers take `env` by value: `guarded<'a>(mut env: JNIEnv<'a>,
   f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a>`. Every entry is
   panic-guarded (`catch_unwind` → `BRIDGE_PANIC` envelope, never unwinds
-  into the JVM). Kotlin calls blocking methods from `Dispatchers.IO` only.
+  into the JVM). Kotlin calls blocking native methods from a private
+  4-thread JNI pool only (never the shared IO pool — a hung native call
+  parks its worker despite timeouts; see BridgeClient.jniDispatcher).
 - **Signal-entangled services can't run headless:** dioxus `GlobalSignal`s
   panic outside a runtime (`Runtime::new` is `pub(crate)` — no way to host
   one from the bridge), and `session::ensure_token` gracefully errors there
@@ -2133,6 +2135,26 @@ dioxus-mobile Rust code is untouched and still builds.
   28/29/34/37/38): each needs an observable change (error values, UI,
   timing, deletion of live paths) — implement only with explicit
   per-finding approval naming the accepted behavior delta.
+- **Parked-findings iteration (2026-10-04, user-approved one-by-one):**
+  FIXED 18 of 20 (each verified: cargo 152/152 both sets, clippy 0,
+  forced Kotlin recompile clean, fresh-APK dex check): 3 positional
+  swipe-delete, 5 endpoint isValid guards, 6 last-write generation guard,
+  7 SDK track merge, 10 ready-gate unlatch, 11 deferred boot update
+  check (+SettingsStore.loaded), 12 paused republish on fatal errors,
+  13 scrubber reset, 14 private JNI pool, 16 dead-trait deletion (+docs),
+  17 non-finite volume ignore, 18 shared audio client + 512MiB stream
+  cap, 23 follower error round-trip via Other, 24 per-page retry +
+  partial tolerance, 26 insertion-ordered unshuffle tail (+test), 28
+  INVALID_ARGS on wrapped offsets / clamped negative volumes, 29
+  platform-matched updater staging (+test), 34 plausible-expiry token
+  merge (24h sanity ceiling). SKIPPED 37 (artwork cap — user's call),
+  LEFT 38 (15s bootstrap wait — intentional ordering, agreed).
+- **Download filenames (2026-10-04, fixed):** downloads saved as
+  `videoplayback.bin` because `URLUtil.guessFileName` saw only the
+  `videoplayback?…` stream URL. Filenames now come from metadata
+  (`Artist — Title.<ext>`, sanitized for FAT32/MTP, 100-char cap) with
+  the extension from the resolved format (same map as core
+  `AudioFormat::extension`; unknown → m4a, the dominant served format).
 ## 7. Testing
 
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in

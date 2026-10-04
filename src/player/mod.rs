@@ -12,9 +12,6 @@ pub mod playback_sdk;
 #[cfg(feature = "native")]
 pub mod webview_bridge;
 
-/// PlaybackEngine trait: abstraction over SDK vs open engine.
-pub mod engine;
-
 use crate::app_error::AppError;
 use crate::state::{AUTH_STATE, PLAYER_STATE};
 use dioxus::prelude::{ReadableExt, Writable};
@@ -391,13 +388,13 @@ pub async fn seek(ms: u64) -> Result<(), AppError> {
 }
 
 pub async fn volume(v: f32) -> Result<(), AppError> {
-    // Clamp first: NaN/negative/>1.0 must never reach state or the sink
-    // (the sibling set_volume/current_volume paths already do this).
-    let v = if v.is_finite() {
-        v.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
+    // Non-finite input is ignored (current volume kept): mapping NaN to
+    // full-scale once blasted full volume from a bad slider/bridge arg.
+    // Finite values clamp as before (never reach state or the sink raw).
+    if !v.is_finite() {
+        return Ok(());
+    }
+    let v = v.clamp(0.0, 1.0);
     if should_use_open_engine() {
         let (tx, _state) = crate::media::sink::global_sink(v);
         let _ = tx.send(crate::media::sink::SinkCommand::Volume(v));

@@ -444,7 +444,7 @@ fn stage_desktop_binary(dir: &std::path::Path, archive: &std::path::Path) -> Res
     let tar = flate2::read::GzDecoder::new(gz);
     let mut ar = tar::Archive::new(tar);
     let staged = dir.join(BIN_STAGED);
-    let mut found = false;
+    let mut candidates: Vec<(String, Vec<u8>)> = Vec::new();
     for entry in ar.entries().map_err(|e| format!("read archive: {e}"))? {
         let mut entry = entry.map_err(|e| format!("entry: {e}"))?;
         if !entry
@@ -480,13 +480,54 @@ fn stage_desktop_binary(dir: &std::path::Path, archive: &std::path::Path) -> Res
         if !is_binary {
             continue;
         }
-        std::fs::write(&staged, &buf).map_err(|e| format!("write staged: {e}"))?;
-        found = true;
-        break;
+        let name = entry
+            .path()
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        candidates.push((name, buf));
     }
-    if !found {
+    if candidates.is_empty() {
         return Err("archive contained no binary".into());
     }
+    // Platform match: a multi-binary tarball must stage the entry for THIS
+    // os/arch, not whatever sorts first in archive order. Score by filename
+    // tokens; ties (or a scoreless single binary like `spotify-dx`) keep
+    // today's first-in-archive behavior with a warning, never a refusal.
+    let os_tags: &[&str] = if cfg!(target_os = "linux") {
+        &["linux", "gnu"]
+    } else if cfg!(target_os = "macos") {
+        &["macos", "darwin", "apple", "osx"]
+    } else if cfg!(target_os = "windows") {
+        &["windows", "win", "msvc"]
+    } else {
+        &[]
+    };
+    let arch_tags: &[&str] = if cfg!(target_arch = "x86_64") {
+        &["x86_64", "x64", "amd64"]
+    } else if cfg!(target_arch = "aarch64") {
+        &["aarch64", "arm64"]
+    } else {
+        &[]
+    };
+    let mut best = 0;
+    let mut best_score = 0;
+    for (i, (name, _)) in candidates.iter().enumerate() {
+        let score = os_tags.iter().filter(|t| name.contains(**t)).count() * 2
+            + arch_tags.iter().filter(|t| name.contains(**t)).count();
+        if score > best_score {
+            best_score = score;
+            best = i;
+        }
+    }
+    if best_score == 0 && candidates.len() > 1 {
+        tracing::warn!(
+            "updater: no entry matched this platform; staging first binary ({})",
+            candidates[0].0
+        );
+    }
+    let (name, buf) = &candidates[best];
+    tracing::debug!("updater: staging archive entry {name}");
+    std::fs::write(&staged, buf).map_err(|e| format!("write staged: {e}"))?;
     let target = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     std::fs::write(dir.join("swap.marker"), target.to_string_lossy().as_bytes())
         .map_err(|e| format!("write marker: {e}"))?;
@@ -803,5 +844,53 @@ mod tests {
         assert!("spotify-dx-x86_64-apple-darwin.tar.gz".contains(MACOS_X86_TOKEN));
         assert!("app-release-unsigned-signed.apk".contains(ANDROID_TOKEN));
         assert!("spotify-dx-x86_64-pc-windows-msvc.zip".contains(WINDOWS_TOKEN));
+    }
+
+    /// Multi-binary tarballs stage the entry matching THIS platform, not
+    /// the first in archive order (single binaries keep first-pick).
+    #[test]
+    fn stage_picks_platform_binary() {
+        let dir = std::env::temp_dir().join(format!("spotify-dx-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("multi.tar.gz");
+
+        let plat = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        // Wrong-platform entry FIRST (archive order must not win).
+        let mut first = b"MZ".to_vec();
+        first.extend_from_slice(&[0u8; 64]);
+        let mut mine = b"\x7fELF".to_vec();
+        mine.extend_from_slice(&[0u8; 64]);
+        {
+            let f = std::fs::File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+            let mut tar = tar::Builder::new(enc);
+            let mut ha = tar::Header::new_gnu();
+            ha.set_size(first.len() as u64);
+            ha.set_mode(0o755);
+            ha.set_cksum();
+            tar.append_data(&mut ha, "other-platform-binary", first.as_slice()).unwrap();
+            let mut hb = tar::Header::new_gnu();
+            hb.set_size(mine.len() as u64);
+            hb.set_mode(0o755);
+            hb.set_cksum();
+            tar.append_data(
+                &mut hb,
+                format!("spotify-dx-{plat}-x86_64"),
+                mine.as_slice(),
+            )
+            .unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        stage_desktop_binary(&dir, &archive).unwrap();
+        let staged = std::fs::read(dir.join(BIN_STAGED)).unwrap();
+        assert_eq!(staged, mine);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

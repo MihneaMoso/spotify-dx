@@ -830,7 +830,11 @@ fn arg_page(raw: &str) -> Result<(u32, u32), String> {
         .unwrap_or(20)
         .min(50)
         .max(1) as u32;
-    let offset = v.get("offset").and_then(|o| o.as_u64()).unwrap_or(0) as u32;
+    // Reject, don't wrap: `as u32` on an absurd offset silently fetched a
+    // small page with no error (the wrong data served as correct).
+    let offset_raw = v.get("offset").and_then(|o| o.as_u64()).unwrap_or(0);
+    let offset = u32::try_from(offset_raw)
+        .map_err(|_| err("INVALID_ARGS", "arg.offset exceeds u32 range"))?;
     Ok((limit, offset))
 }
 
@@ -1410,11 +1414,14 @@ async fn sdk_do_volume(
     device: &str,
     v: &serde_json::Value,
 ) -> Result<(), crate::app_error::AppError> {
-    let pct = v
-        .get("volume")
-        .and_then(|n| n.as_u64())
-        .unwrap_or(80)
-        .min(100) as u8;
+    // Clamp contract (0–100): u64 clamps as before; negatives clamp to 0
+    // instead of silently becoming the 80 default; non-numeric/missing
+    // keeps the legacy 80.
+    let pct = match v.get("volume") {
+        Some(n) if n.as_u64().is_some() => n.as_u64().unwrap_or(80).min(100),
+        Some(n) if n.as_i64().is_some() => n.as_i64().unwrap_or(80).max(0).min(100) as u64,
+        _ => 80,
+    } as u8;
     crate::spotify::player_api::set_volume(device, pct).await
 }
 

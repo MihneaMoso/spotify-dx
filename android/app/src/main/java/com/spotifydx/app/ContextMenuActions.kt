@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
-import android.webkit.URLUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -113,15 +112,28 @@ object ContextMenuActions {
             var ok = 0
             var failed = 0
             tracks.forEach { t ->
-                val url = MusicRepository.resolveStream(t).getOrNull()
-                    ?.optString("url", "").orEmpty()
+                val resolved = MusicRepository.resolveStream(t).getOrNull()
+                val url = resolved?.optString("url", "").orEmpty()
                 if (url.isEmpty()) {
                     failed += 1
                     return@forEach
                 }
-                val fileName = URLUtil.guessFileName(url, null, null)
-                    .takeIf { it.isNotBlank() }
-                    ?: "${t.id}.mp3"
+                // Name from metadata, not the URL: stream URLs end in
+                // `videoplayback?…`, so guessFileName yielded
+                // "videoplayback.bin". Extension follows the resolved
+                // format (same map as core AudioFormat::extension).
+                val ext = when (resolved?.optString("format", "").orEmpty().lowercase()) {
+                    "flac" -> "flac"
+                    "mp3" -> "mp3"
+                    "aac" -> "m4a"
+                    "ogg" -> "ogg"
+                    "opus" -> "opus"
+                    // Unknown: the open engine overwhelmingly serves AAC
+                    // (youtube-muxed); never fall back to .bin.
+                    else -> "m4a"
+                }
+                val base = "${t.artistNames} — ${t.name}".takeIf { it.length > 2 } ?: t.name
+                val fileName = "${safeFileName(base.ifEmpty { t.id })}.$ext"
                 try {
                     dm.enqueue(
                         DownloadManager.Request(Uri.parse(url))
@@ -170,5 +182,16 @@ object ContextMenuActions {
             .setType("text/plain")
             .putExtra(Intent.EXTRA_TEXT, target.shareUrl())
         ctx.startActivity(Intent.createChooser(send, "Share"))
+    }
+
+    /**
+     * Filesystem-safe basename: strips characters illegal on FAT32/MTP
+     * (`\/:*?"<>|`) plus trailing dots/spaces (Windows trims those and
+     * MTP chokes), capped so the full path stays under filesystem
+     * limits. Never blank.
+     */
+    private fun safeFileName(base: String): String {
+        val clean = base.replace(Regex("[\\\\/:*?\"<>|]"), "").trim().trim('.', ' ')
+        return clean.take(100).ifEmpty { "track" }
     }
 }

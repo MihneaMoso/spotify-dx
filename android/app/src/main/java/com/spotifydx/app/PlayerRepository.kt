@@ -328,10 +328,55 @@ object PlayerRepository {
 
     /** Swipe-remove support (Echo dismiss): excises one timeline entry. */
     fun deleteTimelineEntry(entry: QueueEntry) {
+        deleteTimelineEntryAt(entry, -1)
+    }
+
+    /**
+     * Positional swipe-remove: excises the exact swiped slot. The adapter
+     * already removed positionally, so the repo must too — the old
+     * first-id-match deleted the FIRST duplicate while the adapter removed
+     * the swiped one, desyncing on the next resync (and mis-aiming Undo).
+     * A negative position (or a timeline that moved under us) falls back
+     * to the legacy id match rather than deleting the wrong row.
+     */
+    fun deleteTimelineEntryAt(entry: QueueEntry, globalPos: Int) {
         val s = _state.value
+        if (globalPos >= 0) {
+            val row = timeline().getOrNull(globalPos)
+            if (row != null && row.kind == entry.kind && row.track.id == entry.track.id) {
+                val nowCount = if (s.track?.playable == true) 1 else 0
+                when (entry.kind) {
+                    RowKind.PAST -> {
+                        val h = s.history.toMutableList()
+                        if (globalPos < h.size) {
+                            h.removeAt(globalPos)
+                            update { it.copy(history = h) }
+                            PlaybackStore.saveHistorySoon(h)
+                            return
+                        }
+                    }
+                    RowKind.NEXT -> {
+                        val q = s.queue.toMutableList()
+                        val i = globalPos - s.history.size - nowCount
+                        if (i in q.indices) {
+                            q.removeAt(i)
+                            update { it.copy(queue = q) }
+                            PlaybackStore.saveQueueSoon(q)
+                            return
+                        }
+                    }
+                    RowKind.NOW -> return
+                }
+            }
+        }
+        deleteById(entry, s.history, s.queue)
+    }
+
+    /** Legacy id-match removal (fallback when the timeline moved under us). */
+    private fun deleteById(entry: QueueEntry, history: List<Track>, queue: List<Track>) {
         when (entry.kind) {
             RowKind.PAST -> {
-                val h = s.history.toMutableList()
+                val h = history.toMutableList()
                 val i = h.indexOfFirst { it.id == entry.track.id }
                 if (i < 0) return
                 h.removeAt(i)
@@ -339,7 +384,7 @@ object PlayerRepository {
                 PlaybackStore.saveHistorySoon(h)
             }
             RowKind.NEXT -> {
-                val q = s.queue.toMutableList()
+                val q = queue.toMutableList()
                 val i = q.indexOfFirst { it.id == entry.track.id }
                 if (i < 0) return
                 q.removeAt(i)
@@ -910,7 +955,7 @@ object PlayerRepository {
             val track = st.optJSONObject("track")?.let { mapSdkTrack(it) }
             update { s ->
                 s.copy(
-                    track = track ?: s.track,
+                    track = mergeSdkTrack(s.track, track) ?: s.track,
                     isPlaying = playing,
                     positionMs = pos,
                     durationMs = dur,
@@ -918,10 +963,30 @@ object PlayerRepository {
                 )
             }
             PlaybackStore.saveLastSoon(
-                track ?: _state.value.track, pos, _state.value.source,
+                _state.value.track, pos, _state.value.source,
             )
             publishSdkState()
         }
+    }
+
+    /**
+     * SDK track merge: the SDK projection drops navigation ids
+     * (`artistIds`, `albumId`, `addedAt`) and picks cover[0] instead of
+     * widest — replacing the open-engine object with it stripped the
+     * Artists/Album context-menu rows for SDK-driven tracks. When the SDK
+     * reports the SAME track we hold, keep our full object (backfilling a
+     * missing cover); a genuinely different id still replaces (the user
+     * drove Spotify elsewhere), and a trackless payload keeps ours.
+     */
+    private fun mergeSdkTrack(cur: Track?, sdk: Track?): Track? = when {
+        sdk == null -> cur
+        cur != null && cur.id == sdk.id ->
+            if (cur.coverUrl.isEmpty() && sdk.coverUrl.isNotEmpty()) {
+                cur.copy(coverUrl = sdk.coverUrl)
+            } else {
+                cur
+            }
+        else -> sdk
     }
 
     private fun mapSdkTrack(o: org.json.JSONObject): Track? {

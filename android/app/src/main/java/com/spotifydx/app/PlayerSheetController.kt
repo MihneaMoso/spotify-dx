@@ -140,7 +140,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         queueList.adapter = queueAdapter
         queueList.queueDrag(queueAdapter)
         queueList.swipeToRemove(queueAdapter) { entry, pos ->
-            PlayerRepository.deleteTimelineEntry(entry)
+            PlayerRepository.deleteTimelineEntryAt(entry, pos)
             com.google.android.material.snackbar.Snackbar.make(
                 container,
                 R.string.removed_from_queue,
@@ -236,6 +236,12 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 if (st.durationMs > 0) {
                     scrub.max = st.durationMs.toInt()
                     if (!scrub.isPressed) scrub.progress = st.positionMs.toInt()
+                } else {
+                    // No duration yet (track-switch gap) or unknown: never
+                    // show the previous track's max/progress under the new
+                    // title. Guarded writes (this runs per position tick).
+                    if (scrub.max != 0) scrub.max = 0
+                    if (scrub.progress != 0) scrub.progress = 0
                 }
                 pos.text = TrackAdapter.formatDuration(st.positionMs)
                 duration.text = TrackAdapter.formatDuration(st.durationMs)

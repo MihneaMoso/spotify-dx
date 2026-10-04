@@ -755,6 +755,10 @@ class MainActivity : AppCompatActivity() {
             val max = s.durationMs.toInt()
             if (scrub.max != max) scrub.max = max
             if (!scrub.isPressed) scrub.progress = s.positionMs.toInt()
+        } else if (scrub != null) {
+            // Same no-duration reset as the sheet (see PlayerSheetController).
+            if (scrub.max != 0) scrub.max = 0
+            if (scrub.progress != 0) scrub.progress = 0
         }
         val pos = TrackAdapter.formatDuration(s.positionMs)
         if (barPos?.text?.toString() != pos) barPos?.text = pos

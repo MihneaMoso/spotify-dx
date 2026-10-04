@@ -57,11 +57,20 @@ object SettingsStore {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _settings = MutableStateFlow(Settings())
     val settings: StateFlow<Settings> = _settings.asStateFlow()
+    /**
+     * True once the bridge load attempted (success or failure — failure
+     * keeps defaults). Lets boot consumers (update check) read the STORED
+     * value instead of the default: without this, opt-out users fired one
+     * update check every cold start because the default is opt-in.
+     */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
     fun load() {
         scope.launch {
-            val json = BridgeClient.getSettings().getOrNull() ?: return@launch
-            applyJson(json)
+            val json = BridgeClient.getSettings().getOrNull()
+            if (json != null) applyJson(json)
+            _loaded.value = true
         }
     }
 

@@ -293,6 +293,13 @@ class PlaybackService : Service(),
             ToastBus.errorRes(R.string.toast_playback_failed, what)
             PlayerRepository.onServiceState(false)
             releasePlayer()
+            // Republish paused state (mirrors pausePlayback): without
+            // this the notification + lock-screen session kept showing
+            // playing for a dead player until the next successful play.
+            PlayerRepository.state.value.track?.let {
+                updateNotification(it, playing = false)
+                updateSession(PlaybackState.STATE_PAUSED, currentMs(), it)
+            }
         }
         return true
     }

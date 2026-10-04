@@ -60,6 +60,16 @@ object PlaybackStore {
     private var queueJob: Job? = null
     private var historyJob: Job? = null
     private var playLogJob: Job? = null
+    private var lastJob: Job? = null
+    /**
+     * Last-played write generation: every save takes a number, every wipe
+     * burns the sequence. A save whose number is stale at write time is
+     * dropped — without this, a pause/seek → immediate-logout ordering
+     * let the IO land AFTER the wipe and resurrected the previous
+     * account's track for the next sign-in. Atomic: wipes may arrive
+     * from any thread.
+     */
+    private val lastGen = java.util.concurrent.atomic.AtomicLong(0)
 
     fun saveQueueSoon(tracks: List<Track>) {
         queueJob?.cancel()
@@ -153,9 +163,15 @@ object PlaybackStore {
     }
 
     fun saveLastSoon(track: Track?, positionMs: Long, source: String = "") {
-        scope.launch {
+        lastJob?.cancel()
+        lastJob = scope.launch {
+            val gen = lastGen.incrementAndGet()
             withContext(Dispatchers.IO) {
-                AppDb.get(AppState.ctx()).playback().save(
+                // Stale (superseded or wiped while in flight) → drop, never
+                // write: the final row must always be the latest intent.
+                if (gen != lastGen.get()) return@withContext
+                val dao = AppDb.get(AppState.ctx()).playback()
+                dao.save(
                     PlaybackStateRow(
                         trackJson = track?.let { Models.trackToJson(it).toString() },
                         positionMs = positionMs,
@@ -163,6 +179,10 @@ object PlaybackStore {
                         source = source,
                     ),
                 )
+                // A wipe that landed mid-write still wins: its generation
+                // is newer, so remove what just landed (cancellation is
+                // cooperative — the Room call above is not cancellable).
+                if (gen != lastGen.get()) dao.clear()
             }
         }
     }
@@ -174,6 +194,8 @@ object PlaybackStore {
         queueJob?.cancel()
         historyJob?.cancel()
         playLogJob?.cancel()
+        lastJob?.cancel()
+        lastGen.incrementAndGet()
         withContext(Dispatchers.IO) {
             val db = AppDb.get(AppState.ctx())
             db.queue().clear()
@@ -193,6 +215,8 @@ object PlaybackStore {
     suspend fun clearSession() {
         queueJob?.cancel()
         historyJob?.cancel()
+        lastJob?.cancel()
+        lastGen.incrementAndGet()
         withContext(Dispatchers.IO) {
             val db = AppDb.get(AppState.ctx())
             db.queue().clear()

@@ -8,8 +8,9 @@ import androidx.recyclerview.widget.RecyclerView
  * with Snackbar Undo — `rememberSwipeToDismissBoxState` + snackbar in
  * `ui/player/Queue.kt`). Either direction dismisses; the NOW row is
  * exempt (like Echo's locked/current rows). Removal is instant in the
- * adapter; the caller persists via [PlayerRepository.deleteTimelineEntry]
- * and offers Undo re-inserting via [PlayerRepository.insertTimelineEntry].
+ * adapter; the caller persists via [PlayerRepository.deleteTimelineEntryAt]
+ * (exact slot — duplicate-safe) and offers Undo re-inserting via
+ * [PlayerRepository.insertTimelineEntry].
  */
 class QueueSwipe(
     private val adapter: QueueTimelineAdapter,

@@ -59,22 +59,62 @@ object MusicRepository {
     )
 
     suspend fun search(query: String): Result<JSONObject> =
-        cached("search:${query.trim().lowercase()}") { BridgeClient.search(query) }
+        cached(
+            "search:${query.trim().lowercase()}",
+            // A no-results search is truthful, but an outage-time empty
+            // is indistinguishable from one — and a stuck-empty result
+            // list is worse than one refetch (same rule as home()).
+            isValid = { json ->
+                (json.optJSONObject("tracks")?.optJSONArray("items")?.length() ?: 0) > 0 ||
+                    (json.optJSONObject("albums")?.optJSONArray("items")?.length() ?: 0) > 0 ||
+                    (json.optJSONObject("artists")?.optJSONArray("items")?.length() ?: 0) > 0
+            },
+        ) { BridgeClient.search(query) }
 
     suspend fun playlist(id: String): Result<JSONObject> =
-        cached("playlist:$id") { BridgeClient.playlist(id) }
+        cached(
+            "playlist:$id",
+            // Detail pages must carry their header: a nameless payload is
+            // a defaulted failure, never a real playlist.
+            isValid = { json -> json.optString("name", "").isNotEmpty() },
+        ) { BridgeClient.playlist(id) }
 
     suspend fun album(id: String): Result<JSONObject> =
-        cached("album:$id") { BridgeClient.album(id) }
+        cached(
+            "album:$id",
+            // The tracks leg defaults to [] on failure while the header
+            // still parses — require both, or the screen pins an empty
+            // listing until TTL.
+            isValid = { json ->
+                json.optJSONObject("album")?.optString("name", "").isNullOrEmpty() == false &&
+                    (json.optJSONArray("tracks")?.length() ?: 0) > 0
+            },
+        ) { BridgeClient.album(id) }
 
     suspend fun artistPage(id: String): Result<JSONObject> =
-        cached("artist:$id") { BridgeClient.artistPage(id) }
+        cached(
+            "artist:$id",
+            isValid = { json ->
+                json.optJSONObject("artist")?.optString("name", "").isNullOrEmpty() == false &&
+                    (json.optJSONArray("top_tracks")?.length() ?: 0) > 0
+            },
+        ) { BridgeClient.artistPage(id) }
 
     suspend fun likedTracks(limit: Int, offset: Int): Result<JSONObject> =
-        cached("liked:$limit:$offset") { BridgeClient.likedTracks(limit, offset) }
+        cached(
+            "liked:$limit:$offset",
+            // A genuinely empty collection refetches on revisit (small
+            // cost) instead of risking a pinned outage-empty page.
+            isValid = { json -> (json.optJSONArray("items")?.length() ?: 0) > 0 },
+        ) { BridgeClient.likedTracks(limit, offset) }
 
     suspend fun library(kind: String, limit: Int, offset: Int): Result<JSONObject> =
-        cached("library:$kind:$limit:$offset") { BridgeClient.library(kind, limit, offset) }
+        cached(
+            "library:$kind:$limit:$offset",
+            isValid = { json -> (json.optJSONArray("items")?.length() ?: 0) > 0 },
+        ) {
+            BridgeClient.library(kind, limit, offset)
+        }
 
     suspend fun artwork(url: String): Result<String> = BridgeClient.fetchArtwork(url)
 

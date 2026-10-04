@@ -62,6 +62,11 @@ pub struct PlayerState {
     /// Snapshot of `queue` ids taken when local shuffle is enabled, so toggling
     /// shuffle off can restore the original order. Empty == "not captured".
     pub queue_original: Vec<String>,
+    /// Insertion order of tracks enqueued WHILE shuffled (i.e. while
+    /// `queue_original` is active). `restore_order` appends leftovers in
+    /// this order — HashMap iteration made the unshuffle tail
+    /// nondeterministic. Cleared together with the snapshot on unshuffle.
+    pub queue_extras: Vec<String>,
     pub is_playing: bool,
     pub position_ms: u64,
     pub duration_ms: u64,
@@ -110,7 +115,13 @@ impl PlayerState {
     /// local view consumed by the Queue panel and `player::next()`.
     pub fn enqueue(&mut self, track: Track) {
         self.queue.retain(|t| t.id != track.id);
-        self.queue.push(track);
+        self.queue.push(track.clone());
+        // While shuffled, remember insertion order for the unshuffle tail
+        // (same dedup-by-id, re-add-to-tail semantics as the queue itself).
+        if !self.queue_original.is_empty() {
+            self.queue_extras.retain(|id| id != &track.id);
+            self.queue_extras.push(track.id);
+        }
     }
 
     /// Bulk enqueue with the same dedup-by-id semantics.
@@ -148,6 +159,8 @@ impl PlayerState {
         } else {
             self.shuffle = false;
             let snapshot = self.queue_original.clone();
+            self.queue_original.clear();
+            self.queue_extras.clear();
             if !snapshot.is_empty() {
                 self.restore_order(&snapshot);
             }
@@ -165,9 +178,18 @@ impl PlayerState {
                 ordered.push(t);
             }
         }
-        for (_, t) in pool {
-            ordered.push(t);
+        // Leftovers (enqueued while shuffled) in insertion order — never
+        // HashMap iteration order. Any id the extras list doesn't know
+        // (older state, consumed-then-readded races) keeps drain order,
+        // still deterministic for a given shuffle.
+        for id in std::mem::take(&mut self.queue_extras) {
+            if let Some(t) = pool.remove(&id) {
+                ordered.push(t);
+            }
         }
+        let mut rest: Vec<Track> = pool.into_values().collect();
+        rest.sort_by(|a, b| a.id.cmp(&b.id));
+        ordered.extend(rest);
         self.queue = ordered;
     }
 }
@@ -436,6 +458,20 @@ mod tests {
         assert_eq!(shuffled, original);
         ps.set_shuffle(false);
         assert_eq!(ids(&ps.queue), original);
+    }
+
+    #[test]
+    fn unshuffle_tail_follows_enqueue_order() {
+        let mut ps = PlayerState::default();
+        ps.enqueue_many(vec![mk_track("a"), mk_track("b"), mk_track("c")]);
+        ps.set_shuffle(true);
+        ps.enqueue(mk_track("x"));
+        ps.enqueue(mk_track("y"));
+        ps.enqueue(mk_track("z"));
+        ps.set_shuffle(false);
+        // Head restores the pre-shuffle order; the tail is the enqueue
+        // order — stable across runs (was HashMap iteration order).
+        assert_eq!(ids(&ps.queue), ["a", "b", "c", "x", "y", "z"]);
     }
 
     fn mk_track(id: &str) -> Track {

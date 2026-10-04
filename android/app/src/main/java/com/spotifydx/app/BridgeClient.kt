@@ -1,6 +1,6 @@
 package com.spotifydx.app
 
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -46,9 +46,10 @@ fun parseEnvelope(raw: String): Envelope {
 }
 
 /**
- * Coroutine wrapper over [CoreBridge]. Blocking calls run on
- * `Dispatchers.IO` (§12.1 — never the interface thread); results surface as
- * Kotlin [Result] with [BridgeError] failures.
+ * Coroutine wrapper over [CoreBridge]. Blocking JNI calls run on a private
+ * 4-thread pool ([jniDispatcher], never the interface thread and never the
+ * shared IO pool — see the field); results surface as Kotlin [Result] with
+ * [BridgeError] failures.
  */
 object BridgeClient {
     suspend fun initCore(filesDir: String, cacheDir: String): Result<JSONObject> =
@@ -69,6 +70,19 @@ object BridgeClient {
 
     private const val READY_TIMEOUT_MS = 20_000L
     private const val CALL_TIMEOUT_MS = 30_000L
+
+    /**
+     * Dedicated JNI executor (never the shared IO pool): JNI is
+     * non-cancellable, so a hung native call parks its worker until native
+     * returns despite `withTimeout`. On the shared pool, retry storms
+     * against a wedged core starved unrelated bridge traffic (pool tops
+     * out at 64). Here at most these 4 workers park; further calls queue
+     * behind them (visible as latency, released by the call timeouts)
+     * while the rest of the app's IO stays healthy. Process-wide, never
+     * closed — same lifetime as the native core itself.
+     */
+    private val jniDispatcher =
+        java.util.concurrent.Executors.newFixedThreadPool(4).asCoroutineDispatcher()
 
     /** Refuses loudly with a diagnostic on mismatch (§6, §12.7). */
     fun checkVersion() {
@@ -114,7 +128,7 @@ object BridgeClient {
     suspend fun refreshToken(): Result<JSONObject> = callData { CoreBridge.refreshToken("") }
     suspend fun currentUser(): Result<JSONObject> = callData { CoreBridge.currentUser("") }
 
-    suspend fun pollEvents(): Result<List<EventBus.CoreEvent>> = withContext(Dispatchers.IO) {
+    suspend fun pollEvents(): Result<List<EventBus.CoreEvent>> = withContext(jniDispatcher) {
         runCatching {
             val env = parseEnvelope(CoreBridge.pollEvents())
             if (!env.ok) throw toException(env)
@@ -158,7 +172,7 @@ object BridgeClient {
 
     // -- Phase 5 SDK surface (real; Connect transport + document + parser) ----
     /** The vendor SDK bootstrap document (single-sourced from the core). */
-    suspend fun sdkDocument(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun sdkDocument(): Result<String> = withContext(jniDispatcher) {
         runCatching {
             val raw = CoreBridge.sdkDocument("")
             val o = JSONObject(raw)
@@ -206,7 +220,7 @@ object BridgeClient {
         }
 
     /** Artwork bytes (base64) through the core's disk cache + filter gate. */
-    suspend fun fetchArtwork(url: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun fetchArtwork(url: String): Result<String> = withContext(jniDispatcher) {
         runCatching {
             val env = parseEnvelope(
                 CoreBridge.fetchArtwork(JSONObject().put("url", url).toString()),
@@ -227,7 +241,7 @@ object BridgeClient {
         parse: (Envelope) -> T,
         block: () -> String,
     ): Result<T> =
-        withContext(Dispatchers.IO) {
+        withContext(jniDispatcher) {
             if (awaitReady) {
                 val ready = kotlinx.coroutines.withTimeoutOrNull(READY_TIMEOUT_MS) {
                     readySignal.await()

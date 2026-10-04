@@ -115,6 +115,17 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
     // land here, so a set arriving while idle (no player yet) is not lost —
     // the next Play applies it instead of the stale spawn-time value.
     let mut volume = initial_vol;
+    // One runtime for the thread's lifetime (not one per track).
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("audio sink: tokio runtime: {e}");
+            return;
+        }
+    };
 
     loop {
         // Publish the current playback position so the UI clock stays accurate.
@@ -151,7 +162,7 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
                     }
 
                     // Fetch the audio data.
-                    let data = match fetch_audio_bytes(&url) {
+                    let data = match fetch_audio_bytes(&rt, &url) {
                         Ok(d) => d,
                         Err(e) => {
                             tracing::error!("audio sink: fetch failed: {e}");
@@ -226,23 +237,42 @@ fn sink_loop(rx: std::sync::mpsc::Receiver<SinkCommand>, state: Arc<SinkState>, 
 
 /// Fetch audio bytes from a URL.
 ///
-/// Uses a dedicated, generously-timed client so large downloads don't trip the
-/// spotify client's 20s request timeout, and deliberately bypasses the ad
-/// filter — the audio CDN (e.g. googlevideo.com) is media, not an ad host.
-fn fetch_audio_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("tokio runtime: {e}"))?;
-    rt.block_on(async {
-        let client = reqwest::Client::builder()
+/// Uses the shared process-wide client (one TLS pool — the old code rebuilt
+/// client + TLS state per track) and streams with a hard cap instead of one
+/// unbounded `bytes()` gulp: identical bytes on success, but an infinite or
+/// malicious stream aborts at the cap instead of OOMing the audio thread.
+/// The cap (512 MiB) is far above realistic muxed content (360p audio+video
+/// bitrates × hour-plus durations) — only runaway streams can trip it — and
+/// deliberately bypasses the ad filter: the audio CDN (e.g. googlevideo.com)
+/// is media, not an ad host. Generous 180s timeout so large downloads don't
+/// trip the spotify client's 20s request timeout.
+const MAX_AUDIO_BYTES: usize = 512 * 1024 * 1024;
+
+static AUDIO_CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+    std::sync::OnceLock::new();
+
+fn audio_client() -> Result<&'static reqwest::Client, String> {
+    match AUDIO_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
             .timeout(Duration::from_secs(180))
             .user_agent(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                  (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             )
             .build()
-            .map_err(|e| format!("http client: {e}"))?;
+            .map_err(|e| format!("http client: {e}"))
+    }) {
+        Ok(client) => Ok(client),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn fetch_audio_bytes(
+    rt: &tokio::runtime::Runtime,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    let client = audio_client()?;
+    rt.block_on(async {
         let resp = client
             .get(url)
             .send()
@@ -251,7 +281,18 @@ fn fetch_audio_bytes(url: &str) -> Result<Vec<u8>, String> {
         if !resp.status().is_success() {
             return Err(format!("download: HTTP {}", resp.status()));
         }
-        let bytes = resp.bytes().await.map_err(|e| format!("download: {e}"))?;
-        Ok(bytes.to_vec())
+        use futures::StreamExt;
+        let mut bytes = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("download: {e}"))?;
+            if bytes.len() + chunk.len() > MAX_AUDIO_BYTES {
+                return Err(format!(
+                    "download: exceeds {MAX_AUDIO_BYTES} byte cap"
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     })
 }

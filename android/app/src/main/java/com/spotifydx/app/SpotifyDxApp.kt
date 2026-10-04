@@ -26,6 +26,10 @@ class SpotifyDxApp : Application() {
                 BridgeClient.checkVersion()
             } catch (e: BridgeException) {
                 Log.e(TAG, "Refusing to proceed: ${e.error}")
+                // Unlatch too: a latched-never gate turns every screen
+                // into a 20s readiness hang instead of the immediate
+                // protocol error this refusal already logged.
+                BridgeClient.markReady()
                 return@launch
             }
             val filesDir = filesDir.absolutePath

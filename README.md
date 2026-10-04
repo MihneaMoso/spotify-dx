@@ -180,7 +180,7 @@ src/
   adblock/     Brave ad-block engine (adblock crate) + blocklist fetch + cosmetic CSS scaffold
   auth/        webview_login.rs (open.spotify.com sign-in window), keychain token store, boot auth
   media/       audio.rs (symphonia decode), images.rs (disk-cached artwork), sink.rs (rodio audio output)
-  player/      PlaybackEngine trait, SDK bootstrap (native wry renderers) / Connect API fallback
+  player/      Free-function dispatch (should_use_open_engine), SDK bootstrap (native wry renderers) / Connect API fallback
   streaming/   Open engine: provider trait, YouTube/Invidious/JioSaavn/Audius/SoundCloud (+ Qobuz credential tier), ISRC enrichment, resolver, URL cache
   spotify/     API client, models, request store (coalescing + SWR), playback API
   ui/          pages, components, router, theme, inline icons

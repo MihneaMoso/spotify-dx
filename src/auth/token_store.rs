@@ -37,10 +37,30 @@ pub fn save(access_token: &str, expires_at_ms: u64) {
     }
 }
 
+/// Sanity ceiling for a stored expiry: genuine web-player tokens live
+/// ~1h. A row expiring more than a day out is bogus (clock corruption,
+/// half-written state) — and the old max-expiry merge let such a row
+/// shadow the genuine store permanently. Implausible rows are dropped
+/// before merging; callers re-check clock validity themselves.
+const MAX_PLAUSIBLE_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn plausible(expiry_ms: u64) -> bool {
+    let now = now_ms();
+    expiry_ms > now && expiry_ms <= now.saturating_add(MAX_PLAUSIBLE_TTL_MS)
+}
+
 /// Load the persisted token + expiry, tolerating missing / half-written state.
-/// Reads both sources and takes the fresher clock-valid entry: a stale
-/// keychain row must not shadow a fresher file fallback (secret-service
-/// flaps are common on headless desktops).
+/// Reads both sources, drops expired-or-implausible rows, and takes the
+/// later expiry of the survivors (same save normally writes both stores, so
+/// they agree; a stale keychain row must not shadow a fresher file fallback
+/// — secret-service flaps are common on headless desktops).
 pub fn load() -> Option<(String, u64)> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -58,6 +78,8 @@ pub fn load() -> Option<(String, u64)> {
             Some((token, expiry))
         })();
         let file = load_from_file();
+        let keychain = keychain.filter(|(_, e)| plausible(*e));
+        let file = file.filter(|(_, e)| plausible(*e));
         match (keychain, file) {
             (Some(k), Some(f)) => Some(if f.1 >= k.1 { f } else { k }),
             (Some(k), None) => Some(k),
