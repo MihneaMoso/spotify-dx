@@ -150,8 +150,18 @@ object SpotifyDxUpdater {
             ?.map { it.toByteArray().contentHashCode() }
             ?.toSet()
         if (stagedSigners != null && installedSigners != null && stagedSigners != installedSigners) {
+            // Debug builds can never self-update to release builds (different
+            // keys) — say so directly instead of a cryptic conflict: the
+            // usual case is a local debug install meeting a release update.
+            val debuggable = (context.applicationInfo.flags and
+                android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
             throw IllegalStateException(
-                "staged APK is signed with a different key — updates must use the same signing key",
+                "staged APK is signed with a different key — updates must use the same signing key" +
+                    if (debuggable) {
+                        " (you're running a debug build — install the release APK to use self-update)"
+                    } else {
+                        ""
+                    },
             )
         }
     }

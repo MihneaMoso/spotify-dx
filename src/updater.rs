@@ -109,28 +109,114 @@ pub struct ReadyUpdate {
     pub version: String,
 }
 
+/// Last good release check: repeated taps must not each burn a GitHub API
+/// call (unauthenticated quota is 60/hour/IP — mashing "check" 403s with
+/// an error that looks like breakage). Fresh entries (< CHECK_TTL) are
+/// served without network; older ones revalidate with `If-None-Match`
+/// (304s don't re-download); on 403/429 a recent entry (< MAX_STALE) is
+/// served instead of failing, so a limit window shows last-known state
+/// rather than an error toast.
+#[derive(Debug, Clone)]
+struct CachedCheck {
+    etag: Option<String>,
+    info: ReleaseInfo,
+    at_ms: u64,
+}
+
+static LAST_GOOD: std::sync::Mutex<Option<CachedCheck>> = std::sync::Mutex::new(None);
+
+/// Freshness window for serving without network.
+const CHECK_TTL_MS: u64 = 15 * 60 * 1000;
+/// Outer bound for serving stale state under rate limiting.
+const MAX_STALE_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// Pure freshness predicates (unit-tested): saturating math so clock jumps
+/// can never wrap into a false "fresh".
+fn fresh_enough(now_ms: u64, checked_at_ms: u64) -> bool {
+    now_ms.saturating_sub(checked_at_ms) < CHECK_TTL_MS
+}
+
+fn stale_ok(now_ms: u64, checked_at_ms: u64) -> bool {
+    now_ms.saturating_sub(checked_at_ms) < MAX_STALE_MS
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Query the GitHub latest release and resolve the current platform's asset.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn latest_release() -> Result<ReleaseInfo, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let now = now_ms();
+    let cached = LAST_GOOD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(c) = &cached {
+        if fresh_enough(now, c.at_ms) {
+            return Ok(c.info.clone());
+        }
+    }
     // Bounded: an update check must never hang the caller's IO thread.
-    let resp = reqwest::Client::builder()
+    let mut req = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("update client failed: {e}"))?
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "spotify-dx-updater")
+        .header("User-Agent", "spotify-dx-updater");
+    if let Some(etag) = cached.as_ref().and_then(|c| c.etag.as_deref()) {
+        req = req.header("If-None-Match", etag);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("update check failed: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        if let Some(c) = cached {
+            if let Some(entry) = LAST_GOOD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                entry.at_ms = now;
+            }
+            return Ok(c.info);
+        }
+        return Err("update check failed: empty cache on 304".into());
+    }
+    if resp.status() == reqwest::StatusCode::FORBIDDEN
+        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        // Rate-limited: serve last-known state when recent enough instead
+        // of an error toast; the next TTL expiry retries for real.
+        if let Some(c) = cached {
+            if stale_ok(now, c.at_ms) {
+                return Ok(c.info);
+            }
+        }
+        return Err(
+            "GitHub is rate-limiting update checks — try again in a few minutes".into(),
+        );
+    }
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let body = resp
         .error_for_status()
         .map_err(|e| format!("update check failed: {e}"))?
         .text()
         .await
         .map_err(|e| format!("read failed: {e}"))?;
-    pick_asset(&body, platform_token()?)
+    let info = pick_asset(&body, platform_token()?)?;
+    *LAST_GOOD.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedCheck {
+        etag,
+        info: info.clone(),
+        at_ms: now,
+    });
+    Ok(info)
 }
 
 /// Find the asset matching `token` from a release JSON body.
@@ -608,8 +694,14 @@ pub fn request_android_install() -> Result<(), String> {
     }
     let path = apk.to_string_lossy().into_owned();
     wry::prelude::dispatch(move |env, activity, _webview| {
-        if let Err(err) = fire_install_intent(env, activity, &path) {
-            tracing::warn!("updater: could not launch package installer: {err}");
+        // Never let a Kotlin throw stay pending (see take_pending_exception).
+        if let Err(e) = fire_install_intent(env, activity, &path) {
+            if !matches!(e, jni::errors::Error::JavaException) {
+                tracing::warn!("updater: could not launch package installer: {e}");
+            }
+        }
+        if let Some(msg) = take_pending_exception(env) {
+            tracing::warn!("updater: install refused: {msg}");
         }
     });
     Ok(())
@@ -630,7 +722,22 @@ pub fn request_android_install_with(env: &mut JNIEnv, activity: &JObject) -> Res
         return Err("no staged apk".into());
     }
     let path = apk.to_string_lossy().into_owned();
-    fire_install_intent(env, activity, &path).map_err(|e| format!("install intent: {e}"))
+    match fire_install_intent(env, activity, &path) {
+        Ok(()) => {
+            // A Kotlin `throw` (missing grant, incompatible staged APK)
+            // does NOT surface as a Rust Err — it stays pending on the
+            // JNI env. Drain it into the message (see take_pending_exception)
+            // instead of dying in the next JNI call.
+            if let Some(msg) = take_pending_exception(env) {
+                return Err(format!("install refused: {msg}"));
+            }
+            Ok(())
+        }
+        Err(jni::errors::Error::JavaException) => Err(take_pending_exception(env)
+            .map(|msg| format!("install refused: {msg}"))
+            .unwrap_or_else(|| "installer threw (see logcat)".into())),
+        Err(e) => Err(format!("install bridge failed: {e}")),
+    }
 }
 
 /// `SpotifyDxUpdater.installApk(Context, String): V` — fires the system
@@ -653,6 +760,42 @@ fn fire_install_intent(
         ],
     )?;
     Ok(())
+}
+
+/// Drain a pending Java exception (thrown by a Kotlin upcall like
+/// `installApk`) into a message. WITHOUT this, the exception stays pending
+/// across the JNI return and the very next JNI call (`NewStringUTF` while
+/// building the envelope) aborts the runtime — the app vanishes with no
+/// toast and no installer. That was the self-closing updater: every install
+/// refusal (missing unknown-sources grant, signer mismatch) killed the
+/// process instead of surfacing. Call AFTER the upcall, BEFORE any other
+/// JNI use: with an exception pending, only the `Exception*` family may
+/// run, so the throwable is captured first, cleared second, and only then
+/// is `getMessage` invoked.
+#[cfg(target_os = "android")]
+fn take_pending_exception(env: &mut JNIEnv) -> Option<String> {
+    if !env.exception_check().unwrap_or(false) {
+        return None;
+    }
+    // Full stack to logcat for forensics (allowed with an exception pending).
+    let _ = env.exception_describe();
+    let throwable = env.exception_occurred().ok()?;
+    let _ = env.exception_clear();
+    let msg = env
+        .call_method(
+            throwable,
+            "getMessage",
+            "()Ljava/lang/String;",
+            &[],
+        )
+        .and_then(|v| v.l())
+        .map(jni::objects::JString::from)
+        .and_then(|s| {
+            env.get_string(&s)
+                .map(|j| j.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|_| "installer refused (see logcat)".into());
+    Some(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -833,6 +976,23 @@ mod tests {
         let evil = body.replace("https://github.com/", "https://example/");
         assert!(pick_asset(&evil, LINUX_TOKEN).is_err());
     }
+
+    #[test]
+    fn update_check_freshness_windows() {
+        // Fresh inside TTL, stale outside; stale-ok inside its (larger)
+        // window; clock jumps never wrap into false-fresh.
+        assert!(fresh_enough(1_000, 900));
+        assert!(!fresh_enough(CHECK_TTL_MS + 1_000, 900));
+        assert!(stale_ok(1_000, 900));
+        assert!(!stale_ok(MAX_STALE_MS + 1_000, 900));
+        // A checked-at in the future (clock jumped back) saturates to 0 =
+        // fresh: serve cache rather than hammer the network.
+        assert!(fresh_enough(100, 1_000_000));
+    }
+
+    // Window relationship, checked at compile time (clippy forbids
+    // constant-value assertions inside tests).
+    const _: () = assert!(MAX_STALE_MS > CHECK_TTL_MS);
 
     #[test]
     fn parse_generic_asset_prefix() {

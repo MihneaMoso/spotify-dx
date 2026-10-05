@@ -2081,6 +2081,20 @@ the phase-by-phase design record.)
   platform-matched updater staging (+test), 34 plausible-expiry token
   merge (24h sanity ceiling). SKIPPED 37 (artwork cap — user's call),
   LEFT 38 (15s bootstrap wait — intentional ordering, agreed).
+- **Self-update install killed the app (2026-10-05, fixed):** tapping
+  Install closed the app with no installer and no toast. Root cause: every
+  install refusal (`SecurityException` for the missing unknown-sources
+  grant, `IllegalStateException` for signer mismatch) threw across JNI and
+  stayed PENDING — the next JNI call (`NewStringUTF` for the envelope)
+  aborted the runtime. Fix: `take_pending_exception` (capture → clear →
+  then `getMessage`) in the install path, so refusals surface as toasts
+  (grant flow still routes to Settings first). Related truth: a local
+  DEBUG install can never self-update to a release-signed APK (different
+  keys) — the toast now says so explicitly. Rate limits: `latest_release`
+  gained a 15-min TTL cache + ETag revalidation + stale-serve (<6h) on
+  403/429 with a friendly message, so mashing check/download can't 403.
+  The reopen-crash loop had no provable in-code cause beyond the abort;
+  if it recurs, one logcat abort line identifies it.
 - **Download filenames (2026-10-04, fixed):** downloads saved as
   `videoplayback.bin` because `URLUtil.guessFileName` saw only the
   `videoplayback?…` stream URL. Filenames now come from metadata
