@@ -170,6 +170,10 @@ class SettingsFragment : Fragment() {
             val cur = SettingsStore.settings.value
             if (q != cur.qualityMobile) SettingsStore.save(cur.copy(qualityMobile = q))
         }
+        // Theme-switch recreates these views while the initial check is set
+        // pre-attach (unlike the theme/engine groups, which check inside an
+        // async collect). Per-row post-attach re-assert in buildQualityRows
+        // covers the dropped state; the explicit buttonTint covers color.
         viewLifecycleOwner.lifecycleScope.launch {
             SettingsStore.settings.collect { s ->
                 wifiRows.forEach { (q, btn) ->
@@ -205,6 +209,17 @@ class SettingsFragment : Fragment() {
             btn.isChecked = q == get(cur)
             row.setOnClickListener { onPick(q) }
             group.addView(row)
+            // Post-attach re-assert: the initial check above lands while
+            // detached (theme-switch recreates these rows), and a dropped
+            // pre-attach state leaves the dot invisible until the next
+            // change. Re-read store truth once attached (+ jump the
+            // drawable); with the explicit buttonTint above, color is
+            // deterministic too — all three invisibility mechanisms
+            // covered, final state identical to the store.
+            row.post {
+                btn.isChecked = q == get(SettingsStore.settings.value)
+                btn.jumpDrawablesToCurrentState()
+            }
             q to btn
         }
     }
