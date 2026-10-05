@@ -504,7 +504,10 @@ object PlayerRepository {
                 audioTier = "",
             )
         }
-        dispatchPlay(track, seq)
+        // Resume keeps the saved offset: capture it synchronously here
+        // (service is dead — no ticks coming; a live re-read after the
+        // async resolve could pick up another track's ticks instead).
+        dispatchPlay(track, seq, _state.value.positionMs)
     }
 
     /** Shared track-launch tail (state flip + engine dispatch). */
@@ -523,7 +526,11 @@ object PlayerRepository {
                 positionMs = 0,
             )
         }
-        dispatchPlay(track, seq)
+        // Fresh plays always start at 0: the offset travels as a parameter
+        // (never re-read from live state after the async resolve — the old
+        // audio's position ticks keep landing meanwhile and would resume
+        // the NEW song from the OLD timestamp whenever it was playing).
+        dispatchPlay(track, seq, 0)
     }
 
     /**
@@ -601,20 +608,20 @@ object PlayerRepository {
         startTrack(track, "History", seq)
     }
 
-    private fun dispatchPlay(track: Track, seq: Long) {
+    private fun dispatchPlay(track: Track, seq: Long, startMs: Long) {
         // New track = new last-played (position resets; timestamp = now).
         val s = _state.value
         PlaybackStore.saveLastSoon(track, 0, s.source)
         if (useSdkEngine()) {
             update { s -> s.copy(sdkActive = true, sdkDeviceId = null) }
-            playViaSdk(track, seq)
+            playViaSdk(track, seq, startMs)
         } else {
             update { s -> s.copy(sdkActive = false, sdkDeviceId = null) }
-            playViaOpen(track, 0, seq)
+            playViaOpen(track, 0, seq, startMs)
         }
     }
 
-    private fun playViaOpen(track: Track, attempt: Int = 0, seq: Long) {
+    private fun playViaOpen(track: Track, attempt: Int = 0, seq: Long, startMs: Long) {
         scope.launch {
             val res = withContext(Dispatchers.IO) { MusicRepository.resolveStream(track) }
             val json = res.getOrNull()
@@ -650,12 +657,10 @@ object PlayerRepository {
                     s.copy(audioTier = audioTier(format, provider, quality))
                 }
                 svc.setPlayerVolume(_state.value.volume)
-                // Resume: the restored position belongs to THIS track only;
-                // anything else (tap-while-resolving swapped tracks) starts
-                // from the top. The quality tag keys the disk cache.
-                val cur = _state.value
-                val startMs =
-                    if (cur.track?.id == track.id) cur.positionMs else 0
+                // startMs was fixed at dispatch: re-reading positionMs here
+                // would pick up the OLD audio's ticks (still playing until
+                // this URL loads) whenever the old song wasn't paused.
+                // The quality tag keys the disk cache.
                 svc.playUrl(url, track, startMs, "$provider/$format/$quality")
             } else {
                 // Superseded plays (a newer tap started while this resolved)
@@ -678,7 +683,7 @@ object PlayerRepository {
                     Log.i(TAG, "resolve needs session, healing silently once")
                     if (SessionRefresher.refresh().isSuccess) {
                         if (seq != resolveSeq) return@launch
-                        playViaOpen(track, 1, seq)
+                        playViaOpen(track, 1, seq, startMs)
                         return@launch
                     }
                     // Heal failed: fall through to the failure handling
@@ -691,7 +696,7 @@ object PlayerRepository {
                     Log.i(TAG, "resolve transient ($code), retrying once after backoff")
                     delay(1500)
                     if (seq != resolveSeq) return@launch
-                    playViaOpen(track, 1, seq)
+                    playViaOpen(track, 1, seq, startMs)
                     return@launch
                 }
                 when {
@@ -729,38 +734,42 @@ object PlayerRepository {
      * resume keeps the position via the startMs path.
      */
     fun retryAfterError() {
-        val t = _state.value.track ?: return
-        playViaOpen(t, 1, resolveSeq)
+        val s = _state.value
+        val t = s.track ?: return
+        // Same-track resume: live ticks ARE this track's own position, so
+        // the current value is the right one (no track switch in flight —
+        // a newer play would have superseded this generation).
+        playViaOpen(t, 1, resolveSeq, s.positionMs)
     }
 
     /** SDK path: ensure the hidden device, then Connect-play the URI on it.
      * Server-side start is confirmed by the `state` event stream. */
-    private fun playViaSdk(track: Track, seq: Long) {
+    private fun playViaSdk(track: Track, seq: Long, startMs: Long) {
         val driver = sdkDriver
         if (driver == null) {
             Log.w(TAG, "SDK driver missing; falling back to open engine")
             update { s -> s.copy(sdkActive = false) }
-            playViaOpen(track, 0, seq)
+            playViaOpen(track, 0, seq, startMs)
             return
         }
         scope.launch {
             if (!driver.ensure()) {
                 update { s -> s.copy(isPlaying = false, sdkActive = false) }
                 ToastBus.error("Spotify player unavailable — using the open engine.")
-                playViaOpen(track, 0, seq)
+                playViaOpen(track, 0, seq, startMs)
                 return@launch
             }
             val device = driver.awaitDevice() ?: run {
                 update { s -> s.copy(isPlaying = false, sdkActive = false) }
                 ToastBus.error("Spotify device not ready yet — using the open engine.")
-                playViaOpen(track, 0, seq)
+                playViaOpen(track, 0, seq, startMs)
                 return@launch
             }
             update { s -> s.copy(sdkDeviceId = device) }
             val uri = track.uri.ifEmpty { "spotify:track:${track.id}" }
-            // Resume position belongs to THIS track only (same guard as open).
-            val cur = _state.value
-            val startMs = if (cur.track?.id == track.id) cur.positionMs else 0
+            // startMs was fixed at dispatch (same tick-pollution rule as
+            // open): a live re-read here would resume from the old audio's
+            // position whenever it was still playing.
             val res = withContext(Dispatchers.IO) { BridgeClient.sdkPlay(device, uri) }
             if (res.isFailure) {
                 val code =
@@ -769,7 +778,7 @@ object PlayerRepository {
                     // Forced-SDK on a free account: say so, then fall back.
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("premium required"))
                     update { s -> s.copy(sdkActive = false) }
-                    playViaOpen(track, 0, seq)
+                    playViaOpen(track, 0, seq, startMs)
                 } else {
                     update { s -> s.copy(isPlaying = false) }
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("SDK play failed"))
@@ -819,7 +828,8 @@ object PlayerRepository {
         val seq = beginResolve()
         val next = advance() ?: return
         // Queue-first advance in both engines; dispatch picks the transport.
-        dispatchPlay(next, seq)
+        // Fresh advance always starts at 0 (see startTrack).
+        dispatchPlay(next, seq, 0)
     }
 
     /**

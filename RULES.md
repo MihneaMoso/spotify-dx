@@ -2095,6 +2095,17 @@ the phase-by-phase design record.)
   403/429 with a friendly message, so mashing check/download can't 403.
   The reopen-crash loop had no provable in-code cause beyond the abort;
   if it recurs, one logcat abort line identifies it.
+- **New song resumed from old timestamp (2026-10-05, fixed):** tapping a
+  new song while the old one was PLAYING started it at the old timestamp
+  (paused → correct). Root cause: `playViaOpen`/`playViaSdk` re-read
+  `positionMs` from live state AFTER the async resolve — by then the old
+  audio's 250ms ticks had overwritten the 0 that `startTrack` set (the
+  `track.id ==` guard passed because the track HAD swapped; only the
+  position was stale). Fix: the offset travels as a `startMs` parameter
+  fixed at dispatch (fresh plays 0, crash-restore the saved offset,
+  error-retry the live same-track position) — never re-read post-resolve.
+  Rule: anything read from live state after an await must prove no one
+  else writes it meanwhile.
 - **Pure-black AMOLED toggle (2026-10-05, added; corrected same day):**
   FIRST shipped as a third theme radio — wrong model, reverted. It is a
   separate "Pure black AMOLED" section with a TOGGLE layered ON TOP of
