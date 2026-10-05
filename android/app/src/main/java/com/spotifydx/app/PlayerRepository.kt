@@ -142,9 +142,15 @@ object PlayerRepository {
     /**
      * Records [track] as most-recent in the durable play log: a replay
      * moves the existing entry to the tail instead of duplicating it.
-     * Forward-leaves only — the single writer path is [leaveForward]; no
-     * other mutation may call this. The session past window intentionally
-     * keeps positional duplicates (prev/next walks depend on them).
+     * Two coordinated writers, both idempotent by construction:
+     * - start-log (primary): the playUrl/sdkPlay handoff, so a track
+     *   appears the moment it starts sounding — not when the next one
+     *   begins. Resolve failures never reach it (nothing unplayed logs).
+     * - leave-log (backstop in [leaveForward]): guarantees every forward
+     *   transition leaves the track logged even if a future starter
+     *   bypassed the handoff points above.
+     * The session past window intentionally keeps positional duplicates
+     * (prev/next walks depend on them).
      */
     private fun logPlay(track: Track?) {
         if (track == null || track.id.isEmpty()) return
@@ -662,6 +668,10 @@ object PlayerRepository {
                 // this URL loads) whenever the old song wasn't paused.
                 // The quality tag keys the disk cache.
                 svc.playUrl(url, track, startMs, "$provider/$format/$quality")
+                // Start-log: the track is handed to the service now, so it
+                // joins history immediately (dedupe move-to-tail) instead
+                // of waiting for the next track to begin.
+                logPlay(track)
             } else {
                 // Superseded plays (a newer tap started while this resolved)
                 // touch nothing: state, toasts, and retries all belong to
@@ -775,7 +785,8 @@ object PlayerRepository {
                 val code =
                     ((res.exceptionOrNull() as? BridgeException)?.error as? BridgeError.Core)?.code
                 if (code == "PREMIUM_REQUIRED") {
-                    // Forced-SDK on a free account: say so, then fall back.
+                    // Forced-SDK on a free account: say so, then fall back
+                    // (the open handoff below logs on success).
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("premium required"))
                     update { s -> s.copy(sdkActive = false) }
                     playViaOpen(track, 0, seq, startMs)
@@ -783,8 +794,12 @@ object PlayerRepository {
                     update { s -> s.copy(isPlaying = false) }
                     ToastBus.fromBridge(res.exceptionOrNull() ?: Exception("SDK play failed"))
                 }
-            } else if (startMs > 0) {
-                withContext(Dispatchers.IO) { BridgeClient.sdkSeek(device, startMs) }
+            } else {
+                if (startMs > 0) {
+                    withContext(Dispatchers.IO) { BridgeClient.sdkSeek(device, startMs) }
+                }
+                // Start-log (same rule as the open handoff above).
+                logPlay(track)
             }
         }
     }
