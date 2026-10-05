@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerSheet: PlayerSheetController
     /** Theme painted in onCreate (pre-store-load); see collectRepos. */
     private var appliedTheme: String? = null
+    private var appliedPureBlack = false
     private var themeReconciled = false
 
     companion object {
@@ -103,6 +104,11 @@ class MainActivity : AppCompatActivity() {
         // once below if the loaded theme disagrees.
         appliedTheme = Theme.current()
         setTheme(Theme.themeRes(requireNotNull(appliedTheme)))
+        // Pure-black overlay paints here too (same pre-load pattern as the
+        // theme itself — applied before setContentView so every inflated
+        // view resolves backgrounds against it).
+        appliedPureBlack = SettingsStore.settings.value.pureBlack
+        if (appliedPureBlack) theme.applyStyle(R.style.ThemeOverlay_SpotifyDx_PureBlack, true)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -592,10 +598,11 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             SettingsStore.settings.collect { s ->
                 // Cold start paints the default theme (store loads async).
-                // Recreate exactly once when the stored theme disagrees, so
-                // the launch theme is always the user's theme. No loop: the
-                // recreated activity paints the loaded value from the start.
-                if (!themeReconciled && s.theme != appliedTheme) {
+                // Recreate exactly once when the stored theme OR overlay
+                // disagrees, so the launch visuals always match the user's
+                // settings. No loop: the recreated activity paints the
+                // loaded values from the start.
+                if (!themeReconciled && (s.theme != appliedTheme || s.pureBlack != appliedPureBlack)) {
                     themeReconciled = true
                     recreate()
                 }

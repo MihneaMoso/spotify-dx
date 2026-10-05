@@ -30,6 +30,7 @@ class SettingsFragment : Fragment() {
     override fun onViewCreated(v: View, s: Bundle?) {
         bindProfile(v)
         bindAppearance(v)
+        bindPureBlack(v)
         bindEngine(v)
         bindQuality(v)
         bindCredentials(v)
@@ -122,6 +123,31 @@ class SettingsFragment : Fragment() {
         // Keep references live for the (otherwise unused) lookup above.
         deep.isEnabled = true
         onyx.isEnabled = true
+    }
+
+    // -- Pure-black AMOLED overlay ------------------------------------------------------
+    // Separate section under Appearance: a toggle (not a theme radio) that
+    // layers true-black backgrounds ON TOP of deep-blue/onyx. Cards, text
+    // and accents resolve from the base theme unchanged.
+    private fun bindPureBlack(v: View) {
+        val toggle: com.google.android.material.switchmaterial.SwitchMaterial =
+            v.findViewById(R.id.pure_black_toggle)
+        viewLifecycleOwner.lifecycleScope.launch {
+            SettingsStore.settings.collect { s ->
+                // Null-listener bind (same rule as the radio groups):
+                // programmatic setChecked must never fire the listener.
+                toggle.setOnCheckedChangeListener(null)
+                toggle.isChecked = s.pureBlack
+                toggle.setOnCheckedChangeListener { _, checked ->
+                    val cur = SettingsStore.settings.value
+                    if (checked == cur.pureBlack) return@setOnCheckedChangeListener
+                    SettingsStore.save(cur.copy(pureBlack = checked))
+                    // Overlays resolve at inflation — repaint like a theme
+                    // switch (no data reload).
+                    activity?.recreate()
+                }
+            }
+        }
     }
 
     // -- Playback engine radios -------------------------------------------------------------------

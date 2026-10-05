@@ -25,4 +25,14 @@
         <item name="echoCardShelf">@color/onyx_shelf</item>
         <item name="echoSearchField">@color/onyx_searchfield</item>
     </style>
+
+    <!-- Pure-black AMOLED overlay: applied ON TOP of either theme when the
+         toggle is on. Only background surfaces go true black (window +
+         Material surfaces like the nav bar); cards, sheets, dialogs, text
+         and accents resolve from the base theme unchanged. -->
+    <style name="ThemeOverlay.SpotifyDx.PureBlack" parent="">
+        <item name="android:colorBackground">@color/pure_black</item>
+        <item name="colorSurface">@color/pure_black</item>
+    </style>
+
 </resources>

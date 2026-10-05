@@ -170,6 +170,13 @@ pub struct Settings {
     /// Same for metered networks (mobile data).
     #[serde(default)]
     pub stream_quality_mobile: String,
+    /// Pure-black AMOLED background overlay (Kotlin app): when true, the
+    /// background surfaces render true black on top of the selected theme;
+    /// cards/text/accents are untouched. Persisted here so the bridge
+    /// round-trips it like every other setting; the desktop renderer
+    /// ignores it.
+    #[serde(default)]
+    pub pure_black: bool,
 }
 
 impl Default for Settings {
@@ -186,6 +193,7 @@ impl Default for Settings {
             deezer_arl: String::new(),
             stream_quality_wifi: "high".to_string(),
             stream_quality_mobile: "normal".to_string(),
+            pure_black: false,
         }
     }
 }

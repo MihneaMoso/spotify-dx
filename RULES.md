@@ -2095,6 +2095,20 @@ the phase-by-phase design record.)
   403/429 with a friendly message, so mashing check/download can't 403.
   The reopen-crash loop had no provable in-code cause beyond the abort;
   if it recurs, one logcat abort line identifies it.
+- **Pure-black AMOLED toggle (2026-10-05, added; corrected same day):**
+  FIRST shipped as a third theme radio — wrong model, reverted. It is a
+  separate "Pure black AMOLED" section with a TOGGLE layered ON TOP of
+  deep-blue/onyx: only backgrounds go true black, everything else
+  unchanged. Researched from ReVanced Manager 2.6.0 ("Add pure black
+  theme") and the ViTune/Innertune model (black base, lifted elevations
+  so layering stays visible, selected states keep primary tint).
+  Implemented as `ThemeOverlay.SpotifyDx.PureBlack` (overrides ONLY
+  `android:colorBackground` + `colorSurface` → `#000000`; cards/sheets/
+  dialogs/text/accents resolve from the base theme) applied via
+  `applyStyle` pre-`setContentView`, with a `pureBlack` boolean persisted
+  through core `Settings` (bridge round-trips it — a theme-string hack
+  would have been normalized away and reset on cold start) and the same
+  paint-then-recreate boot pattern as themes. Desktop ignores the flag.
 - **Download filenames (2026-10-04, fixed):** downloads saved as
   `videoplayback.bin` because `URLUtil.guessFileName` saw only the
   `videoplayback?…` stream URL. Filenames now come from metadata

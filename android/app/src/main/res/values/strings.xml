@@ -48,6 +48,9 @@
     <string name="action_save_keys">Save keys</string>
     <string name="settings_profile">Profile</string>
     <string name="settings_appearance">Appearance</string>
+    <string name="settings_pure_black">Pure black AMOLED</string>
+    <string name="settings_pure_black_note">True-black backgrounds on top of the selected theme — everything else stays the same. Saves battery on AMOLED screens.</string>
+    <string name="pure_black_toggle">Use pure black backgrounds</string>
     <string name="settings_engine">Playback engine</string>
     <string name="settings_quality">Streaming quality</string>
     <string name="settings_quality_note">Separate caps for Wi-Fi and mobile data. The player always shows the tier actually served; lossless needs Qobuz credentials.</string>

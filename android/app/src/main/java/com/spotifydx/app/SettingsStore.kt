@@ -52,6 +52,9 @@ object SettingsStore {
         /** Streaming quality preference: wifi (unmetered) vs mobile (metered). */
         val qualityWifi: String = Quality.HIGH,
         val qualityMobile: String = Quality.NORMAL,
+        /** Pure-black AMOLED background overlay: true-black backgrounds on
+         * top of the selected theme, everything else unchanged. */
+        val pureBlack: Boolean = false,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -91,6 +94,7 @@ object SettingsStore {
                 .put("deezer_arl", next.deezerArl)
                 .put("stream_quality_wifi", next.qualityWifi)
                 .put("stream_quality_mobile", next.qualityMobile)
+                .put("pure_black", next.pureBlack)
                 .toString()
             BridgeClient.setSettings(json).onFailure {
                 _settings.value = prev
@@ -113,6 +117,7 @@ object SettingsStore {
             deezerArl = json.optString("deezer_arl", ""),
             qualityWifi = Quality.sanitize(json.optString("stream_quality_wifi", Quality.HIGH), Quality.HIGH),
             qualityMobile = Quality.sanitize(json.optString("stream_quality_mobile", Quality.NORMAL), Quality.NORMAL),
+            pureBlack = json.optBoolean("pure_black", false),
         )
         if (next != _settings.value) _settings.value = next
         Theme.apply(next.theme)
