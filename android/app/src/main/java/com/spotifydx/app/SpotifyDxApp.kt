@@ -21,6 +21,11 @@ class SpotifyDxApp : Application() {
         // START_STICKY-restarted service can run before MainActivity:init.
         AppState.init(this)
         AudioCache.init(this)
+        // Warm the WebView cookie singleton on the interface thread NOW:
+        // its first touch initializes the backing provider (UI-thread only)
+        // and every session path (fast refresh, revive, login) assumes it
+        // exists. An off-thread first touch aborts the process.
+        runCatching { android.webkit.CookieManager.getInstance() }
         scope.launch(Dispatchers.IO) {
             try {
                 BridgeClient.checkVersion()

@@ -23,14 +23,25 @@ object SessionTokenFetch {
 
     data class Captured(val token: String, val expiresAtMs: Long)
 
-    suspend fun fetchDirect(): Captured? = withContext(Dispatchers.IO) {
-        runCatching { fetch() }.getOrNull()
+    suspend fun fetchDirect(): Captured? {
+        // Cookie jar reads happen on the interface thread, never here:
+        // the first `CookieManager.getInstance()` in a process initializes
+        // the backing WebView provider, which must happen on the UI thread
+        // (off-thread first touch aborts the process — uncatchable, and it
+        // only triggers on the expiry path that reaches this fast path,
+        // i.e. exactly the cold-start-after-expiry crash). Network stays
+        // on IO below.
+        val cookies = withContext(Dispatchers.Main) {
+            runCatching {
+                CookieManager.getInstance().getCookie("https://open.spotify.com")
+            }.getOrNull()
+        }?.takeIf { it.isNotEmpty() } ?: return null
+        return withContext(Dispatchers.IO) {
+            runCatching { fetch(cookies) }.getOrNull()
+        }
     }
 
-    private fun fetch(): Captured? {
-        val cookies = CookieManager.getInstance()
-            .getCookie("https://open.spotify.com")
-            ?.takeIf { it.isNotEmpty() } ?: return null
+    private fun fetch(cookies: String): Captured? {
         val now = System.currentTimeMillis()
         // Local clock for both TOTP slots (the page prefers its server time
         // when available; phone clocks are NTP-synced — and any skew failure
@@ -68,8 +79,10 @@ object SessionTokenFetch {
         }
     }
 
-    /** RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s period) over the page key. */
-    internal fun totp(nowMs: Long): String {
+    /** RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s period) over the page key.
+     * Public (not internal) so the JVM regression suite can pin the
+     * vectors: a wrong digest silently mints rejected TOTPs. */
+    fun totp(nowMs: Long): String {
         val counter = nowMs / 30_000L
         val msg = ByteArray(8) { i -> (counter ushr (56 - 8 * i)).toByte() }
         val mac = Mac.getInstance("HmacSHA1")

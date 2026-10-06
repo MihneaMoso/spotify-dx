@@ -313,6 +313,19 @@ mod tests {
         ))
     }
 
+    /// Regression: the pure-black toggle must survive a save/load cycle
+    /// (a dropped field would silently reset the user's choice every
+    /// restart — the exact class of bug this suite guards).
+    #[test]
+    fn pure_black_roundtrips_through_disk() {
+        let path = temp_path("pureblack");
+        let s = Settings { pure_black: true, ..Default::default() };
+        s.save_to(&path).expect("save");
+        let loaded = Settings::load_from(&path).expect("load");
+        assert!(loaded.pure_black);
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn roundtrips_through_disk() {
         let path = temp_path("roundtrip");

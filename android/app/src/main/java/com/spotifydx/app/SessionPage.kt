@@ -124,7 +124,12 @@ class SessionPage(
     @SuppressLint("SetJavaScriptEnabled")
     fun show(url: String = SIGN_IN_URL) {
         val already = webView != null
-        val wv = ensure()
+        val wv = ensure() ?: run {
+            // WebView construction failed (broken provider): toast, never
+            // crash — the gate's retry control owns the UX from here.
+            ToastBus.error("Sign-in unavailable — please retry.")
+            return
+        }
         if (already) {
             // A live page may be showing a stale step (e.g. post-expiry
             // re-login landing on the player instead of sign-in): navigate
@@ -143,9 +148,15 @@ class SessionPage(
      * hidden/parked until an explicit show or a revive navigation). Lets
      * cold-boot silent refresh mint from disk cookies exactly like the
      * backgrounded case — previously a null page failed revive instantly.
+     * Nullable: WebView construction can throw (broken provider, dead
+     * activity) — callers degrade (revive → PAGE_DEAD, login → toast)
+     * instead of crashing the process from a coroutine.
      */
     @SuppressLint("SetJavaScriptEnabled")
-    internal fun ensure(): WebView {
+    internal fun ensure(): WebView? = runCatching { buildLocked() }.getOrNull()
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun buildLocked(): WebView {
         webView?.let { return it }
         val wv = WebView(activity)
         wv.layoutParams = FrameLayout.LayoutParams(

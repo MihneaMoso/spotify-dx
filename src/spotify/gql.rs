@@ -1165,5 +1165,70 @@ mod tests {
         let items = parse_album_items(&v);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "t1");
+
+    }
+
+    /// Regression: one transient page failure used to fail the whole 10k
+    /// collection via `try_join_all`, discarding all good pages. Now each
+    /// page gets one retry, then is skipped (warn-logged) with the good
+    /// pages kept.
+    #[tokio::test]
+    async fn partial_pages_survive_a_dead_page() {
+        use serde_json::{json, Value};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let page = |ids: &[&str], total: Option<u32>| {
+            let mut v = json!({
+                "items": ids.iter().map(|id| json!({"id": id, "name": id})).collect::<Vec<_>>()
+            });
+            if let Some(t) = total {
+                v["total"] = json!(t);
+            }
+            v
+        };
+        let fetch_page = |off: u32| {
+            let attempts = attempts.clone();
+            async move {
+                if off == 100 {
+                    // Always fails, even after the one retry.
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    return Err::<Value, crate::app_error::AppError>(
+                        crate::app_error::AppError::Spotify("page down".into()),
+                    );
+                }
+                // total 250 -> offsets [100, 200]; page 0 reveals the total.
+                let total = if off == 0 { Some(250u32) } else { None };
+                Ok(page(&[&format!("t{off}a"), &format!("t{off}b")], total))
+            }
+        };
+        let total_of = |v: &Value| v.get("total").and_then(|t| t.as_u64()).map(|t| t as u32);
+        let parse_items = |v: &Value| {
+            v.get("items")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| crate::spotify::models::Track {
+                    id: t["id"].as_str().unwrap_or_default().to_string(),
+                    name: t["name"].as_str().unwrap_or_default().to_string(),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        let raw_len = |v: &Value| {
+            v.get("items").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0)
+        };
+        let (first, total, tracks) =
+            collect_paged_tracks(fetch_page, total_of, parse_items, raw_len)
+                .await
+                .expect("partial tolerance must not fail the call");
+        assert_eq!(total, 250);
+        assert_eq!(first.get("total").and_then(|t| t.as_u64()), Some(250));
+        let ids: Vec<_> = tracks.iter().map(|t| t.id.clone()).collect();
+        // Page 0 + page 200 land; dead page 100 is skipped after 1 retry
+        // (1 initial + 1 retry = 2 attempts).
+        assert_eq!(ids, ["t0a", "t0b", "t200a", "t200b"]);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

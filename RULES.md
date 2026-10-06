@@ -2106,6 +2106,24 @@ the phase-by-phase design record.)
   error-retry the live same-track position) — never re-read post-resolve.
   Rule: anything read from live state after an await must prove no one
   else writes it meanwhile.
+- **Cold-start-after-expiry crash loop (2026-10-06, fixed):** opening the
+  app on an expired session crashed immediately, then ~3 more times before
+  healing. First theory (off-thread `CookieManager` first touch in my fast
+  path) shipped blind and did NOT stop it — hardening kept anyway (cookie
+  reads on the interface thread, main-thread warm-up in
+  `SpotifyDxApp.onCreate`, nullable `ensure()` degrading to PAGE_DEAD /
+  toast). The user's logcat convicted the true chain:
+  `verifyNav.post → emergencyHome → showCached →
+  executePendingTransactions → IllegalStateException: FragmentManager
+  has been destroyed`. Expired boots flip session state (logout→GATE,
+  heal→HOME) while the boot `recreate()` destroys the activity; stale
+  posted nav runnables from the pre-recreate instance then fire against
+  the dead FragmentManager — `commitAllowingStateLoss` survives that,
+  `executePendingTransactions`/`beginTransaction` do not. Fix:
+  dead-instance guards (`isFinishing || isDestroyed || fm.isDestroyed`)
+  at `showCached`, `verifyNav`, `emergencyHome` entry. Rule: blind fixes
+  without a trace waste rounds — one `AndroidRuntime` stack beat three
+  rounds of mechanism-guessing; always ask for the crash log first.
 - **Pure-black AMOLED toggle (2026-10-05, added; corrected same day):**
   FIRST shipped as a third theme radio — wrong model, reverted. It is a
   separate "Pure black AMOLED" section with a TOGGLE layered ON TOP of
@@ -2131,6 +2149,42 @@ the phase-by-phase design record.)
 - Unit tests are network-free and live next to the code (`#[cfg(test)]` in
   `spotify/mod.rs`, `adblock/mod.rs`, etc.).
 - Run `cargo test` and `cargo test --no-default-features`. Do NOT run the app.
+- **Gate: `scripts/check.sh` is the definition of done** (tests both sets,
+  clippy `-D warnings`, wasm check, Kotlin compile, both JVM suites).
+  Run it before declaring ANY change complete — most escapes in this
+  repo's history would have failed it (unrun suites, warning drift,
+  wasm-only breakage). CI-only gaps are listed in the script header.
+- **Failing-first regression rule:** every bugfix ships with a regression
+  test that FAILS without the fix (verified by stashing the fix once).
+  Rust: `#[cfg(test)]` next to the code (pure helpers extracted when the
+  fix site isn't host-testable — e.g. `arg_page`/`json_event` moved to
+  `util.rs` because `bridge.rs` is Android-gated). Kotlin: hand-rolled
+  `main()` suites next to `RangeServeTest` (no JUnit offline) for pure
+  logic — policy tables, TOTP vectors, embedded-JS contracts. Untestable
+  seams (JNI crossings, WebView behavior) get debug invariant checks
+  instead (see below), never nothing.
+- **Blast-radius checklist** (verify explicitly when a change touches
+  these — each caused a production escape):
+  1. State read after an `await` (PlayerRepository): prove no one else
+     writes it meanwhile, or capture at dispatch (the startMs bug).
+  2. Kotlin throws crossing JNI: drain via `take_pending_exception`
+     (the self-closing updater) — never let one stay pending.
+  3. Verbatim copies (`POLL_JS` ↔ `CaptureJs`, TOTP key/SHA constants):
+     change both, re-run the golden vectors (JVM TOTP suite + the
+     Node/Python reference in RULES).
+  4. String contracts (`theme`, token fields, quality tiers): new values
+     must round-trip bridge save→load (the amoled-reset trap) — extend
+     the round-trip tests.
+  5. Cache/merge surprising inputs (empty successes, absurd offsets,
+     far-future expiries): add the `isValid`/rejection case to the
+     suite, not just the happy path.
+- **Debug invariant checks** (`BuildConfig.DEBUG`, zero release cost):
+  `PlayerRepository.update()` asserts structural invariants (non-negative
+  clocks, capped windows, duplicate-free play log, id-bearing current
+  track) so corruption crashes loudly in dev. Restore clamps/dedupes
+  legacy stores so old data can't trip them. Add invariants where new
+  corruption classes appear; never weaken one to silence it — fix the
+  writer.
 
 ## 8. Updating this file
 

@@ -437,3 +437,19 @@ async fn connect_skip(next: bool) -> Result<(), AppError> {
     let device_id = current_device()?;
     crate::spotify::player_api::skip(&device_id, next).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: non-finite volume mapped to full-scale 1.0 (a NaN from
+    /// a slider/bridge arg blasted full volume). Now ignored: Ok, and the
+    /// sink/state are untouched (this path returns before any signal or
+    /// thread access, so it is safe to assert outside a Dioxus runtime).
+    #[tokio::test]
+    async fn non_finite_volume_is_ignored() {
+        assert!(volume(f32::NAN).await.is_ok());
+        assert!(volume(f32::INFINITY).await.is_ok());
+        assert!(volume(f32::NEG_INFINITY).await.is_ok());
+    }
+}

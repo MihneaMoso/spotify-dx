@@ -550,6 +550,30 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// Regression: coalescing followers of a failed fetch used to receive
+    /// `AppError::Spotify` for every failure kind, losing the transport vs
+    /// API distinction the leader saw. Network/Generic now round-trip via
+    /// `Other`; genuine Spotify errors keep their type.
+    #[test]
+    fn follower_failures_keep_their_type() {
+        assert!(matches!(
+            Fail::Network("dns".into()).into_app_error(),
+            AppError::Other(_)
+        ));
+        assert!(matches!(
+            Fail::Generic("misc".into()).into_app_error(),
+            AppError::Other(_)
+        ));
+        assert!(matches!(
+            Fail::Spotify("api".into()).into_app_error(),
+            AppError::Spotify(_)
+        ));
+        assert!(matches!(
+            Fail::RateLimited.into_app_error(),
+            AppError::RateLimited
+        ));
+    }
+
     #[test]
     fn disk_roundtrip_and_staleness_window() {
         let root = temp_root("disk");

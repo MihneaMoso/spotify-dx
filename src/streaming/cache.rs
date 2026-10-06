@@ -125,6 +125,19 @@ pub fn put(track_id: &str, provider: &str, url: &str, format: &str, quality: &st
     }
 }
 
+/// Enforce the memory cap after a bulk merge (disk load): evicts oldest
+/// until within budget. Pure state operation, unit-tested.
+fn enforce_cap(guard: &mut CacheInner) {
+    while guard.memory.len() > MEMORY_CAP {
+        if let Some(oldest) = guard.order.first().cloned() {
+            guard.memory.remove(&oldest);
+            guard.order.remove(0);
+        } else {
+            break;
+        }
+    }
+}
+
 /// Storage key for the persisted stream-URL cache (files on native, localStorage
 /// on wasm).
 const DISK_KEY: &str = "stream://url_cache";
@@ -175,14 +188,7 @@ pub fn load_from_disk() {
             guard.memory.insert(key.clone(), entry);
             guard.order.push(key);
         }
-        while guard.memory.len() > MEMORY_CAP {
-            if let Some(oldest) = guard.order.first().cloned() {
-                guard.memory.remove(&oldest);
-                guard.order.remove(0);
-            } else {
-                break;
-            }
-        }
+        enforce_cap(&mut guard)
     }
 }
 
@@ -251,5 +257,60 @@ mod tests {
             guard.order.push(key);
         }
         assert!(get("expired/expired_track", "test").is_none());
+    }
+
+    /// Regression: re-caching a live key at capacity must not evict an
+    /// innocent entry (each update-at-cap used to shrink the effective cap
+    /// by one, degrading hit rate under steady re-resolves).
+    #[test]
+    fn reput_at_cap_evicts_nothing() {
+        for i in 0..MEMORY_CAP {
+            put(
+                &format!("capfill/{i}"),
+                "youtube",
+                "https://example.com/x",
+                "aac",
+                "high",
+            );
+        }
+        let before = inner().lock().unwrap().memory.len();
+        assert_eq!(before, MEMORY_CAP);
+        put("capfill/0", "youtube", "https://example.com/x2", "aac", "high");
+        let guard = inner().lock().unwrap();
+        assert_eq!(guard.memory.len(), MEMORY_CAP);
+        // First AND last arrivals both survive (no innocent evicted).
+        assert!(guard.memory.contains_key(&CacheKey {
+            track_id: "capfill/0".to_string(),
+            provider: "youtube".to_string(),
+        }));
+        assert!(guard.memory.contains_key(&CacheKey {
+            track_id: format!("capfill/{}", MEMORY_CAP - 1),
+            provider: "youtube".to_string(),
+        }));
+    }
+
+    /// Regression: a bulk merge over warm memory can never overshoot the cap.
+    #[test]
+    fn enforce_cap_trims_to_budget() {
+        let mut inner = CacheInner {
+            memory: HashMap::new(),
+            order: Vec::new(),
+        };
+        for i in 0..(MEMORY_CAP + 40) {
+            let k = CacheKey {
+                track_id: format!("over/{i}"),
+                provider: "p".to_string(),
+            };
+            inner.order.push(k.clone());
+            inner.memory.insert(k, CachedUrl {
+                url: "u".to_string(),
+                format: "aac".to_string(),
+                quality: "high".to_string(),
+                expires_at: u64::MAX,
+            });
+        }
+        enforce_cap(&mut inner);
+        assert_eq!(inner.memory.len(), MEMORY_CAP);
+        assert_eq!(inner.order.len(), MEMORY_CAP);
     }
 }

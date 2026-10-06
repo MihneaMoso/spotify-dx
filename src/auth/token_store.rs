@@ -51,9 +51,12 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn plausible_at(expiry_ms: u64, now_ms: u64) -> bool {
+    expiry_ms > now_ms && expiry_ms <= now_ms.saturating_add(MAX_PLAUSIBLE_TTL_MS)
+}
+
 fn plausible(expiry_ms: u64) -> bool {
-    let now = now_ms();
-    expiry_ms > now && expiry_ms <= now.saturating_add(MAX_PLAUSIBLE_TTL_MS)
+    plausible_at(expiry_ms, now_ms())
 }
 
 /// Load the persisted token + expiry, tolerating missing / half-written state.
@@ -159,4 +162,27 @@ fn load_from_file() -> Option<(String, u64)> {
     let token = value.get("access_token")?.as_str()?.to_owned();
     let expiry = value.get("expires_at_ms")?.as_u64()?;
     Some((token, expiry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a far-future bogus row permanently shadowed the genuine
+    /// store under max-expiry merge. Implausible rows (expired or absurdly
+    /// far out) must lose.
+    #[test]
+    fn plausible_windows() {
+        let now = 1_700_000_000_000u64;
+        // Genuine ~1h token: plausible.
+        assert!(plausible_at(now + 3_600_000, now));
+        // Expired: not plausible.
+        assert!(!plausible_at(now - 1_000, now));
+        assert!(!plausible_at(now, now));
+        // Bogus far-future row: not plausible.
+        assert!(!plausible_at(now + 365 * 24 * 3_600_000, now));
+        // Boundary respected exactly.
+        assert!(plausible_at(now + MAX_PLAUSIBLE_TTL_MS, now));
+        assert!(!plausible_at(now + MAX_PLAUSIBLE_TTL_MS + 1, now));
+    }
 }

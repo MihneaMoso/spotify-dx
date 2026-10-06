@@ -1,7 +1,9 @@
-# CI pre-commit check — proposal (pending review)
+# CI pre-commit check — proposal (mostly superseded)
 >
-> > STATUS: proposal only — `scripts/check-workflows.sh` was never created
-> > (parked, not implemented). Nothing below is enforced anywhere.
+> > STATUS: `scripts/check.sh` now implements the local gate (tests both
+> > sets, clippy `-D warnings`, wasm check, Kotlin compile, JVM suites).
+> > What remains proposal-only: the CI-mirror parts (dx bundle layout,
+> > release-matrix link, Pages deploy) — those stay CI-only by design.
 
 ## Problem
 

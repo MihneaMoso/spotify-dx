@@ -474,6 +474,16 @@ mod tests {
         assert_eq!(ids(&ps.queue), ["a", "b", "c", "x", "y", "z"]);
     }
 
+    /// Regression: nanos-only seeds repeated the same "shuffle" for calls
+    /// inside one sub-second tick (and clock failure pinned every shuffle
+    /// to one order). The per-call counter guarantees distinct seeds.
+    #[test]
+    fn shuffle_seeds_differ_rapidly() {
+        let a = shuffle_seed();
+        let b = shuffle_seed();
+        assert_ne!(a, b);
+    }
+
     fn mk_track(id: &str) -> Track {
         Track {
             id: id.to_string(),

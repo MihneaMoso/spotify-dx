@@ -108,13 +108,7 @@ fn set_bootstrap_restoring(v: bool) {
 fn push_event(kind: &str, payload_json: &str) {
     let mut q = events().lock().unwrap_or_else(|e| e.into_inner());
     if q.len() < 64 {
-        // kind via serde (never raw interpolation): a future dynamic kind
-        // with a quote would otherwise break the envelope + pollEvents.
-        let kind = serde_json::Value::String(kind.to_string());
-        q.push(format!(
-            "{{\"kind\":{},\"payload\":{payload_json}}}",
-            serde_json::to_string(&kind).unwrap_or_default()
-        ));
+        q.push(crate::util::json_event(kind, payload_json));
     }
 }
 
@@ -811,33 +805,6 @@ fn to_json<T: serde::Serialize>(v: &T) -> String {
     }
 }
 
-fn arg_id(raw: &str) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(raw).map_err(|e| err("INVALID_ARGS", format!("bad arg JSON: {e}")))?;
-    let id = v.get("id").and_then(|i| i.as_str()).unwrap_or_default();
-    if id.is_empty() {
-        return Err(err("INVALID_ARGS", "arg.id must be non-empty"));
-    }
-    Ok(id.to_string())
-}
-
-fn arg_page(raw: &str) -> Result<(u32, u32), String> {
-    let v: serde_json::Value =
-        serde_json::from_str(raw).map_err(|e| err("INVALID_ARGS", format!("bad arg JSON: {e}")))?;
-    let limit = v
-        .get("limit")
-        .and_then(|l| l.as_u64())
-        .unwrap_or(20)
-        .min(50)
-        .max(1) as u32;
-    // Reject, don't wrap: `as u32` on an absurd offset silently fetched a
-    // small page with no error (the wrong data served as correct).
-    let offset_raw = v.get("offset").and_then(|o| o.as_u64()).unwrap_or(0);
-    let offset = u32::try_from(offset_raw)
-        .map_err(|_| err("INVALID_ARGS", "arg.offset exceeds u32 range"))?;
-    Ok((limit, offset))
-}
-
 /// `getHome(arg) -> envelope<HomeData>`. Playlists + liked tracks fanned out
 /// concurrently in core; partial legs default (never a hard failure).
 #[allow(unsafe_code)]
@@ -910,9 +877,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getPlaylist<'a>(
             return e;
         }
         let raw = rust_str(&mut *env, &arg);
-        let id = match arg_id(&raw) {
+        let id = match crate::util::arg_id(&raw) {
             Ok(id) => id,
-            Err(e) => return e,
+            Err(e) => return err("INVALID_ARGS", e),
         };
         match rt().block_on(crate::spotify::gql::gql_playlist(&id)) {
             Ok(playlist) => to_json(&playlist),
@@ -936,9 +903,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getAlbum<'a>(
             return e;
         }
         let raw = rust_str(&mut *env, &arg);
-        let id = match arg_id(&raw) {
+        let id = match crate::util::arg_id(&raw) {
             Ok(id) => id,
-            Err(e) => return e,
+            Err(e) => return err("INVALID_ARGS", e),
         };
         let outcome = rt().block_on(async {
             let album = crate::spotify::api::get_album(&id).await?;
@@ -973,9 +940,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getArtistPage<'a>(
             return e;
         }
         let raw = rust_str(&mut *env, &arg);
-        let id = match arg_id(&raw) {
+        let id = match crate::util::arg_id(&raw) {
             Ok(id) => id,
-            Err(e) => return e,
+            Err(e) => return err("INVALID_ARGS", e),
         };
         match rt().block_on(crate::spotify::api::get_artist_page(&id)) {
             Ok(page) => to_json(&page),
@@ -999,9 +966,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getLikedTracks<'a>(
             return e;
         }
         let raw = rust_str(&mut *env, &arg);
-        let (limit, offset) = match arg_page(&raw) {
+        let (limit, offset) = match crate::util::arg_page(&raw) {
             Ok(p) => p,
-            Err(e) => return e,
+            Err(e) => return err("INVALID_ARGS", e),
         };
         match rt().block_on(crate::spotify::api::get_user_saved_tracks(limit, offset)) {
             Ok(paged) => to_json(&paged),
@@ -1033,9 +1000,9 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getLibrary<'a>(
         if !matches!(kind, "playlists" | "albums" | "liked") {
             return err("INVALID_ARGS", "arg.kind must be playlists|albums|liked");
         }
-        let (limit, offset) = match arg_page(&raw) {
+        let (limit, offset) = match crate::util::arg_page(&raw) {
             Ok(p) => p,
-            Err(e) => return e,
+            Err(e) => return err("INVALID_ARGS", e),
         };
         let outcome = rt().block_on(async {
             match kind {
@@ -1506,3 +1473,4 @@ phase_stub!(Java_com_spotifydx_app_CoreBridge_prev);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_seek);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_setVolume);
 phase_stub!(Java_com_spotifydx_app_CoreBridge_enqueue);
+

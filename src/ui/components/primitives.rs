@@ -168,3 +168,30 @@ pub fn SkeletonShelves(count: u32) -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spotify::models::Track;
+
+    fn t(id: &str) -> Track {
+        Track { id: id.into(), name: id.into(), ..Default::default() }
+    }
+
+    /// Regression: duplicate track ids remounted rows (re-entering artwork
+    /// fetch) or defeated stable identity. First keeps the bare id,
+    /// repeats disambiguate — shared by every page rendering TrackRow.
+    #[test]
+    fn duplicate_ids_disambiguate_stably() {
+        let tracks = vec![t("a"), t("b"), t("a"), t("a"), t("c")];
+        assert_eq!(track_row_keys(&tracks), ["a", "b", "a-2", "a-3", "c"]);
+        // Stable across calls (no HashMap-order dependence in output).
+        assert_eq!(track_row_keys(&tracks), ["a", "b", "a-2", "a-3", "c"]);
+    }
+
+    #[test]
+    fn unique_ids_keep_bare_keys() {
+        let tracks = vec![t("x"), t("y")];
+        assert_eq!(track_row_keys(&tracks), ["x", "y"]);
+    }
+}

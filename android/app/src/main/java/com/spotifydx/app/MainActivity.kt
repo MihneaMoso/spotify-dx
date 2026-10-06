@@ -389,6 +389,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCached(dest: Destination, args: Bundle?, knownTag: String? = null) {
+        // Dead-instance guard: posted runnables (verifyNav, collectors)
+        // from a pre-recreate instance can fire after destroy — every
+        // FragmentManager call below (including executePendingTransactions,
+        // which unlike commitAllowingStateLoss is NOT destroy-safe) then
+        // throws "FragmentManager has been destroyed" and kills the
+        // process. This was the cold-start-after-expiry crash loop:
+        // session flips + boot recreate + a verifyNav miss into
+        // emergencyHome. The live instance re-drives navigation itself.
+        if (isFinishing || isDestroyed || supportFragmentManager.isDestroyed) return
         val tag = knownTag ?: tagFor(dest, args)
         val fm = supportFragmentManager
         // Flush pending transactions first: hide decisions below read live
@@ -445,6 +454,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun verifyNav(tag: String) {
         findViewById<View>(R.id.content)?.post {
+            // Dead-instance guard (see showCached): a pre-recreate check
+            // firing post-destroy must stay silent, never escalate.
+            if (isFinishing || isDestroyed || supportFragmentManager.isDestroyed) return@post
             // A newer navigation superseded this check — not a miss.
             if (expectedTag != tag) return@post
             val fm = supportFragmentManager
@@ -476,6 +488,9 @@ class MainActivity : AppCompatActivity() {
      * reinstall. Login-scoped by construction (GATE path untouched).
      */
     private fun emergencyHome() {
+        // Same dead-instance guard: clearScreens begins a transaction,
+        // which is destroy-unsafe (showCached below guards itself too).
+        if (isFinishing || isDestroyed || supportFragmentManager.isDestroyed) return
         android.util.Log.w("SpotifyDxNav", "emergencyHome: resetting nav to HOME")
         clearScreens()
         tabStacks.clear()

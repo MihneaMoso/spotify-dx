@@ -76,7 +76,27 @@ object PlayerRepository {
     /** Compare-before-write: touching the store re-renders subscribers. */
     private fun update(f: (State) -> State) {
         val next = f(_state.value)
+        // Debug-only structural self-check (zero release cost): state
+        // corruption must crash loudly in dev, never surface silently in
+        // prod. Every mutation funnels through here.
+        if (BuildConfig.DEBUG) checkStateInvariants(next)
         if (next != _state.value) _state.value = next
+    }
+
+    /**
+     * Structural invariants the timeline/history/log code guarantees:
+     * non-negative clocks, capped windows, a duplicate-free play log,
+     * and no id-less current track. Violations throw in debug builds.
+     */
+    private fun checkStateInvariants(s: State) {
+        check(s.positionMs >= 0) { "negative positionMs" }
+        check(s.durationMs >= 0) { "negative durationMs" }
+        check(s.history.size <= HISTORY_CAP) { "history over cap" }
+        check(s.playLog.size <= HISTORY_CAP) { "playLog over cap" }
+        check(s.playLog.map { it.id }.distinct().size == s.playLog.size) {
+            "playLog holds duplicate ids"
+        }
+        s.track?.let { check(it.id.isNotEmpty()) { "current track with empty id" } }
     }
 
     // -- Local queue semantics (real now; no core needed) --------------------------
@@ -928,8 +948,14 @@ object PlayerRepository {
         }
         scope.launch {
             val queue = PlaybackStore.loadQueue()
-            val history = PlaybackStore.loadHistory()
+            // Cap + dedupe on the way in: legacy stores can hold
+            // over-cap/duplicate rows, and the debug invariant check
+            // (see update) would otherwise crash on first launch with
+            // old data. Order preserved (most-recent-last, as stored).
+            val history = PlaybackStore.loadHistory().takeLast(HISTORY_CAP)
             val playLog = PlaybackStore.loadPlayLog()
+                .takeLast(HISTORY_CAP)
+                .distinctBy { it.id }
             val last = PlaybackStore.loadLast()
             val track = last?.trackJson?.let { raw ->
                 runCatching {
@@ -943,7 +969,7 @@ object PlayerRepository {
                     history = history,
                     playLog = playLog,
                     isPlaying = false,
-                    positionMs = last?.positionMs ?: s.positionMs,
+                    positionMs = last?.positionMs?.coerceAtLeast(0) ?: s.positionMs,
                     durationMs = track?.durationMs ?: s.durationMs,
                     source = last?.source ?: s.source,
                 )

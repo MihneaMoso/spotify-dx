@@ -29,7 +29,9 @@ class RefreshChannel(private val page: SessionPage) {
      * page that never rendered (transient — keep today's error+retry).
      */
     suspend fun reviveAndRefresh(timeoutMs: Long = 15_000): ReviveOutcome {
-        val wv = page.ensure()
+        // A null page (WebView construction failed) is a page that never
+        // rendered: transient, never proof of a dead session.
+        val wv = page.ensure() ?: return ReviveOutcome.PAGE_DEAD
         return suspendCancellableCoroutine { cont ->
             fun finish(outcome: ReviveOutcome) {
                 if (!cont.isActive) return

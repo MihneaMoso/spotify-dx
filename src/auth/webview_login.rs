@@ -1371,3 +1371,21 @@ fn handle_json(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the fetch hook matched any URL containing "token"
+    /// (CSRF/clientToken traffic included) and clone-read every such body
+    /// for nothing. Now narrowed to the two endpoints returning
+    /// {accessToken} — keep it that way (Kotlin CaptureJs.POLL_JS must
+    /// match verbatim; a JVM test pins that side).
+    #[test]
+    fn poll_js_hook_targets_token_endpoints_only() {
+        assert!(POLL_JS.contains("/api/token"));
+        assert!(POLL_JS.contains("get_access_token"));
+        assert!(!POLL_JS.contains("indexOf('clientToken')"));
+        assert!(!POLL_JS.contains("indexOf('token')"));
+    }
+}

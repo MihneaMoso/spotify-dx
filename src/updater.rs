@@ -322,14 +322,11 @@ async fn download_to(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
+    let part = part_path(dest);
     // Explicit `.part` suffix (not `with_extension`, which would turn
     // `….tar.gz` into `…tar.part` and collide across concurrent downloads
     // sharing a directory).
-    let part = dest.with_extension(
-        dest.extension()
-            .map(|e| format!("{}.part", e.to_string_lossy()))
-            .unwrap_or_else(|| "part".to_string()),
-    );
+
     let file = tokio::fs::File::create(&part)
         .await
         .map_err(|e| format!("create file failed: {e}"))?;
@@ -383,6 +380,17 @@ fn finalize_hex(hasher: sha2::Sha256) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+
+/// Temp download path: explicit `.part` suffix (NOT `with_extension`, which
+/// turned `….tar.gz` into `…tar.part`). Pure, unit-tested.
+fn part_path(dest: &std::path::Path) -> std::path::PathBuf {
+    dest.with_extension(
+        dest.extension()
+            .map(|e| format!("{}.part", e.to_string_lossy()))
+            .unwrap_or_else(|| "part".to_string()),
+    )
 }
 
 /// Download the release's platform asset into the local updates dir and report
@@ -975,6 +983,16 @@ mod tests {
         // A non-GitHub download URL must be rejected, not fetched.
         let evil = body.replace("https://github.com/", "https://example/");
         assert!(pick_asset(&evil, LINUX_TOKEN).is_err());
+    }
+
+    /// Regression: `with_extension("part")` turned `….tar.gz` into
+    /// `…tar.part` (asymmetric temp naming, same-dir collisions).
+    #[test]
+    fn part_path_keeps_full_name() {
+        let p = part_path(std::path::Path::new("/tmp/spotify-dx-update.tar.gz"));
+        assert_eq!(p.to_string_lossy(), "/tmp/spotify-dx-update.tar.gz.part");
+        let p = part_path(std::path::Path::new("/tmp/noext"));
+        assert_eq!(p.to_string_lossy(), "/tmp/noext.part");
     }
 
     #[test]

@@ -490,6 +490,20 @@ pub static FRESH_LIST: Lazy<std::sync::RwLock<Option<String>>> =
 mod tests {
     use super::*;
 
+    /// Regression: the "rules" figure counted raw input lines plus a
+    /// stale `+ 13` constant instead of what was actually submitted per
+    /// split format. Now it counts submitted non-blank lines exactly.
+    #[test]
+    fn rule_count_matches_submitted_lines() {
+        // 2 adguard + 1 hosts + 13 curated + allow-list exceptions.
+        let list = "||ads.example.com^\n||tracker.example.com^\n0.0.0.0 hosts.example.com\n";
+        let (_, count) = build_engine_with_count(list);
+        assert_eq!(
+            count,
+            2 + 1 + 13 + ALWAYS_ALLOW.len() + WILDCARD_ALLOW.len()
+        );
+    }
+
     #[test]
     fn build_engine_blocks_known_ad_domain() {
         let list = "0.0.0.0 ads.doubleclick.net\n0.0.0.0 tracker.example.com\n";
