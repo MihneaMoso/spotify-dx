@@ -2124,6 +2124,26 @@ the phase-by-phase design record.)
   at `showCached`, `verifyNav`, `emergencyHome` entry. Rule: blind fixes
   without a trace waste rounds — one `AndroidRuntime` stack beat three
   rounds of mechanism-guessing; always ask for the crash log first.
+- **Provider fallthrough overhaul (2026-10-09, fixed):** niche tracks took
+  tens of seconds then played wrong songs (F&N: 25.9s via wrong-catalog
+  Audius) or never played ("Curve…", fine before). Diagnosed live per leg:
+  (1) `word_tokens` dropped sub-2-char tokens so "F&N"→empty→title gate
+  could never match — squash-alphanumeric fallback added; (2) bracket
+  stripping erased version words, so the Focu instrumental passed textually
+  — version-word veto added (`instrumental/karaoke/acapella/backing
+  track`, exempt when the track names it); (3) dead/slow legs burned the
+  chain with no bound. Added: live provider ranking (`streaming/ranking.rs`
+  — passive success/latency stats, 60s arithmetic decay, policy tiers
+  [credential → mainstream-full → preview → upload-catalog], 15s per-leg
+  budget, stable cold order so first resolves are bit-identical), Deezer
+  30s preview layer LAST (keyless, fielded search lies on punctuation so
+  plain query + own gates; signed URLs never cached via new
+  `Provider::cacheable`), f5.si first in the Invidious seeds. ANDROID_VR /
+  WEB_EMBED / TV clients tried live and REJECTED (LOGIN_REQUIRED/400s —
+  do not ship unverified client fallbacks). Verified: F&N resolves via
+  youtube in ~2s (was 25.9s audius-wrong). Rule: quality prefs govern
+  variant choice inside providers, never provider order; correctness is
+  never scored, only gated.
 - **Pure-black AMOLED toggle (2026-10-05, added; corrected same day):**
   FIRST shipped as a third theme radio — wrong model, reverted. It is a
   separate "Pure black AMOLED" section with a TOGGLE layered ON TOP of

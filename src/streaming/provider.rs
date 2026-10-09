@@ -137,6 +137,13 @@ pub trait Provider: Send + Sync {
         true
     }
 
+    /// Whether successful resolutions may enter the stream cache. Defaults
+    /// to `true`; providers serving minutes-out signed URLs (Deezer
+    /// previews) opt out — caching those serves dead signatures.
+    fn cacheable(&self) -> bool {
+        true
+    }
+
     /// Resolve a track query into a playable stream URL.
     async fn resolve(&self, query: &TrackQuery) -> Resolution;
 }

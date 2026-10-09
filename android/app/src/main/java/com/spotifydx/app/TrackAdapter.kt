@@ -28,6 +28,13 @@ class TrackAdapter(
     private val onPlay: (Track) -> Unit = {},
     /** Context menu (2s hold or dots) — the caller maps Track → MenuTarget.Song. */
     private val onMenu: (Track) -> Unit = {},
+    /**
+     * Latest-played highlight (home history): the row whose id matches
+     * renders on a lighter-accent wash. Set BEFORE submitList (moved and
+     * inserted rows rebind through it); null disables. Other lists leave
+     * it null and render unchanged.
+     */
+    var highlightId: String? = null,
 ) : ListAdapter<Track, TrackAdapter.Holder>(DIFF) {
 
     companion object {
@@ -101,6 +108,37 @@ class TrackAdapter(
             itemView.setOnClickListener { onPlay(t) }
             more.setOnClickListener { onMenu(t) }
             HoldToOpen.arm(itemView) { onMenu(t) }
+            bindHighlight(t)
+        }
+
+        /**
+         * Latest-played wash: lighter accent derived from the resolved
+         * theme primary (theme-compatible by construction). Compare-gated
+         * — per-tick rebinds must not rebuild drawables — and always
+         * reset, since holders recycle across lists.
+         */
+        private fun bindHighlight(t: Track) {
+            val highlighted = t.id.isNotEmpty() && t.id == highlightId
+            if (highlighted) {
+                // The wash is the only background this adapter ever sets,
+                // so its presence means this holder already shows it.
+                if (itemView.background is android.graphics.drawable.GradientDrawable) return
+                val radius = itemView.resources.getDimension(R.dimen.echo_radius_row)
+                val accent = Design.resolveAttr(
+                    itemView.context,
+                    androidx.appcompat.R.attr.colorPrimary,
+                )
+                // Discrete wash: barely lightened accent at low alpha —
+                // visible against dark surfaces without shouting.
+                val wash = Design.withAlpha(Design.lighten(accent, 0.15f), 0.35f)
+                itemView.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = radius
+                    setColor(wash)
+                }
+            } else if (itemView.background != null) {
+                itemView.background = null
+            }
         }
     }
 

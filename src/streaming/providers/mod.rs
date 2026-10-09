@@ -2,6 +2,7 @@
 
 pub mod audius;
 pub mod common;
+pub mod deezer;
 pub mod invidious;
 pub mod piped;
 pub mod qobuz;
@@ -21,7 +22,15 @@ use crate::streaming::provider::Provider;
 /// Qobuz revives when the user supplies credentials (Phase F); otherwise it
 /// is skipped at zero cost like TIDAL. Then YouTube (self-contained),
 /// Invidious (same catalog through proxied Opus), Piped, Saavn, Audius,
-/// SoundCloud.
+/// SoundCloud, and Deezer LAST (30s previews only — an honest labeled
+/// preview beats NOT_FOUND, but never outranks a full track).
+///
+/// NOTE: this static order is the cold-start/first-resolve order only. The
+/// resolver re-sorts available providers per resolve by live score (see
+/// `provider_ranking` in the resolver) within two policy tiers —
+/// full-track first, preview last — so a dead-then-recovered leg finds its
+/// place without code changes. `CACHE_PROBE_ORDER` must still name every
+/// member (test-enforced below).
 pub fn build_provider_chain() -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(tidal::TidalProvider::new()),
@@ -32,6 +41,7 @@ pub fn build_provider_chain() -> Vec<Box<dyn Provider>> {
         Box::new(saavn::SaavnProvider::new()),
         Box::new(audius::AudiusProvider::new()),
         Box::new(soundcloud::SoundcloudProvider::new()),
+        Box::new(deezer::DeezerProvider::new()),
     ]
 }
 
@@ -47,6 +57,7 @@ pub const CACHE_PROBE_ORDER: &[&str] = &[
     "saavn",
     "audius",
     "soundcloud",
+    "deezer",
 ];
 
 #[cfg(test)]

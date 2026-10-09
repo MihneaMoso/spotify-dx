@@ -133,9 +133,24 @@ pub async fn resolve(
     let mut query = build_query(track);
     query.max_quality = quality_hint;
 
-    // Step 3: Try providers in order.
+    // Step 3: Try providers in ranked order (tiers, then live score).
+    // Cold order == the static chain (stable sort over equal scores), so
+    // first-ever resolves behave bit-identically to before; scores only
+    // diverge with live evidence. Scoring is passive, decay runs on its
+    // own 60s timer — neither blocks nor performs I/O here.
+    crate::streaming::ranking::ensure_decay_task();
     let chain = providers::build_provider_chain();
-    for provider in &chain {
+    let snapshot = crate::streaming::ranking::snapshot();
+    let empty_stats = crate::streaming::ranking::ProviderStats::default();
+    let mut legs: Vec<&Box<dyn crate::streaming::provider::Provider>> =
+        chain.iter().collect();
+    legs.sort_by_key(|p| {
+        crate::streaming::ranking::rank_key(
+            p.name(),
+            snapshot.get(p.name()).unwrap_or(&empty_stats),
+        )
+    });
+    for provider in legs {
         if !provider.is_available() {
             tracing::debug!("provider {} unavailable, skipping", provider.name());
             continue;
@@ -155,7 +170,47 @@ pub async fn resolve(
             continue;
         }
         tracing::debug!("trying provider: {}", provider.name());
-        match provider.resolve(&query).await {
+        // Per-leg budget (native only): a stalled leg aborts into the
+        // next provider instead of holding the resolve hostage. Counts
+        // as a failure for scoring (no latency sample — a stall must not
+        // normalize itself into the average). Wasm has no preemptive
+        // timeout primitive here; legs keep their own client timeouts.
+        #[cfg(not(target_arch = "wasm32"))]
+        let outcome = {
+            let t0 = std::time::Instant::now();
+            let r = tokio::time::timeout(
+                crate::streaming::ranking::PROVIDER_BUDGET,
+                provider.resolve(&query),
+            )
+            .await;
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            match r {
+                Ok(res) => {
+                    let ok = matches!(res, Resolution::Success { .. });
+                    crate::streaming::ranking::record(provider.name(), ok, ok.then_some(elapsed_ms));
+                    res
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "provider {} exceeded leg budget, trying next",
+                        provider.name()
+                    );
+                    crate::streaming::ranking::record(provider.name(), false, None);
+                    continue;
+                }
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
+        let outcome = {
+            let r = provider.resolve(&query).await;
+            crate::streaming::ranking::record(
+                provider.name(),
+                matches!(r, Resolution::Success { .. }),
+                None,
+            );
+            r
+        };
+        match outcome {
             Resolution::Success {
                 url,
                 format,
@@ -166,14 +221,18 @@ pub async fn resolve(
                     provider.name()
                 );
                 // Cache the result (quality rides along — cache hits must
-                // report the real tier, never assumed lossless).
-                cache::put(
-                    track_id,
-                    provider.name(),
-                    &url,
-                    &format.to_string(),
-                    &quality.to_string(),
-                );
+                // report the real tier, never assumed lossless). Preview
+                // providers opt out (signed minutes-out URLs would die in
+                // the 50-min cache and serve dead signatures).
+                if provider.cacheable() {
+                    cache::put(
+                        track_id,
+                        provider.name(),
+                        &url,
+                        &format.to_string(),
+                        &quality.to_string(),
+                    );
+                }
                 return Ok(Some(ResolvedStream {
                     url,
                     format,
@@ -363,3 +422,4 @@ mod tests {
         assert_eq!(q.artist, "");
     }
 }
+

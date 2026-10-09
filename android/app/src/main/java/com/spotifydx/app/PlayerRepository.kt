@@ -59,6 +59,9 @@ object PlayerRepository {
 
     /** Tier label from resolve fields (honest: only what providers state). */
     fun audioTier(format: String, provider: String, quality: String): String = when {
+        // Preview layer (Deezer 30s): honest label first — its mp3 format
+        // would otherwise read as a full track below.
+        provider == "deezer" -> "Preview · 30s"
         format == "flac" -> "FLAC · Lossless"
         provider == "saavn" && quality == "high" -> "320 kbps"
         provider == "saavn" -> "160 kbps"

@@ -40,10 +40,12 @@ use crate::streaming::provider::{Provider, Quality, Resolution, TrackQuery};
 
 /// Pinned Invidious API hosts (verified API-open in Oct 2026; media
 /// servability is decided per-instance by the byte probe, never assumed).
+/// f5.si first: the only clearnet instance with api+open in the Oct 2026
+/// instances.json sweep (flokinet/nadeko/tiekoetter all api:false).
 /// Shared pool: seeds are the fallback everything else degrades to.
 const SEED_INSTANCES: &[&str] = &[
-    "https://invidious.flokinet.to",
     "https://invidious.f5.si",
+    "https://invidious.flokinet.to",
     "https://inv.nadeko.net",
     "https://invidious.tiekoetter.com",
 ];

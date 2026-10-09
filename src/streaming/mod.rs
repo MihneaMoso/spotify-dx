@@ -13,4 +13,5 @@ pub mod lyrics;
 pub mod odesli;
 pub mod provider;
 pub mod providers;
+pub mod ranking;
 pub mod resolver;

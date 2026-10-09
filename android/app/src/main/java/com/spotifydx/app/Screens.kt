@@ -214,9 +214,22 @@ class HomeFragment : Fragment() {
         // Recently played: last 30 from the durable play log, most
         // recent first (stored oldest→newest). The session past window
         // (state.history) is navigation state — it must never render here.
+        // Live follow: when a new head arrives, highlight it and scroll it
+        // into view (commit callback, so the scroll lands after the diff).
+        // Head-guarded: position ticks and same-head emissions never yank.
+        var lastHead: String? = null
         viewLifecycleOwner.lifecycleScope.launch {
             PlayerRepository.state.collect { s ->
-                recent.submitList(s.playLog.takeLast(30).reversed())
+                val items = s.playLog.takeLast(30).reversed()
+                val head = items.firstOrNull()?.id
+                recent.highlightId = head
+                if (head != null && head != lastHead) {
+                    lastHead = head
+                    recent.submitList(items) { recentList.smoothScrollToPosition(0) }
+                } else {
+                    lastHead = head
+                    recent.submitList(items)
+                }
             }
         }
         // Self-heal after a boot-time session failure: Home loads once,

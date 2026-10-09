@@ -66,6 +66,21 @@ pub fn strip_bracketed(s: &str) -> String {
     out
 }
 
+/// Version words that mark a DIFFERENT recording than the track named:
+/// an upload carrying one of these while the track title carries none is
+/// never the song asked for (the Focu/instrumental case). Track-side
+/// presence exempts (a track actually titled "… (Karaoke)" still matches).
+/// Checked on the RAW video title — bracket-stripping would erase the
+/// very signal. Pure (unit-tested).
+const VERSION_WORDS: &[&str] = &[
+    "instrumental",
+    "instrumentals",
+    "karaoke",
+    "acapella",
+    "a cappella",
+    "backing track",
+];
+
 /// True when the candidate video plausibly IS the track: every track-title
 /// word appears in the video title, and an artist word appears in the
 /// title or author. Biased strict — a false reject tries the next
@@ -73,12 +88,35 @@ pub fn strip_bracketed(s: &str) -> String {
 /// spellings may mismatch (accepted risk: fallthrough continues
 /// elsewhere). Pure (unit-tested).
 pub fn title_matches(track_title: &str, artist: &str, video_title: &str, author: &str) -> bool {
-    let want: Vec<String> = word_tokens(&strip_bracketed(track_title));
-    if want.is_empty() {
+    // Version-word veto first: it decides on words the bracket-strip
+    // would delete, so it must run on the raw titles.
+    if version_mismatch(track_title, video_title) {
         return false;
     }
+    let want: Vec<String> = word_tokens(&strip_bracketed(track_title));
     let title_toks = word_tokens(&strip_bracketed(video_title));
-    if !want.iter().all(|w| title_toks.contains(w)) {
+    if want.is_empty() {
+        // Titles made only of sub-2-char tokens ("F&N" → f,n, both
+        // filtered): compare squashed alphanumerics instead ("fn" ⊆
+        // "futurefnaudio"). Single-char squashes stay rejected — a lone
+        // letter matches everything and proves nothing.
+        let squash: String = track_title
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        if squash.len() < 2 {
+            return false;
+        }
+        let vt: String = video_title
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        if !vt.contains(&squash) {
+            return false;
+        }
+    } else if !want.iter().all(|w| title_toks.contains(w)) {
         return false;
     }
     let artist_toks = word_tokens(artist);
@@ -89,6 +127,32 @@ pub fn title_matches(track_title: &str, artist: &str, video_title: &str, author:
     artist_toks
         .iter()
         .any(|a| title_toks.contains(a) || author_toks.contains(a))
+}
+
+/// True when the video carries a version word the track lacks
+/// ("Focu" vs "Focu (Instrumental)"). Token-based over lowercased text;
+/// multiword entries ("a cappella", "backing track") match on the raw
+/// substring. Pure (unit-tested).
+fn version_mismatch(track_title: &str, video_title: &str) -> bool {
+    // Tokenize first: version words overwhelmingly arrive bracketed
+    // ("(Instrumental)"), where padding would never match. Multiword
+    // entries ("a cappella", "backing track") survive via rejoin.
+    let squash = |s: &str| {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let track = format!(" {} ", squash(track_title));
+    let video = format!(" {} ", squash(video_title));
+    // Padded matching both sides: "instrumentals" must not veto via the
+    // "instrumental" entry (padding breaks the substring), and a track
+    // that names the version itself is exempt.
+    VERSION_WORDS.iter().any(|w| {
+        let vw = format!(" {w} ");
+        video.contains(&vw) && !track.contains(&vw)
+    })
 }
 
 /// Fan-out across ranked query variants up to `cap` items: later variants
@@ -320,5 +384,48 @@ mod tests {
         .await;
         assert_eq!(out, vec!["a"]);
         assert!(aborted);
+    }
+
+    /// Regression (Focu/instrumental): a version word the track lacks
+    /// vetoes, even though bracket-stripping makes the titles identical.
+    #[test]
+    fn version_words_veto_wrong_recordings() {
+        // Official passes.
+        assert!(title_matches(
+            "Focu", "Ian",
+            "IAN x AZTECA - FOCU'", "Ocult Records"
+        ));
+        // Instrumental / karaoke / acapella fail for a plain title…
+        for v in [
+            "Ian x Azteca - Focu' (Instrumental)",
+            "Focu (Karaoke Version) - Sing King",
+            "Focu - Acapella Vocals Only",
+            "Focu (Backing Track)",
+        ] {
+            assert!(!title_matches("Focu", "Ian", v, "Someone"), "veto: {v}");
+        }
+        // …but pass when the TRACK itself names the version.
+        assert!(title_matches(
+            "Focu (Instrumental)", "Ian",
+            "Ian - Focu (Instrumental)", "Ian"
+        ));
+        // Unrelated version words don't veto (real-world shape: the
+        // artist rides in the title when the channel name lacks it).
+        assert!(title_matches("Focu", "Ian", "IAN x AZTECA - FOCU' (Official Audio)", "Ocult Records"));
+    }
+
+    /// Regression (F&N): titles made only of sub-2-char tokens could never
+    /// match (`word_tokens` filters len<2, leaving `want` empty → false).
+    /// Squashed-alphanumeric fallback covers them.
+    #[test]
+    fn short_token_titles_match_by_squash() {
+        assert!(title_matches(
+            "F&N", "Future",
+            "Future - F&N (Audio)", "FutureVEVO"
+        ));
+        // Single letters still prove nothing.
+        assert!(!title_matches("E", "Someone", "Everything", "Someone"));
+        // Squash must actually appear.
+        assert!(!title_matches("F&N", "Future", "Future - Mask Off", "FutureVEVO"));
     }
 }

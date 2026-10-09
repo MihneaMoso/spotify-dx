@@ -26,6 +26,22 @@ object Design {
         return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color))
     }
 
+    /**
+     * Mixes [color] toward white by [ratio] (0 = unchanged, 1 = white).
+     * Used for the latest-played row: a slightly lighter accent derived
+     * from the resolved theme attr (never a baked hex), so current and
+     * future/custom themes highlight correctly by construction.
+     */
+    fun lighten(color: Int, @FloatRange(from = 0.0, to = 1.0) ratio: Float): Int {
+        fun mix(c: Int): Int = (c + (255 - c) * ratio).toInt().coerceIn(0, 255)
+        return Color.argb(
+            Color.alpha(color),
+            mix(Color.red(color)),
+            mix(Color.green(color)),
+            mix(Color.blue(color)),
+        )
+    }
+
     /** Resolves a theme color attr (e.g. android.R.attr.colorBackground) to ARGB. */
     fun resolveAttr(context: Context, @AttrRes attr: Int): Int {
         val tv = android.util.TypedValue()
