@@ -224,8 +224,22 @@ class HomeFragment : Fragment() {
                 val head = items.firstOrNull()?.id
                 recent.highlightId = head
                 if (head != null && head != lastHead) {
+                    val oldHead = lastHead
                     lastHead = head
-                    recent.submitList(items) { recentList.smoothScrollToPosition(0) }
+                    recent.submitList(items) {
+                        // DiffUtil moves never rebind: without this, the old
+                        // head keeps its stale wash beside the new one until
+                        // a scroll (or restart) forces a rebind. Rebind the
+                        // old head's new slot (unless trimmed away — then its
+                        // holder recycled through bind already) and the new
+                        // head (a moved-into-place replay skips bind too).
+                        if (oldHead != null) {
+                            val oldPos = items.indexOfFirst { it.id == oldHead }
+                            if (oldPos >= 0) recent.notifyItemChanged(oldPos)
+                        }
+                        recent.notifyItemChanged(0)
+                        recentList.smoothScrollToPosition(0)
+                    }
                 } else {
                     lastHead = head
                     recent.submitList(items)
