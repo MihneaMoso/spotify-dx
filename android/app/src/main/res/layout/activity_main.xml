@@ -3,6 +3,7 @@
      a fullscreen login overlay layered above and a floating toast. Narrow
      layout: bottom tabs. See layout-sw600dp for the icon-rail variant. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/shell_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="?android:colorBackground">
@@ -15,10 +16,15 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Bottom chrome stack: the bar translates UP out of this container
+         during drags, so clipping is off or the bar would vanish into a
+         ghost the moment it leaves these bounds. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:orientation="vertical">
 
         <LinearLayout

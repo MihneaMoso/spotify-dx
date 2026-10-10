@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -249,6 +250,10 @@ class MainActivity : AppCompatActivity() {
 
     /** Full-screen player sheet (persistent overlay — see PlayerSheetController). */
     fun openPlayer() {
+        // A drag in flight may have left the bar translated; it hides
+        // behind the opaque sheet either way, but reset so a later close
+        // never reveals it offset.
+        findViewById<View>(R.id.player_bar)?.translationY = 0f
         playerSheet.open()
     }
 
@@ -675,17 +680,32 @@ class MainActivity : AppCompatActivity() {
         // Swipe up opens the full-screen player sheet (Spotify parity).
         // Taps still hit the bar's own controls (buttons/SeekBars consume
         // their own streams first — this listener only sees background
-        // touches). Tracked MANUALLY, not via GestureDetector: the detector
+        // Follow-the-finger drag: the BAR ITSELF rises with the finger and
+        // can be HELD mid-screen — ONLY on release does the quarter decide:
+        // dragged up past a quarter of the screen hands off to the sheet
+        // (which completes the rise from the finger's position), anything
+        // less springs back.
+        // Tracked MANUALLY, not via GestureDetector: the detector
         // needs its own DOWN bookkeeping and silently drops streams whose
-        // DOWN it never saw, which made opens flaky. A 150px upward run —
-        // slow drag or fast fling alike — opens exactly once (500ms debounce
-        // covers the async fragment-commit window).
+        // DOWN it never saw, which made opens flaky.
+        // A 500ms debounce covers the async fragment-commit window.
         // TEMP-DIAG gestures.
-        var lastY = 0f
-        var accDy = 0f
+        var lastRawY = 0f
         var lastOpenMs = 0L
-        var downY = 0f
+        var downRawY = 0f
         var downMs = 0L
+        var barDrag = false
+        // Drag reparenting: while dragged, the bar lives on the fullscreen
+        // shell root — no ancestor can clip it mid-travel (the ghost bug)
+        // and nothing can paint over it. Restored on every exit path.
+        var dragRoot: FrameLayout? = null
+        var origParent: ViewGroup? = null
+        var origIndex = -1
+        var origParams: ViewGroup.LayoutParams? = null
+        // Screen-space coordinates throughout: the bar TRANSLATES under
+        // the finger, so view-relative coords would stall as it moves.
+        val screenH = resources.displayMetrics.heightPixels.toFloat()
+        val density = resources.displayMetrics.density
         bar.setOnTouchListener { _, e ->
             fun tryOpen() {
                 val now = android.os.SystemClock.uptimeMillis()
@@ -694,23 +714,67 @@ class MainActivity : AppCompatActivity() {
                     openPlayer()
                 }
             }
+            fun parkBarInRoot() {
+                val overlay = bar.parent as? ViewGroup ?: return
+                val root = findViewById<FrameLayout>(R.id.shell_root) ?: return
+                origParent = overlay
+                origIndex = overlay.indexOfChild(bar)
+                origParams = bar.layoutParams
+                val loc = IntArray(2)
+                bar.getLocationOnScreen(loc)
+                val rootLoc = IntArray(2)
+                root.getLocationOnScreen(rootLoc)
+                overlay.removeView(bar)
+                val lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                )
+                lp.leftMargin = (12 * density).toInt()
+                lp.rightMargin = (12 * density).toInt()
+                lp.topMargin = loc[1] - rootLoc[1]
+                root.addView(bar, lp)
+                dragRoot = root
+            }
+            fun restoreBarToOverlay() {
+                val root = dragRoot
+                val overlay = origParent
+                val lp = origParams
+                if (root != null && overlay != null && lp != null) {
+                    root.removeView(bar)
+                    overlay.addView(bar, origIndex.coerceIn(0, overlay.childCount), lp)
+                }
+                dragRoot = null
+                bar.translationY = 0f
+            }
+            // Hand the sheet the rise from exactly where the finger is.
+            fun handoff() {
+                barDrag = false
+                val startY = e.rawY.coerceIn(0f, screenH)
+                restoreBarToOverlay()
+                playerSheet.openFromDrag(startY)
+            }
             when (e.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    lastY = e.y
-                    accDy = 0f
-                    downY = e.y
+                    lastRawY = e.rawY
+                    downRawY = e.rawY
                     downMs = android.os.SystemClock.uptimeMillis()
+                    // False when the sheet is already open (the bar is
+                    // unreachable behind it) — then this is a no-op stream.
+                    barDrag = !playerSheet.isOpen
+                    if (barDrag) parkBarInRoot()
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val dy = lastY - e.y
-                    lastY = e.y
-                    if (dy > 0) {
-                        accDy += dy
-                        if (accDy > 150) {
-                            accDy = 0f
-                            tryOpen()
-                        }
+                    if (barDrag) {
+                        val dy = e.rawY - lastRawY
+                        lastRawY = e.rawY
+                        // Upward only, 1:1 — the bar stays glued under the
+                        // finger. No auto-handoff while holding: the bar
+                        // simply parks where the finger leaves it; release
+                        // decides.
+                        bar.translationY =
+                            (bar.translationY + dy.coerceAtMost(0f))
+                                .coerceIn(-screenH, 0f)
                     }
                     true
                 }
@@ -718,10 +782,34 @@ class MainActivity : AppCompatActivity() {
                 // (Spotify parity). Controls/SeekBar consume their own
                 // streams first, so this only sees background taps.
                 android.view.MotionEvent.ACTION_UP -> {
-                    val moved = kotlin.math.abs(e.y - downY)
+                    val moved = kotlin.math.abs(e.rawY - downRawY)
                     val held = android.os.SystemClock.uptimeMillis() - downMs
-                    if (moved < 24 && held < 500) tryOpen()
+                    if (moved < 24 && held < 500) {
+                        barDrag = false
+                        restoreBarToOverlay()
+                        tryOpen()
+                    } else if (barDrag) {
+                        barDrag = false
+                        // Quarter-screen threshold (mirrors the sheet): a
+                        // short drag upward hands off, anything less springs
+                        // back.
+                        if (e.rawY < screenH * 3f / 4f) {
+                            handoff()
+                        } else {
+                            // Spring home on the root, THEN restore: the
+                            // travel stays visible the whole way back.
+                            bar.animate().translationY(0f).setDuration(200)
+                                .withEndAction { restoreBarToOverlay() }.start()
+                        }
+                    }
                     true
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    if (barDrag) {
+                        barDrag = false
+                        restoreBarToOverlay()
+                    }
+                    false
                 }
                 else -> false
             }

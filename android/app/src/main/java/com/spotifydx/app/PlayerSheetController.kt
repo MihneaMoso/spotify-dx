@@ -199,37 +199,62 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         tabQueue.setOnClickListener { showTab(Tab.QUEUE) }
         tabLyrics.setOnClickListener { showTab(Tab.LYRICS) }
 
-        // Swipe-down anywhere on non-interactive sheet areas minimizes —
-        // same as the chevron / system back. Tracked MANUALLY (mirrors the
-        // bar's swipe-up in MainActivity): a 150px downward run closes once.
-        // Touches on buttons / seekbars / lists are consumed by those views
-        // and never reach here, so scrolling the queue can't dismiss.
-        var lastY = 0f
-        var accDy = 0f
+        // Drag-down anywhere on non-interactive sheet areas drags the
+        // sheet itself down — amplified follow, hold, release: past a
+        // quarter of the screen dismisses, above it springs back. Same as the chevron / system
+        // back. Tracked MANUALLY (mirrors the bar's drag in MainActivity).
+        // Screen-space coords: the container TRANSLATES under the finger,
+        // so view-relative coords would stall as it moves. Touches on
+        // buttons / seekbars / lists are consumed by those views and never
+        // reach here, so scrolling the queue can't dismiss.
+        var lastRawY = 0f
+        var sheetAcc = 0f
+        var sheetDragging = false
         container.setOnTouchListener { _, e ->
             when (e.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    lastY = e.y
-                    accDy = 0f
+                    lastRawY = e.rawY
+                    sheetAcc = 0f
+                    sheetDragging = true
                     // Claim the stream so the MOVE run reaches us; only
                     // background touches arrive here (children consume
                     // their own), so nothing else needs them.
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val dy = e.y - lastY
-                    lastY = e.y
-                    if (dy > 0) {
-                        accDy += dy
-                        if (accDy > 150) {
-                            accDy = 0f
-                            // Expanded Queue/Lyrics collapse first (Echo:
-                            // inner sheet consumes the drag), then the sheet.
-                            if (!backToMain()) close()
-                        }
+                    if (!sheetDragging) return@setOnTouchListener false
+                    val dy = e.rawY - lastRawY
+                    lastRawY = e.rawY
+                    // Downward follows at 1.5x (a quick flick covers real
+                    // distance); upward bleeds back toward rest (never
+                    // above it).
+                    sheetAcc = (sheetAcc + dy * 1.5f).coerceAtLeast(0f)
+                    container.translationY = sheetAcc
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    if (!sheetDragging) return@setOnTouchListener false
+                    sheetDragging = false
+                    val fullH = sheetHeight().toFloat()
+                    // Quarter-screen threshold: a quick swipe dismisses.
+                    if (e.action == android.view.MotionEvent.ACTION_UP &&
+                        sheetAcc > fullH / 4f
+                    ) {
+                        // Far drag dismisses (tab state kept: reopening
+                        // restores the section, same as close()).
+                        container.animate().translationY(fullH).setDuration(250)
+                            .setInterpolator(android.view.animation.DecelerateInterpolator())
+                            .withEndAction {
+                                container.visibility = View.GONE
+                                container.translationY = 0f
+                            }.start()
                     } else {
-                        accDy = 0f
+                        container.animate().translationY(0f).setDuration(200)
+                            .setInterpolator(android.view.animation.DecelerateInterpolator())
+                            .start()
                     }
+                    sheetAcc = 0f
                     true
                 }
                 else -> false
@@ -295,6 +320,30 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 if (topCount.text.toString() != count) topCount.text = count
             }
         }
+    }
+
+    // -- Sheet drag (follow-the-finger bottom sheet) -----------------------
+    // The open sheet follows downward drags and can be HELD mid-screen.
+    // Release past half the screen dismisses, above it springs back.
+    // `openFromDrag` completes a bar-drag handoff from the finger.
+
+    /** Full sheet travel in px (measured height, screen fallback). */
+    fun sheetHeight(): Int {
+        val h = container.height
+        if (h > 0) return h
+        return activity.resources.displayMetrics.heightPixels
+    }
+
+    /** Open from a bar-drag handoff: the sheet appears exactly where the
+     * finger is and completes the rise (the bar "becomes" the sheet). */
+    fun openFromDrag(startY: Float) {
+        if (isOpen) return
+        container.animate().cancel()
+        container.visibility = View.VISIBLE
+        container.translationY = startY.coerceIn(0f, sheetHeight().toFloat())
+        container.animate().translationY(0f).setDuration(250)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
     }
 
     /** Slide the sheet up into view (idempotent). */
