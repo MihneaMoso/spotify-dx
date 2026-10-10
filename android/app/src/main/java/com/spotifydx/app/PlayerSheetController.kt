@@ -53,7 +53,8 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     private lateinit var tier: TextView
     private lateinit var pos: TextView
     private lateinit var duration: TextView
-    private lateinit var line: TextView
+    private lateinit var previewBox: View
+    private lateinit var previewRows: List<TextView>
     private lateinit var scrub: SeekBar
     private lateinit var play: ImageButton
     private lateinit var tabs: View
@@ -91,7 +92,23 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         tier = root.findViewById(R.id.sheet_tier)
         pos = root.findViewById(R.id.sheet_pos)
         duration = root.findViewById(R.id.sheet_duration)
-        line = root.findViewById(R.id.sheet_line)
+        previewBox = root.findViewById(R.id.sheet_lyrics_preview)
+        previewRows = listOf(
+            root.findViewById(R.id.sheet_lp2),
+            root.findViewById(R.id.sheet_lp1),
+            root.findViewById(R.id.sheet_lcur),
+            root.findViewById(R.id.sheet_ln1),
+            root.findViewById(R.id.sheet_ln2),
+        )
+        // Preview height ≈ 1/5 of the screen (user ask: a sixth to a
+        // fifth), clamped so small screens keep the transport reachable
+        // and large screens don't bloat. XML default covers first layout.
+        val dm = activity.resources.displayMetrics
+        val fifth = (dm.heightPixels / 5f / dm.density).toInt()
+        val boxDp = fifth.coerceIn(112, 160)
+        previewBox.layoutParams = previewBox.layoutParams.apply {
+            height = (boxDp * dm.density).toInt()
+        }
         queueBox = root.findViewById(R.id.sheet_queue_box)
         qThumb = root.findViewById(R.id.sheet_queue_thumb)
         qTitle = root.findViewById(R.id.sheet_queue_title)
@@ -214,7 +231,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 tier.visibility = if (st.audioTier.isEmpty()) View.GONE else View.VISIBLE
                 if (t == null) {
                     art.setImageDrawable(null)
-                    line.visibility = View.GONE
+                    previewBox.visibility = View.GONE
                     lyricsTrackId = null
                     lyricsUi = LyricsUi.IDLE
                     renderLyrics()
@@ -228,7 +245,7 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     }
                     if (lyricsTrackId != t.id) {
                         lyricsTrackId = t.id
-                        line.visibility = View.GONE
+                        previewBox.visibility = View.GONE
                         loadLyrics(t)
                     }
                     updateHighlight(st.positionMs)
@@ -386,8 +403,8 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         lyricsPlainWrap.visibility = if (showPlain) View.VISIBLE else View.GONE
         lyricsState.visibility =
             if (!showList && !showPlain) View.VISIBLE else View.GONE
-        // One-liner only exists for synced lyrics; sections own the rest.
-        if (!showList) line.visibility = View.GONE
+        // Preview window only exists for synced lyrics; sections own rest.
+        if (!showList) previewBox.visibility = View.GONE
         if (!showList && !showPlain) {
             lyricsState.text = when (lyricsUi) {
                 LyricsUi.LOADING -> "Loading lyrics…"
@@ -462,15 +479,37 @@ class PlayerSheetController(private val activity: FragmentActivity) {
         lyricsAdapter.notifyItemChanged(idx)
         // Auto-scroll only while the user isn't reading elsewhere: a reader
         // who dragged the list (non-idle scroll state) keeps their viewport
-        // and still gets the highlight + one-liner updates.
+        // and still gets the highlight + preview updates.
         if (lyricsList.scrollState == RecyclerView.SCROLL_STATE_IDLE) {
             lyricsList.scrollToPosition(idx)
         }
-        // Echo synced one-liner under the artwork.
+        // Spotify-style preview window: previous two lines, current,
+        // next two — wrapped, edge-faded, crossfaded on change.
         if (idx in lyricsLines.indices) {
-            line.text = lyricsLines[idx].text
-            if (line.visibility != View.VISIBLE) line.visibility = View.VISIBLE
+            renderPreviewWindow(idx)
         }
+    }
+
+    /** Five-row preview around `idx` (missing edges stay empty; row
+     * minHeights keep the geometry stable while sliding). Rows fade toward
+     * the edges via static alphas (Spotify feel, theme-attr colors); the
+     * whole window crossfades on each line change (simple Echo-style
+     * alpha animation, 220ms). Compare-before-write upstream guarantees
+     * this runs only on real line changes, never per tick. */
+    private fun renderPreviewWindow(idx: Int) {
+        for (r in -2..2) {
+            val row = previewRows[r + 2]
+            val text = lyricsLines.getOrNull(idx + r)?.text ?: ""
+            if (row.text.toString() != text) row.text = text
+        }
+        if (previewBox.visibility != View.VISIBLE) {
+            previewBox.visibility = View.VISIBLE
+            previewBox.alpha = 0f
+        } else {
+            previewBox.alpha = 0.35f
+        }
+        previewBox.animate().cancel()
+        previewBox.animate().alpha(1f).setDuration(220).start()
     }
 
     /**

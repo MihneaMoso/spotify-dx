@@ -2,7 +2,7 @@
 <!-- Full-screen player sheet: Echo Music player-view port (sanctioned
      layout revamp, revised to the Echo reference screenshot). Order mirrors
      Echo: minimize + Playing-From header + song menu (same dots as every
-     row), large artwork, lyric one-liner,
+     row), large artwork, synced-lyrics preview window,
      title block, slider + times, bare (circle-free) transport, centered
      codec line, spacer pinning the Queue | Lyrics text row to the bottom,
      and the queue / lyrics sections expanding over everything. No volume
@@ -84,18 +84,79 @@
             android:contentDescription="Artwork"
             android:scaleType="centerCrop" />
 
-        <TextView
-            android:id="@+id/sheet_line"
+        <!-- Synced-lyrics preview window (Spotify feel): previous two lines,
+             current line, next two lines. Context lines dim toward the
+             edges; height is a screen fraction (set in code, ~1/5). Lines
+             wrap (max 2) instead of truncating. -->
+        <LinearLayout
+            android:id="@+id/sheet_lyrics_preview"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="144dp"
             android:layout_marginTop="@dimen/pad_half"
-            android:ellipsize="end"
             android:gravity="center"
-            android:maxLines="1"
-            android:textSize="18sp"
-            android:textStyle="bold"
-            android:textColor="?attr/colorOnSurface"
-            android:visibility="gone" />
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/sheet_lp2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:alpha="0.35"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:minHeight="20dp"
+                android:textSize="15sp"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <TextView
+                android:id="@+id/sheet_lp1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:alpha="0.6"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:minHeight="20dp"
+                android:textSize="15sp"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <TextView
+                android:id="@+id/sheet_lcur"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:minHeight="26dp"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/sheet_ln1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:alpha="0.6"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:minHeight="20dp"
+                android:textSize="15sp"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <TextView
+                android:id="@+id/sheet_ln2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:alpha="0.35"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:minHeight="20dp"
+                android:textSize="15sp"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/sheet_title"
