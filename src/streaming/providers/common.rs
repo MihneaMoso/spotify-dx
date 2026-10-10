@@ -30,14 +30,88 @@ pub fn http_client(user_agent: &str, timeout_secs: u64) -> reqwest::Client {
     builder.build().unwrap_or_default()
 }
 
-/// Normalized word tokens: lowercase alphanumeric runs, len ≥ 2
-/// (single letters are noise: "B.E.N.Z" → b,e,n,z). Pure (unit-tested).
+/// Fold diacritics to ASCII base letters for matching ("hoți"→"hoti",
+/// "Beyoncé"→"beyonce"). Lowercases first; combining marks are dropped so
+/// precomposed and decomposed spellings fold identically; scripts outside
+/// the Latin table pass through (matching then behaves exactly as before
+/// — strictly more recall, never less). Table covers Latin-1 Supplement +
+/// Latin Extended-A/B (the artist/track-name space). Pure (unit-tested).
+fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.to_lowercase().chars() {
+        if ('\u{300}'..='\u{36f}').contains(&c) {
+            continue;
+        }
+        match fold_char(c) {
+            Some(rep) => out.push_str(rep),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Base letters for a lowercased char; `None` = passthrough.
+fn fold_char(c: char) -> Option<&'static str> {
+    match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ȁ' | 'ȃ' => Some("a"),
+        'æ' => Some("ae"),
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => Some("c"),
+        'ď' | 'đ' | 'ð' => Some("d"),
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ȅ' | 'ȇ' | 'ȩ' => Some("e"),
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => Some("g"),
+        'ĥ' | 'ħ' => Some("h"),
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ǐ' | 'ȉ' | 'ȋ' => Some("i"),
+        'ĳ' => Some("ij"),
+        'ĵ' => Some("j"),
+        'ķ' | 'ĸ' => Some("k"),
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => Some("l"),
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŋ' => Some("n"),
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ơ' | 'ǒ' | 'ȍ' | 'ȏ' => Some("o"),
+        'œ' => Some("oe"),
+        'ŕ' | 'ŗ' | 'ř' => Some("r"),
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => Some("s"),
+        'ß' => Some("ss"),
+        'ţ' | 'ť' | 'ŧ' | 'ț' => Some("t"),
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ư' | 'ǔ' | 'ȕ' | 'ȗ' => {
+            Some("u")
+        }
+        'ŵ' => Some("w"),
+        'ý' | 'ÿ' | 'ŷ' => Some("y"),
+        'ź' | 'ż' | 'ž' => Some("z"),
+        'þ' => Some("th"),
+        _ => None,
+    }
+}
+
+/// Normalized word tokens: folded alphanumeric runs, len ≥ 2
+/// (single letters are noise: "B.E.N.Z" → b,e,n,z). Folding is identity
+/// on plain ASCII, so existing behavior is unchanged there.
+/// Pure (unit-tested).
 pub fn word_tokens(s: &str) -> Vec<String> {
-    s.to_lowercase()
+    fold(s)
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 2)
         .map(|w| w.to_string())
         .collect()
+}
+
+/// Squashed alphanumerics (folded): punctuation-blind comparison form
+/// ("C*RVE, HOTI" → "crve hoti" → "crve hoti" without spaces). Pure.
+fn squash(s: &str) -> String {
+    fold(s).chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Punctuation-stripped query form ("Curve, hoți" → "curve hoti"):
+/// punctuation blinds YouTube-side search (a `Curve,` query returns zero
+/// results where the bare words retrieve), so a sanitized variant rides
+/// as the last-resort query. Folded + lowercased; spaces collapsed. Pure
+/// (unit-tested).
+pub fn sanitize_query(s: &str) -> String {
+    fold(s)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Strips parenthetical/bracketed segments ("(Official Video)",
@@ -84,10 +158,50 @@ const VERSION_WORDS: &[&str] = &[
 /// True when the candidate video plausibly IS the track: every track-title
 /// word appears in the video title, and an artist word appears in the
 /// title or author. Biased strict — a false reject tries the next
-/// candidate, a false accept plays the wrong song. Diacritic-variant
-/// spellings may mismatch (accepted risk: fallthrough continues
-/// elsewhere). Pure (unit-tested).
+/// candidate, a false accept plays the wrong song. Diacritic spellings
+/// fold together ("hoți" = "hoti"); deeper spelling drift needs the fuzzy
+/// variant below. Pure (unit-tested).
 pub fn title_matches(track_title: &str, artist: &str, video_title: &str, author: &str) -> bool {
+    title_matches_inner(track_title, artist, video_title, author, false)
+}
+
+/// Fuzzy variant: exact gate first, else a 1-edit squash forgiveness for
+/// spelling drift ("curve" vs "c*rve"/"curbe" — the Curve case, retrieved
+/// first by search yet rejected by the exact gate). The caller MUST only
+/// pass `true` when durations agree tightly (see `duration_tight`) —
+/// without that anchor, drift forgiveness would admit different
+/// recordings ("Focu" vs "Focus" is also 1 edit). Short squashes (< 8
+/// chars) never fuzz: on few characters 1 edit proves nothing. The
+/// version-word veto still runs first and always wins. Pure
+/// (unit-tested).
+pub fn title_matches_fuzzy(
+    track_title: &str,
+    artist: &str,
+    video_title: &str,
+    author: &str,
+) -> bool {
+    title_matches_inner(track_title, artist, video_title, author, true)
+}
+
+/// Fuzzy-match eligibility: spelling drift is forgiven only when
+/// durations agree tightly. ±8s admits upload-length drift while
+/// excluding different recordings (the Focu instrumental sits 9s off its
+/// official — deliberately outside). Unknown durations never qualify.
+/// Pure (unit-tested).
+pub fn duration_tight(track_ms: u64, candidate_secs: Option<u64>) -> bool {
+    match candidate_secs {
+        Some(secs) if track_ms != 0 => track_ms.abs_diff(secs.saturating_mul(1000)) <= 8_000,
+        _ => false,
+    }
+}
+
+fn title_matches_inner(
+    track_title: &str,
+    artist: &str,
+    video_title: &str,
+    author: &str,
+    fuzzy: bool,
+) -> bool {
     // Version-word veto first: it decides on words the bracket-strip
     // would delete, so it must run on the raw titles.
     if version_mismatch(track_title, video_title) {
@@ -100,24 +214,20 @@ pub fn title_matches(track_title: &str, artist: &str, video_title: &str, author:
         // filtered): compare squashed alphanumerics instead ("fn" ⊆
         // "futurefnaudio"). Single-char squashes stay rejected — a lone
         // letter matches everything and proves nothing.
-        let squash: String = track_title
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect();
-        if squash.len() < 2 {
+        let needle = squash(track_title);
+        if needle.len() < 2 {
             return false;
         }
-        let vt: String = video_title
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect();
-        if !vt.contains(&squash) {
+        if !squash(video_title).contains(&needle) {
             return false;
         }
     } else if !want.iter().all(|w| title_toks.contains(w)) {
-        return false;
+        // Exact words failed: forgive 1-edit spelling drift on the
+        // punctuation-blind squash ("curvehotisilautari" vs
+        // "…crvehotisilautari…"), caller-gated (see `title_matches_fuzzy`).
+        if !fuzzy || !squash_contains_fuzzy(&squash(video_title), &squash(track_title)) {
+            return false;
+        }
     }
     let artist_toks = word_tokens(artist);
     if artist_toks.is_empty() {
@@ -129,6 +239,63 @@ pub fn title_matches(track_title: &str, artist: &str, video_title: &str, author:
         .any(|a| title_toks.contains(a) || author_toks.contains(a))
 }
 
+/// Punctuation-blind containment with 1-edit forgiveness. Short needles
+/// (< 8 chars) never match fuzzily — on few characters 1 edit is noise
+/// ("focu" would forgive "focus"). Long needles accept exact containment
+/// (strong signal) or any window within 1 edit. Pure (unit-tested).
+fn squash_contains_fuzzy(hay: &str, needle: &str) -> bool {
+    let h: Vec<char> = hay.chars().collect();
+    let n: Vec<char> = needle.chars().collect();
+    if n.len() < 8 || h.len() + 1 < n.len() {
+        return false;
+    }
+    if hay.contains(needle) {
+        return true;
+    }
+    for len in [n.len().saturating_sub(1), n.len(), n.len() + 1] {
+        if len == 0 || len > h.len() {
+            continue;
+        }
+        for w in h.windows(len) {
+            if edit_le1(w, &n) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when two char slices are ≤ 1 edit apart (insertion, deletion, or
+/// substitution). Bounded DP with early exit — inputs here are title
+/// fragments, tens of chars. Pure (unit-tested).
+fn edit_le1(a: &[char], b: &[char]) -> bool {
+    if a == b {
+        return true;
+    }
+    let (n, m) = (a.len(), b.len());
+    if n.abs_diff(m) > 1 {
+        return false;
+    }
+    if n == 0 || m == 0 {
+        return n + m <= 1;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    for i in 1..=n {
+        let mut cur = vec![i; m + 1];
+        let mut row_min = cur[0];
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            row_min = row_min.min(cur[j]);
+        }
+        if row_min > 1 {
+            return false;
+        }
+        prev = cur;
+    }
+    prev[m] <= 1
+}
+
 /// True when the video carries a version word the track lacks
 /// ("Focu" vs "Focu (Instrumental)"). Token-based over lowercased text;
 /// multiword entries ("a cappella", "backing track") match on the raw
@@ -137,15 +304,15 @@ fn version_mismatch(track_title: &str, video_title: &str) -> bool {
     // Tokenize first: version words overwhelmingly arrive bracketed
     // ("(Instrumental)"), where padding would never match. Multiword
     // entries ("a cappella", "backing track") survive via rejoin.
-    let squash = |s: &str| {
+    let spaced = |s: &str| {
         s.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let track = format!(" {} ", squash(track_title));
-    let video = format!(" {} ", squash(video_title));
+    let track = format!(" {} ", spaced(track_title));
+    let video = format!(" {} ", spaced(video_title));
     // Padded matching both sides: "instrumentals" must not veto via the
     // "instrumental" entry (padding breaks the substring), and a track
     // that names the version itself is exempt.
@@ -427,5 +594,88 @@ mod tests {
         assert!(!title_matches("E", "Someone", "Everything", "Someone"));
         // Squash must actually appear.
         assert!(!title_matches("F&N", "Future", "Future - Mask Off", "FutureVEVO"));
+    }
+
+    /// Diacritics fold: Spotify's spelling and the upload's spelling meet
+    /// halfway instead of mismatching.
+    #[test]
+    fn diacritics_fold_together() {
+        assert_eq!(fold("HOȚI ȘI"), "hoti si");
+        assert_eq!(fold("Beyoncé"), "beyonce");
+        assert_eq!(fold("Curbe"), "curbe");
+        assert!(title_matches(
+            "Hoți Si Lautari", "Radu Guran",
+            "Radu Guran - HoTi Si Lautari", "Radu Guran"
+        ));
+    }
+
+    /// Regression (Curve): 1-letter spelling drift is forgiven in fuzzy
+    /// mode — exact still rejects, fuzzy admits.
+    #[test]
+    fn fuzzy_forgives_single_letter_drift() {
+        let track = "CURVE, HOTI SI LAUTARI";
+        let video = "Radu Guran ❌ Daniel Vots - C*RVE, HOTI SI LAUTARI | Official Video";
+        assert!(!title_matches(track, "Radu Guran", video, "Radu Guran"));
+        assert!(title_matches_fuzzy(track, "Radu Guran", video, "Radu Guran"));
+        // Same for the curbe spelling.
+        assert!(title_matches_fuzzy(
+            track, "Radu Guran",
+            "Radu Guran - Curbe Hoti Si Lautari", "Radu Guran"
+        ));
+    }
+
+    /// The Focu/Focus guard: short squashes never fuzz, and the veto still
+    /// wins even in fuzzy mode.
+    #[test]
+    fn fuzzy_stays_strict_on_short_and_versioned() {
+        // "focu" (4 chars) vs "focus…": no fuzzy forgiveness.
+        assert!(!title_matches_fuzzy("Focu", "Ian", "Focus - Single", "Someone"));
+        // Artist must still match.
+        assert!(!title_matches_fuzzy(
+            "CURVE, HOTI SI LAUTARI", "Radu Guran",
+            "C*RVE, HOTI SI LAUTARI", "Random Channel"
+        ));
+        // Version words veto before fuzziness is even considered.
+        assert!(!title_matches_fuzzy(
+            "Focu", "Ian",
+            "Ian - Focu' (Instrumental)", "Ian"
+        ));
+        // Two edits is too much drift.
+        assert!(!title_matches_fuzzy(
+            "Curve Hoti Si Lautari", "Radu Guran",
+            "Radu Guran - XYZVE HOTI SI LAUTARI", "Radu Guran"
+        ));
+    }
+
+    /// Tight-duration rule: ±8s admits upload drift, 9s+ and unknowns fail.
+    #[test]
+    fn duration_tight_bands_correctly() {
+        assert!(duration_tight(154_000, Some(160))); // Curve video: 6s off
+        assert!(duration_tight(163_000, Some(163)));
+        assert!(!duration_tight(163_000, Some(172))); // instrumental: 9s off
+        assert!(!duration_tight(163_000, None));
+        assert!(!duration_tight(0, Some(163)));
+    }
+
+    #[test]
+    fn edit_le1_grades_correctly() {
+        assert!(edit_le1(&chars("curve"), &chars("crve"))); // deletion
+        assert!(edit_le1(&chars("curve"), &chars("curbe"))); // substitution
+        assert!(edit_le1(&chars("focu"), &chars("focus"))); // insertion
+        assert!(edit_le1(&chars("same"), &chars("same")));
+        assert!(!edit_le1(&chars("curve"), &chars("xyzve"))); // 2+ edits
+        assert!(!edit_le1(&chars("curve"), &chars("cur"))); // len diff 2
+    }
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    /// Query sanitizer: punctuation and diacritics go, words stay.
+    #[test]
+    fn sanitize_query_strips_punctuation() {
+        assert_eq!(sanitize_query("Curve, hoți si lăutari"), "curve hoti si lautari");
+        assert_eq!(sanitize_query("F&N"), "f n");
+        assert_eq!(sanitize_query("  Mercy  "), "mercy");
     }
 }

@@ -117,7 +117,7 @@ impl AudiusProvider {
                 return Resolution::Error("audius search shape changed".into());
             }
         };
-        let Some(id) = pick_track(items, query.duration_ms) else {
+        let Some(id) = pick_track(items, &query.title, &query.artist, query.duration_ms) else {
             return Resolution::NotFound;
         };
         match self.stream_url(&id).await {
@@ -176,9 +176,17 @@ impl AudiusProvider {
     }
 }
 
-/// First duration-acceptable, non-deleted track id, in rank order.
-/// Pure (unit-tested).
-fn pick_track(items: &[serde_json::Value], track_ms: u64) -> Option<String> {
+/// First track passing the textual + duration gates, in rank order.
+/// Duration-only picking played wrong uploads (proven: junk for "Ian
+/// Focu" sharing only a word and a duration band), so the shared textual
+/// gate (with version veto) applies here too — drift forgiveness on tight
+/// durations only. Pure (unit-tested).
+fn pick_track(
+    items: &[serde_json::Value],
+    title: &str,
+    artist: &str,
+    track_ms: u64,
+) -> Option<String> {
     for item in items {
         if item
             .get("is_delete")
@@ -200,6 +208,23 @@ fn pick_track(items: &[serde_json::Value], track_ms: u64) -> Option<String> {
         };
         let duration = item.get("duration").and_then(|d| d.as_u64());
         if !youtube::duration_accepts(track_ms, duration) {
+            continue;
+        }
+        let ititle = item.get("title").and_then(|t| t.as_str()).unwrap_or("");
+        let iauthor = item
+            .get("user")
+            .and_then(|u| {
+                u.get("name")
+                    .and_then(|n| n.as_str())
+                    .or_else(|| u.get("handle").and_then(|h| h.as_str()))
+            })
+            .unwrap_or("");
+        let gate = if super::common::duration_tight(track_ms, duration) {
+            super::common::title_matches_fuzzy(title, artist, ititle, iauthor)
+        } else {
+            super::common::title_matches(title, artist, ititle, iauthor)
+        };
+        if !gate {
             continue;
         }
         return Some(id.to_string());
@@ -252,19 +277,47 @@ mod tests {
     #[test]
     fn pick_track_skips_deleted_and_mismatched() {
         let items = serde_json::json!([
-            { "id": "gone", "title": "Gone", "duration": 200, "is_delete": true },
-            { "id": "hour", "title": "Hour", "duration": 3600 },
-            { "id": "hit1", "title": "Hit", "duration": 205 }
+            { "id": "gone", "title": "Hit", "duration": 200, "is_delete": true,
+              "user": { "name": "Artist" } },
+            { "id": "hour", "title": "Hit", "duration": 3600,
+              "user": { "name": "Artist" } },
+            { "id": "hit1", "title": "Hit", "duration": 205,
+              "user": { "name": "Artist" } }
         ]);
         let arr = items.as_array().unwrap();
         // 200s track: skips deleted + hour-long, takes the match.
-        assert_eq!(pick_track(arr, 200_000).as_deref(), Some("hit1"));
+        assert_eq!(pick_track(arr, "Hit", "Artist", 200_000).as_deref(), Some("hit1"));
         // Unknown track duration accepts the first live entry.
-        assert_eq!(pick_track(arr, 0).as_deref(), Some("hour"));
+        assert_eq!(pick_track(arr, "Hit", "Artist", 0).as_deref(), Some("hour"));
         // Nothing acceptable.
         let only = serde_json::json!([
             { "id": "x", "duration": 5 }
         ]);
-        assert_eq!(pick_track(only.as_array().unwrap(), 200_000), None);
+        assert_eq!(pick_track(only.as_array().unwrap(), "Hit", "Artist", 200_000), None);
+    }
+
+    /// Regression (Focu/instrumental): same-duration wrong uploads are
+    /// rejected — duration alone never names the track.
+    #[test]
+    fn pick_track_rejects_wrong_title_same_duration() {
+        let items = serde_json::json!([
+            { "id": "junk", "title": "keep your focus!", "duration": 206,
+              "user": { "name": "manwolvesband" } },
+            { "id": "instr", "title": "Focu (Instrumental)", "duration": 172,
+              "user": { "name": "beats" } },
+            { "id": "right", "title": "Focu", "duration": 163,
+              "user": { "name": "Ian" } }
+        ]);
+        let arr = items.as_array().unwrap();
+        // 163s Focu: junk title rejected, instrumental vetoed, official wins.
+        assert_eq!(pick_track(arr, "Focu", "Ian", 163_000).as_deref(), Some("right"));
+        // Without the official present, no wrong upload may win.
+        let wrong = serde_json::json!([
+            { "id": "junk", "title": "keep your focus!", "duration": 206,
+              "user": { "name": "manwolvesband" } },
+            { "id": "instr", "title": "Focu (Instrumental)", "duration": 172,
+              "user": { "name": "beats" } }
+        ]);
+        assert_eq!(pick_track(wrong.as_array().unwrap(), "Focu", "Ian", 163_000), None);
     }
 }

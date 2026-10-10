@@ -64,7 +64,10 @@ const COOLDOWN: Duration = Duration::from_secs(5 * 60);
 const PROBATION_CALLS: u64 = 64;
 /// Per-request budget: dead hosts fail fast instead of stalling the chain.
 #[cfg(not(target_arch = "wasm32"))]
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+/// Per-request timeout: dead instances must fail fast (a 4-seed pool at
+/// 8s each is most of a Curve-style hang; cooldowns only help within a
+/// process lifetime, restarts repay everything).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Browsers-ish UA: instances bolt on anti-bot walls against default
 /// library UAs; a platform UA passes where `reqwest/x.y` does not.
@@ -294,12 +297,18 @@ impl InvidiousProvider {
         // Textual gate: same-artist same-length genre clusters sail
         // through duration checks (observed: remix, "OU, OU", and a
         // same-artist different song all ranking for one query), so the
-        // title must actually name the track. Biased strict — a false
-        // reject just tries the next video, a false accept plays the
-        // wrong song.
+        // title must actually name the track. Spelling drift ("curve" vs
+        // "c*rve") is forgiven only on tight durations — the fuzzy gate
+        // never flies blind. Biased strict — a false reject just tries
+        // the next video, a false accept plays the wrong song.
         let title = val.get("title").and_then(|t| t.as_str()).unwrap_or("");
         let author = val.get("author").and_then(|a| a.as_str()).unwrap_or("");
-        if !title_matches(&query.title, &query.artist, title, author) {
+        let gate = if super::common::duration_tight(query.duration_ms, secs) {
+            super::common::title_matches_fuzzy(&query.title, &query.artist, title, author)
+        } else {
+            title_matches(&query.title, &query.artist, title, author)
+        };
+        if !gate {
             return StreamsOutcome::Miss;
         }
         let pick = match pick_proxied_audio(&val, query.max_quality) {
@@ -366,12 +375,15 @@ struct AudioPick {
 }
 
 /// Search query variants, rank order (same shape as the direct provider:
-/// legacy query first, topic fallback last). Pure (unit-tested).
-fn search_queries(title: &str, artist: &str) -> [String; 3] {
+/// legacy query first, sanitized bare-words fallback last — punctuation
+/// blinds search, so the stripped form rides as the final variant).
+/// Pure (unit-tested).
+fn search_queries(title: &str, artist: &str) -> [String; 4] {
     [
         format!("{artist} {title} audio"),
         format!("{title} {artist}"),
         format!("{title} {artist} topic"),
+        super::common::sanitize_query(&format!("{artist} {title}")),
     ]
 }
 
@@ -547,6 +559,7 @@ mod tests {
         assert_eq!(qs[0], "Kanye West Mercy audio");
         assert_eq!(qs[1], "Mercy Kanye West");
         assert_eq!(qs[2], "Mercy Kanye West topic");
+        assert_eq!(qs[3], "kanye west mercy");
     }
 
     #[test]

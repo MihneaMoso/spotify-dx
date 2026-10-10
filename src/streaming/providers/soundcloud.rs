@@ -244,12 +244,7 @@ impl SoundcloudProvider {
             .and_then(|c| c.as_array())
             .ok_or(SearchError::Other)?;
         for item in items {
-            // Snippet-only uploads (major labels) are worse than nothing.
-            if item.get("policy").and_then(|p| p.as_str()) != Some("ALLOW") {
-                continue;
-            }
-            let duration = item.get("full_duration").and_then(|d| d.as_u64());
-            if !youtube::duration_accepts(query.duration_ms, duration) {
+            if !item_acceptable(item, &query.title, &query.artist, query.duration_ms) {
                 continue;
             }
             let transcodings = match item
@@ -338,6 +333,44 @@ impl SoundcloudProvider {
             Some(u) if u.starts_with("http") => Transcode::Url(u.to_string()),
             _ => Transcode::Unusable,
         }
+    }
+}
+
+/// Whether a search item may serve this track: snippet-only uploads are
+/// worse than nothing, durations must fit, and — the Focu lesson — the
+/// title must name the track (duration-only picking played wrong uploads
+/// sharing just a duration band). Drift forgiveness on tight durations
+/// only. Pure (unit-tested).
+fn item_acceptable(
+    item: &serde_json::Value,
+    title: &str,
+    artist: &str,
+    track_ms: u64,
+) -> bool {
+    // Snippet-only uploads (major labels) are worse than nothing.
+    if item.get("policy").and_then(|p| p.as_str()) != Some("ALLOW") {
+        return false;
+    }
+    // `full_duration` is MILLISECONDS (API contract) — the shared gates
+    // take seconds. (This unit slip made every item miss: ms compared as
+    // s rejects everything, so the leg always fell through.)
+    let duration = item
+        .get("full_duration")
+        .and_then(|d| d.as_u64())
+        .map(|ms| ms / 1000);
+    if !youtube::duration_accepts(track_ms, duration) {
+        return false;
+    }
+    let ititle = item.get("title").and_then(|t| t.as_str()).unwrap_or("");
+    let iauthor = item
+        .get("user")
+        .and_then(|u| u.get("username"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+    if super::common::duration_tight(track_ms, duration) {
+        super::common::title_matches_fuzzy(title, artist, ititle, iauthor)
+    } else {
+        super::common::title_matches(title, artist, ititle, iauthor)
     }
 }
 
@@ -460,6 +493,30 @@ mod tests {
             .find(|t| t["format"]["protocol"].as_str() == Some("progressive"))
             .unwrap();
         assert_eq!(prog["url"].as_str(), Some("https://x/prog"));
+    }
+
+    /// Regression (Focu/instrumental): same-duration wrong uploads are
+    /// rejected — policy ALLOW + fitting duration is not enough.
+    #[test]
+    fn item_acceptable_rejects_wrong_title_same_duration() {
+        let item = |title: &str, user: &str, dur: u64| {
+            serde_json::json!({
+                "policy": "ALLOW", "title": title, "full_duration": dur,
+                "user": { "username": user } })
+        };
+        // Official: exact title, fitting duration.
+        assert!(item_acceptable(
+            &item("Ian - Focu", "Ian", 163_000), "Focu", "Ian", 163_000));
+        // Instrumental, same band: vetoed.
+        assert!(!item_acceptable(
+            &item("Focu (Instrumental)", "beats", 172_000), "Focu", "Ian", 163_000));
+        // Right duration, wrong song entirely.
+        assert!(!item_acceptable(
+            &item("Focus", "Ariana", 163_000), "Focu", "Ian", 163_000));
+        // Snippet policy still excluded.
+        let mut snip = item("Ian - Focu", "Ian", 163_000);
+        snip["policy"] = serde_json::json!("SNIPPET");
+        assert!(!item_acceptable(&snip, "Focu", "Ian", 163_000));
     }
 
 }

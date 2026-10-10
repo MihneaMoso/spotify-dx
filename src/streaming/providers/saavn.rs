@@ -134,22 +134,24 @@ impl SaavnProvider {
             if !playable_item(item) {
                 continue;
             }
-            let duration = item
-                .get("duration")
-                .and_then(|d| d.as_str())
-                .and_then(|s| s.parse::<u64>().ok());
+            let duration = item_secs(item);
             match duration {
                 // Duration present: gate (also filters hour-long compilations).
                 Some(secs) if !youtube::duration_accepts(query.duration_ms, Some(secs)) => {
                     continue;
                 }
-                // Duration missing but track unknown too: accept. Duration
-                // missing while we know it: require it (Saavn always sends
-                // durations — missing means a degenerate entry).
+                // Duration missing while we know it: require it (missing
+                // means a degenerate entry).
                 None if query.duration_ms != 0 => continue,
                 _ => {}
             }
-            let enc = match item.get("encrypted_media_url").and_then(|u| u.as_str()) {
+            // Textual gate (the Focu lesson): Saavn search is loose
+            // ("Focu" retrieves "Focus"), so the title must name the
+            // track — drift forgiveness on tight durations only.
+            if !item_names_track(item, &query.title, &query.artist, query.duration_ms) {
+                continue;
+            }
+            let enc = match item_media_url(item) {
                 Some(u) if !u.is_empty() => u,
                 _ => continue,
             };
@@ -162,7 +164,7 @@ impl SaavnProvider {
             // playable track. The returned tier always describes the URL
             // actually served (previously everything reported High,
             // even 160kbps URLs).
-            let high = item.get("320kbps").and_then(|v| v.as_str()) == Some("true");
+            let high = item_high(item);
             let offered = if high { Quality::High } else { Quality::Normal };
             let cap = query.max_quality;
             let (token, quality) = match cap {
@@ -189,11 +191,87 @@ impl SaavnProvider {
     }
 }
 
+/// Field readers: the live API nests media fields under `more_info`
+/// (verified Oct 2026: no top-level `duration`/`encrypted_media_url` —
+/// the old top-level reads made every item degenerate, so this leg
+/// always missed). Top-level fallbacks stay for shape variance. Pure.
+fn more_info(item: &serde_json::Value) -> Option<&serde_json::Value> {
+    item.get("more_info")
+}
+
+fn item_secs(item: &serde_json::Value) -> Option<u64> {
+    let from = |v: Option<&serde_json::Value>| {
+        v.and_then(|d| {
+            d.as_u64().or_else(|| {
+                d.as_str()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            })
+        })
+    };
+    from(more_info(item).and_then(|m| m.get("duration")))
+        .or_else(|| from(item.get("duration")))
+}
+
+fn item_media_url(item: &serde_json::Value) -> Option<&str> {
+    more_info(item)
+        .and_then(|m| m.get("encrypted_media_url"))
+        .and_then(|u| u.as_str())
+        .or_else(|| {
+            item.get("encrypted_media_url").and_then(|u| u.as_str())
+        })
+}
+
+fn item_high(item: &serde_json::Value) -> bool {
+    let flag = more_info(item).and_then(|m| m.get("320kbps"));
+    match flag {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::String(s)) => s == "true",
+        _ => item.get("320kbps").and_then(|v| v.as_str()) == Some("true"),
+    }
+}
+
+/// True when the item's title names the track: Saavn search is loose
+/// ("Focu" retrieves punjabi "Focus"), so duration fit alone must never
+/// win. Author source is the artist map, falling back to the subtitle
+/// ("Artist - Album" shape). Drift forgiveness on tight durations only.
+/// Pure (unit-tested).
+fn item_names_track(
+    item: &serde_json::Value,
+    title: &str,
+    artist: &str,
+    track_ms: u64,
+) -> bool {
+    let ititle = item.get("title").and_then(|t| t.as_str()).unwrap_or("");
+    let artists: String = more_info(item)
+        .and_then(|m| m.get("artistMap"))
+        .and_then(|a| a.get("primary_artists"))
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.get("name").and_then(|n| n.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            item.get("subtitle")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    let duration = item_secs(item);
+    if super::common::duration_tight(track_ms, duration) {
+        super::common::title_matches_fuzzy(title, artist, ititle, &artists)
+    } else {
+        super::common::title_matches(title, artist, ititle, &artists)
+    }
+}
+
 /// Availability gate: item-level rights, not just presence.
 /// Skips label-withdrawn entries (`disabled`, non-zero `rights.code`) that
 /// would 403/404 at playback. Pure (unit-tested).
-fn playable_item(item: &serde_json::Value) -> bool {
-    if item.get("disabled").and_then(|d| d.as_str()) == Some("true") {
+fn playable_item(item: &serde_json::Value) -> bool {    if item.get("disabled").and_then(|d| d.as_str()) == Some("true") {
         return false;
     }
     if let Some(code) = item.get("rights").and_then(|r| r.get("code")) {
@@ -301,17 +379,45 @@ mod tests {
 
     #[test]
     fn search_item_shape() {
-        // Documents the first-party api.php contract this provider relies on.
+        // Live api.php shape (Oct 2026): media fields nest under
+        // `more_info` (numeric duration, bool 320kbps); artists ride the
+        // artistMap. Documents the contract the readers rely on.
         let v = serde_json::json!({ "results": [
-            { "id": "x", "song": "S", "duration": "207",
-              "encrypted_media_url": ENC, "320kbps": "true" }
+            { "id": "5OphvTrV", "title": "Focus", "subtitle": "",
+              "more_info": { "duration": 189, "encrypted_media_url": ENC,
+                             "320kbps": true,
+                             "artistMap": { "primary_artists":
+                                [{ "name": "Sukh-E Muzical Doctorz" }] } } }
         ] });
         let item = &v["results"][0];
         assert!(playable_item(item));
-        assert_eq!(
-            item["duration"].as_str().unwrap().parse::<u64>().unwrap(),
-            207
-        );
-        assert!(decrypt_media_url(item["encrypted_media_url"].as_str().unwrap()).is_some());
+        assert_eq!(item_secs(item), Some(189));
+        assert!(item_high(item));
+        assert!(decrypt_media_url(item_media_url(item).unwrap()).is_some());
+        // …but it must not win a "Focu" query: wrong title, wrong artist.
+        assert!(!item_names_track(item, "Focu", "Ian", 163_000));
+    }
+
+    /// Regression (Saavn looseness): "Focu" retrieves "Focus" — the gate
+    /// must reject it while admitting a true match.
+    #[test]
+    fn item_names_track_rejects_loose_search_hits() {
+        let item = |title: &str, artists: &[&str], dur: u64| {
+            serde_json::json!({
+                "title": title,
+                "more_info": { "duration": dur,
+                    "artistMap": { "primary_artists": artists.iter().map(|a| {
+                        serde_json::json!({ "name": a }) }).collect::<Vec<_>>() } } })
+        };
+        assert!(item_names_track(
+            &item("Focu", &["Ian"], 163), "Focu", "Ian", 163_000));
+        // Same duration band, wrong song and artist.
+        assert!(!item_names_track(
+            &item("Focus", &["Sukh-E Muzical Doctorz"], 189), "Focu", "Ian", 163_000));
+        // Subtitle fallback as the author source.
+        let sub = serde_json::json!({
+            "title": "Focu", "subtitle": "Ian - Focu",
+            "more_info": { "duration": 163 } });
+        assert!(item_names_track(&sub, "Focu", "Ian", 163_000));
     }
 }

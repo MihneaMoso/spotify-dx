@@ -100,12 +100,15 @@ impl YoutubeProvider {
     /// Search queries in rank order. The first is the legacy query (unchanged
     /// behavior for the common case); later variants only run when earlier
     /// ones yield nothing, so the happy path still costs one search call.
-    /// Pure (unit-tested).
-    fn search_queries(title: &str, artist: &str) -> [String; 3] {
+    /// Last is the punctuation-stripped form: punctuation blinds search
+    /// (a `Curve,` query returns zero results), so the bare words ride as
+    /// the final fallback. Pure (unit-tested).
+    fn search_queries(title: &str, artist: &str) -> [String; 4] {
         [
             format!("{artist} {title} audio"),
             format!("{title} {artist}"),
             format!("{title} {artist} topic"),
+            super::common::sanitize_query(&format!("{artist} {title}")),
         ]
     }
 
@@ -399,7 +402,7 @@ fn select_adaptive(
 /// `videoDetails` must name the track (see `common::title_matches`).
 /// Unparseable details can't verify → false (biased strict: a false
 /// reject tries the next candidate). Pure (unit-tested).
-fn details_match(val: &serde_json::Value, title: &str, artist: &str) -> bool {
+fn details_match(val: &serde_json::Value, title: &str, artist: &str, track_ms: u64) -> bool {
     let vtitle = val
         .get("videoDetails")
         .and_then(|d| d.get("title"))
@@ -413,7 +416,18 @@ fn details_match(val: &serde_json::Value, title: &str, artist: &str) -> bool {
         .and_then(|d| d.get("author"))
         .and_then(|a| a.as_str())
         .unwrap_or("");
-    title_matches(title, artist, vtitle, vauthor)
+    // Spelling drift ("curve" vs "c*rve") is forgiven only on tight
+    // durations — the fuzzy gate never flies blind (see duration_tight).
+    let secs = val
+        .get("videoDetails")
+        .and_then(|d| d.get("lengthSeconds"))
+        .and_then(|l| l.as_str())
+        .and_then(|s| s.parse::<u64>().ok());
+    if super::common::duration_tight(track_ms, secs) {
+        super::common::title_matches_fuzzy(title, artist, vtitle, vauthor)
+    } else {
+        title_matches(title, artist, vtitle, vauthor)
+    }
 }
 
 /// Best non-video audio stream from a Piped `/streams` payload as
@@ -518,7 +532,7 @@ impl YoutubeProvider {
         // (same-language near-identical titles with clustered durations
         // defeat duration-only gating). Biased strict — false rejects try
         // the next candidate; unparseable details can't verify either.
-        if !details_match(&val, &query.title, &query.artist) {
+        if !details_match(&val, &query.title, &query.artist, query.duration_ms) {
             return StreamOutcome::NextCandidate(format!("title mismatch for {video_id}"));
         }
         let data = match val.get("streamingData") {
@@ -603,11 +617,24 @@ impl YoutubeProvider {
     /// `/streams` (no key). Runs only when direct extraction fails, so it
     /// costs nothing on the happy path. Instances tried in order; transport
     /// failures move to the next instance, content failures end the attempt.
+    /// Each attempt is bounded (5s, native): dead instances must not each
+    /// burn the 15s client timeout inside an already-capped leg.
     async fn piped_recovery(&self, video_id: &str) -> StreamOutcome {
         // Hosts single-sourced from the Phase B pool (`piped::INSTANCES`)
         // so host churn lands in exactly one place.
         for api in super::piped::INSTANCES {
             let url = format!("{api}/streams/{video_id}");
+            #[cfg(not(target_arch = "wasm32"))]
+            let resp = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.client.get(&url).send(),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                _ => continue,
+            };
+            #[cfg(target_arch = "wasm32")]
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,
                 Err(_) => continue,
@@ -635,6 +662,22 @@ impl YoutubeProvider {
     }
 }
 
+/// Order candidates for verification: closest duration first, stable
+/// (search rank decides ties); unknown durations sink last; unknown track
+/// duration keeps search order. Pure (unit-tested).
+fn order_candidates(
+    mut candidates: Vec<(String, Option<u64>)>,
+    track_ms: u64,
+) -> Vec<(String, Option<u64>)> {
+    if track_ms != 0 {
+        let track_secs = track_ms / 1000;
+        candidates.sort_by_key(|(_, d)| {
+            d.map(|secs| track_secs.abs_diff(secs)).unwrap_or(u64::MAX)
+        });
+    }
+    candidates
+}
+
 #[async_trait(?Send)]
 impl Provider for YoutubeProvider {
     fn name(&self) -> &'static str {
@@ -660,6 +703,12 @@ impl Provider for YoutubeProvider {
         if candidates.is_empty() {
             return Resolution::NotFound;
         }
+        // Exact-duration-first (stable): among gate-passing candidates the
+        // closest duration wins — search rank decides ties. A same-title
+        // leak/re-upload sitting seconds off loses to the true recording
+        // even when search ranks it first (the Focu case: the official is
+        // an exact 163s match). Unknown track durations keep search order.
+        let candidates = order_candidates(candidates, query.duration_ms);
         let mut last_reason = String::new();
         for (video_id, duration) in candidates {
             if !has_usable_duration(query.duration_ms, duration) {
@@ -676,6 +725,14 @@ impl Provider for YoutubeProvider {
                     format,
                     quality,
                 } => {
+                    // Pick attribution: the video ID behind a "via youtube"
+                    // resolve (wrong-audio diagnosis needs the exact upload,
+                    // titles alone don't identify it).
+                    tracing::info!(
+                        "youtube picked {video_id} for {} {}",
+                        query.artist,
+                        query.title
+                    );
                     return Resolution::Success {
                         url,
                         format,
@@ -708,6 +765,7 @@ mod tests {
         assert_eq!(qs[0], "Kanye West Mercy audio");
         assert_eq!(qs[1], "Mercy Kanye West");
         assert_eq!(qs[2], "Mercy Kanye West topic");
+        assert_eq!(qs[3], "kanye west mercy");
     }
 
     #[test]
@@ -771,6 +829,7 @@ mod tests {
             &v("Jean Gaoaza - E Amarata (Official Video)", "Jean Gaoaza"),
             "E Amarata",
             "Jean Gaoaza",
+            200_000,
         ));
         assert!(!details_match(
             &v(
@@ -779,17 +838,69 @@ mod tests {
             ),
             "E Amarata",
             "Jean Gaoaza",
+            200_000,
         ));
         assert!(!details_match(
             &serde_json::json!({}),
             "E Amarata",
             "Jean Gaoaza",
+            200_000,
         ));
         assert!(!details_match(
             &serde_json::json!({ "videoDetails": {} }),
             "E Amarata",
             "Jean Gaoaza",
+            200_000,
         ));
+    }
+
+    /// Regression (Curve): 1-letter drift passes only with a tight
+    /// duration backing it — same titles, loose duration still rejects.
+    #[test]
+    fn details_match_fuzzy_needs_tight_duration() {
+        let v = |secs: &str| {
+            serde_json::json!({ "videoDetails": {
+                "title": "Radu Guran ❌ Daniel Vots - C*RVE, HOTI SI LAUTARI",
+                "author": "Radu Guran",
+                "lengthSeconds": secs } })
+        };
+        // 154s track vs 160s video: 6s off, fuzzy admits.
+        assert!(details_match(&v("160"), "CURVE, HOTI SI LAUTARI", "Radu Guran", 154_000));
+        // Same titles, 30s off: drift forgiveness stays off.
+        assert!(!details_match(&v("184"), "CURVE, HOTI SI LAUTARI", "Radu Guran", 154_000));
+        // Instrumental still vetoed even with a tight duration.
+        let instr = serde_json::json!({ "videoDetails": {
+            "title": "Ian - Focu (Instrumental)", "author": "Ian",
+            "lengthSeconds": "163" } });
+        assert!(!details_match(&instr, "Focu", "Ian", 163_000));
+    }
+
+    /// Exact-duration-first: the true recording wins even when search
+    /// ranks a seconds-off leak first; ties keep search order; unknowns
+    /// sink last; unknown track durations keep search order.
+    #[test]
+    fn order_candidates_prefers_exact_duration() {
+        let cands = vec![
+            ("leak".to_string(), Some(161)),
+            ("official".to_string(), Some(163)),
+            ("nodur".to_string(), None),
+            ("also163".to_string(), Some(163)),
+        ];
+        let ids: Vec<String> = order_candidates(cands, 163_000)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["official", "also163", "leak", "nodur"]);
+        // Unknown track duration: untouched search order.
+        let cands = vec![
+            ("b".to_string(), Some(100)),
+            ("a".to_string(), Some(300)),
+        ];
+        let ids: Vec<String> = order_candidates(cands, 0)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["b", "a"]);
     }
 
     #[test]
