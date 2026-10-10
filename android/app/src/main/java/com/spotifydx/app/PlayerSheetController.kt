@@ -60,10 +60,14 @@ class PlayerSheetController(private val activity: FragmentActivity) {
     private lateinit var tabs: View
     private lateinit var spacer: View
     private lateinit var queueBox: View
-    private lateinit var qThumb: ImageView
-    private lateinit var qTitle: TextView
-    private lateinit var qSub: TextView
-    private lateinit var qCount: TextView
+    private lateinit var topCount: TextView
+    private lateinit var miniArt: ImageView
+    private lateinit var miniTitle: TextView
+    private lateinit var miniSub: TextView
+    private lateinit var miniPlay: ImageButton
+    private lateinit var miniScrub: SeekBar
+    private lateinit var miniPos: TextView
+    private lateinit var miniDur: TextView
     private lateinit var tabQueue: Button
     private lateinit var tabLyrics: Button
     private lateinit var queueAdapter: QueueTimelineAdapter
@@ -110,10 +114,14 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             height = (boxDp * dm.density).toInt()
         }
         queueBox = root.findViewById(R.id.sheet_queue_box)
-        qThumb = root.findViewById(R.id.sheet_queue_thumb)
-        qTitle = root.findViewById(R.id.sheet_queue_title)
-        qSub = root.findViewById(R.id.sheet_queue_sub)
-        qCount = root.findViewById(R.id.sheet_queue_count)
+        topCount = root.findViewById(R.id.sheet_queue_count_top)
+        miniArt = root.findViewById(R.id.sheet_mini_art)
+        miniTitle = root.findViewById(R.id.sheet_mini_title)
+        miniSub = root.findViewById(R.id.sheet_mini_subtitle)
+        miniPlay = root.findViewById(R.id.sheet_mini_play)
+        miniScrub = root.findViewById(R.id.sheet_mini_scrub)
+        miniPos = root.findViewById(R.id.sheet_mini_pos)
+        miniDur = root.findViewById(R.id.sheet_mini_duration)
         scrub = root.findViewById(R.id.sheet_scrub)
         play = root.findViewById(R.id.sheet_play)
         tabs = root.findViewById(R.id.sheet_tabs)
@@ -139,6 +147,16 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             }
         }
         play.setOnClickListener { PlayerRepository.toggle(); punch(play) }
+        root.findViewById<ImageButton>(R.id.sheet_mini_play)?.setOnClickListener {
+            PlayerRepository.toggle()
+        }
+        root.findViewById<ImageButton>(R.id.sheet_mini_next)?.setOnClickListener {
+            PlayerRepository.nextTrack()
+        }
+        root.findViewById<ImageButton>(R.id.sheet_mini_prev)?.setOnClickListener {
+            PlayerRepository.previousTrack()
+        }
+        miniScrub.setOnSeekBarChangeListener(seekListener { PlayerRepository.seekTo(it) })
         root.findViewById<ImageButton>(R.id.sheet_next)?.setOnClickListener {
             PlayerRepository.nextTrack(); punch(it)
         }
@@ -270,14 +288,11 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                 pos.text = TrackAdapter.formatDuration(st.positionMs)
                 duration.text = TrackAdapter.formatDuration(st.durationMs)
                 queueAdapter.setTimeline(PlayerRepository.timeline())
-                // Echo queue header: current track + queue size.
-                qTitle.text = t?.name ?: "Not playing"
-                qSub.text = t?.artistNames ?: ""
-                qCount.text = qCount.context.getString(R.string.queue_count, st.queue.size)
-                if (t != null && qThumb.getTag(R.id.sheet_queue_thumb) != t.coverUrl) {
-                    qThumb.setTag(R.id.sheet_queue_thumb, t.coverUrl)
-                    ArtworkLoader.load(qThumb, t.coverUrl)
-                }
+                // In-queue mini player: same transport as the floating bar.
+                renderSheetMini(st)
+                // Queue size lives in the top menu now, left of the dots.
+                val count = topCount.context.getString(R.string.queue_count, st.queue.size)
+                if (topCount.text.toString() != count) topCount.text = count
             }
         }
     }
@@ -351,6 +366,42 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             val nowPos = queueAdapter.nowPosition()
             if (nowPos >= 0) queueList.scrollToPosition(nowPos)
         }
+        // Queue size describes the queue view: only there.
+        topCount.visibility = if (tab == Tab.QUEUE) View.VISIBLE else View.GONE
+    }
+
+    /** In-queue mini player state: mirrors the floating bar (titles, art,
+     * transport icon, scrub, times). Compare-before-write throughout —
+     * this runs on every position tick. */
+    private fun renderSheetMini(s: PlayerRepository.State) {
+        val title = s.track?.name?.ifEmpty { "Not playing" } ?: "Not playing"
+        if (miniTitle.text.toString() != title) miniTitle.text = title
+        val sub = s.track?.artistNames ?: ""
+        if (miniSub.text.toString() != sub) miniSub.text = sub
+        val url = s.track?.coverUrl ?: ""
+        if (miniArt.getTag(R.id.sheet_mini_art) != url) {
+            miniArt.setTag(R.id.sheet_mini_art, url)
+            ArtworkLoader.load(miniArt, url, ArtworkLoader.Art.PLAYER)
+        }
+        if (miniPlay.getTag(R.id.sheet_mini_play) != s.isPlaying) {
+            miniPlay.setTag(R.id.sheet_mini_play, s.isPlaying)
+            miniPlay.setImageResource(
+                if (s.isPlaying) android.R.drawable.ic_media_pause
+                else android.R.drawable.ic_media_play,
+            )
+        }
+        if (s.durationMs > 0) {
+            val max = s.durationMs.toInt()
+            if (miniScrub.max != max) miniScrub.max = max
+            if (!miniScrub.isPressed) miniScrub.progress = s.positionMs.toInt()
+        } else {
+            if (miniScrub.max != 0) miniScrub.max = 0
+            if (miniScrub.progress != 0) miniScrub.progress = 0
+        }
+        val pos = TrackAdapter.formatDuration(s.positionMs)
+        if (miniPos.text.toString() != pos) miniPos.text = pos
+        val dur = TrackAdapter.formatDuration(s.durationMs)
+        if (miniDur.text.toString() != dur) miniDur.text = dur
     }
 
     /**
