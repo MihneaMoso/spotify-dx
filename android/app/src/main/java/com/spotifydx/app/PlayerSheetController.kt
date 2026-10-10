@@ -104,12 +104,12 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             root.findViewById(R.id.sheet_ln1),
             root.findViewById(R.id.sheet_ln2),
         )
-        // Preview height ≈ 1/5 of the screen (user ask: a sixth to a
-        // fifth), clamped so small screens keep the transport reachable
-        // and large screens don't bloat. XML default covers first layout.
+        // Preview height ≈ 1/5 of the screen, suite-pinned clamp (small
+        // screens keep the transport reachable, large ones don't bloat).
+        // XML default covers first layout.
         val dm = activity.resources.displayMetrics
-        val fifth = (dm.heightPixels / 5f / dm.density).toInt()
-        val boxDp = fifth.coerceIn(112, 160)
+        val boxDp = SheetInteraction.previewBoxHeightDp(
+            dm.heightPixels.toFloat(), dm.density)
         previewBox.layoutParams = previewBox.layoutParams.apply {
             height = (boxDp * dm.density).toInt()
         }
@@ -225,10 +225,9 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     if (!sheetDragging) return@setOnTouchListener false
                     val dy = e.rawY - lastRawY
                     lastRawY = e.rawY
-                    // Downward follows at 1.5x (a quick flick covers real
-                    // distance); upward bleeds back toward rest (never
-                    // above it).
-                    sheetAcc = (sheetAcc + dy * 1.5f).coerceAtLeast(0f)
+                    // Amplified follow, suite-pinned (a flick covers real
+                    // distance); upward bleeds back toward rest.
+                    sheetAcc = SheetInteraction.sheetFollow(sheetAcc, dy)
                     container.translationY = sheetAcc
                     true
                 }
@@ -237,9 +236,10 @@ class PlayerSheetController(private val activity: FragmentActivity) {
                     if (!sheetDragging) return@setOnTouchListener false
                     sheetDragging = false
                     val fullH = sheetHeight().toFloat()
-                    // Quarter-screen threshold: a quick swipe dismisses.
+                    // Quarter-screen threshold, suite-pinned: a quick
+                    // swipe dismisses.
                     if (e.action == android.view.MotionEvent.ACTION_UP &&
-                        sheetAcc > fullH / 4f
+                        SheetInteraction.sheetReleaseDismisses(sheetAcc, fullH)
                     ) {
                         // Far drag dismisses (tab state kept: reopening
                         // restores the section, same as close()).
@@ -415,8 +415,10 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             val nowPos = queueAdapter.nowPosition()
             if (nowPos >= 0) queueList.scrollToPosition(nowPos)
         }
-        // Queue size describes the queue view: only there.
-        topCount.visibility = if (tab == Tab.QUEUE) View.VISIBLE else View.GONE
+        // Queue size describes the queue view: only there (suite-pinned).
+        topCount.visibility =
+            if (SheetInteraction.queueCountVisible(tab == Tab.QUEUE)) View.VISIBLE
+            else View.GONE
     }
 
     /** In-queue mini player state: mirrors the floating bar (titles, art,
@@ -597,9 +599,11 @@ class PlayerSheetController(private val activity: FragmentActivity) {
      * alpha animation, 220ms). Compare-before-write upstream guarantees
      * this runs only on real line changes, never per tick. */
     private fun renderPreviewWindow(idx: Int) {
-        for (r in -2..2) {
-            val row = previewRows[r + 2]
-            val text = lyricsLines.getOrNull(idx + r)?.text ?: ""
+        // Window math is suite-pinned (edges, empties, geometry).
+        val rows = SheetInteraction.previewWindow(lyricsLines.map { it.text }, idx)
+        for (r in 0..4) {
+            val row = previewRows[r]
+            val text = rows[r]
             if (row.text.toString() != text) row.text = text
         }
         if (previewBox.visibility != View.VISIBLE) {

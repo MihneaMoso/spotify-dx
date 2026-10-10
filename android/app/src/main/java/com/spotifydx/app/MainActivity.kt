@@ -768,13 +768,11 @@ class MainActivity : AppCompatActivity() {
                     if (barDrag) {
                         val dy = e.rawY - lastRawY
                         lastRawY = e.rawY
-                        // Upward only, 1:1 — the bar stays glued under the
-                        // finger. No auto-handoff while holding: the bar
-                        // simply parks where the finger leaves it; release
-                        // decides.
+                        // Upward-only 1:1 follow (SheetInteraction: the
+                        // suite pins the clamp). No auto-handoff while
+                        // holding: the bar parks; release decides.
                         bar.translationY =
-                            (bar.translationY + dy.coerceAtMost(0f))
-                                .coerceIn(-screenH, 0f)
+                            SheetInteraction.barFollow(bar.translationY, dy, screenH)
                     }
                     true
                 }
@@ -790,10 +788,9 @@ class MainActivity : AppCompatActivity() {
                         tryOpen()
                     } else if (barDrag) {
                         barDrag = false
-                        // Quarter-screen threshold (mirrors the sheet): a
-                        // short drag upward hands off, anything less springs
-                        // back.
-                        if (e.rawY < screenH * 3f / 4f) {
+                        // Quarter-screen threshold, suite-pinned: a short
+                        // drag upward hands off, anything less springs back.
+                        if (SheetInteraction.barReleaseOpens(e.rawY, screenH)) {
                             handoff()
                         } else {
                             // Spring home on the root, THEN restore: the
@@ -843,8 +840,11 @@ class MainActivity : AppCompatActivity() {
         val content = findViewById<View>(R.id.content) ?: return
         val bar = findViewById<View>(R.id.player_bar)
         val nav = findViewById<View>(R.id.bottom_nav)
-        val inset =
-            (if (bar?.visibility == View.VISIBLE) bar.height else 0) + (nav?.height ?: 0)
+        val inset = SheetInteraction.contentInset(
+            bar?.visibility == View.VISIBLE,
+            bar?.height ?: 0,
+            nav?.height ?: 0,
+        )
         if (inset != lastContentInset) {
             lastContentInset = inset
             content.setPadding(

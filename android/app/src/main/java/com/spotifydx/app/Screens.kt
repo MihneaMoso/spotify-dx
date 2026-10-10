@@ -227,17 +227,15 @@ class HomeFragment : Fragment() {
                     val oldHead = lastHead
                     lastHead = head
                     recent.submitList(items) {
-                        // DiffUtil moves never rebind: without this, the old
-                        // head keeps its stale wash beside the new one until
-                        // a scroll (or restart) forces a rebind. Rebind the
-                        // old head's new slot (unless trimmed away — then its
-                        // holder recycled through bind already) and the new
-                        // head (a moved-into-place replay skips bind too).
-                        if (oldHead != null) {
-                            val oldPos = items.indexOfFirst { it.id == oldHead }
-                            if (oldPos >= 0) recent.notifyItemChanged(oldPos)
+                        // DiffUtil moves never rebind: without the rebinds
+                        // below, the old head keeps its stale wash beside
+                        // the new one until a scroll (or restart) forces a
+                        // rebind. Positions are suite-pinned.
+                        for (pos in SheetInteraction.highlightRebinds(
+                            items.map { it.id }, oldHead
+                        )) {
+                            recent.notifyItemChanged(pos)
                         }
-                        recent.notifyItemChanged(0)
                         recentList.smoothScrollToPosition(0)
                     }
                 } else {

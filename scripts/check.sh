@@ -38,8 +38,10 @@ CP="android/app/build/tmp/kotlin-classes/debug:$STDLIB"
 mkdir -p /tmp/opencode/rstest
 javac -cp "$CP" -d /tmp/opencode/rstest \
     android/app/src/test/java/com/spotifydx/app/RangeServeTest.java \
-    android/app/src/test/java/com/spotifydx/app/LogicRegressionTest.java || exit 1
+    android/app/src/test/java/com/spotifydx/app/LogicRegressionTest.java \
+    android/app/src/test/java/com/spotifydx/app/SheetInteractionTest.java || exit 1
 java -cp "/tmp/opencode/rstest:$CP" com.spotifydx.app.RangeServeTest || exit 1
 java -cp "/tmp/opencode/rstest:$CP" com.spotifydx.app.LogicRegressionTest || exit 1
+java -cp "/tmp/opencode/rstest:$CP" com.spotifydx.app.SheetInteractionTest || exit 1
 
 echo "ALL CHECKS PASSED"
