@@ -21,26 +21,29 @@
             app:itemTextColor="@color/nav_text_tint"
             app:menu="@menu/bottom_nav" />
 
-        <LinearLayout
+        <!-- Content fills the right pane edge-to-edge; the player bar
+             floats above it (transparent margins show content underneath). -->
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:orientation="vertical">
+            android:layout_weight="1">
 
             <FrameLayout
                 android:id="@+id/content"
                 android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
+                android:layout_height="match_parent" />
 
         <LinearLayout
             android:id="@+id/player_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
             android:orientation="vertical"
             android:background="@drawable/mini_player_bg"
+            android:elevation="8dp"
             android:padding="12dp"
             android:layout_marginHorizontal="12dp"
+            android:layout_marginTop="8dp"
             android:layout_marginBottom="8dp"
             android:visibility="gone">
 
@@ -147,7 +150,7 @@
                     style="@style/EchoCaption" />
             </LinearLayout>
         </LinearLayout>
-        </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 
     <FrameLayout

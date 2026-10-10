@@ -145,6 +145,16 @@ class MainActivity : AppCompatActivity() {
 
         bindNav()
         bindPlayerBar()
+        // Floating chrome (player bar + bottom nav) overlays the content:
+        // inset the content bottom so list tails aren't hidden behind it.
+        // Layout-change listeners keep it correct across bar show/hide
+        // without per-tick work (renderPlayerBar runs every second).
+        for (id in listOf(R.id.player_bar, R.id.bottom_nav)) {
+            findViewById<View>(id)?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                syncContentInset()
+            }
+        }
+        findViewById<View>(R.id.content)?.post { syncContentInset() }
         // Cache the per-tick mini-player refs once (see fields).
         findViewById<View>(R.id.player_bar)?.let { bar ->
             barTitle = bar.findViewById(R.id.player_title)
@@ -737,8 +747,28 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun renderPlayerBar(s: PlayerRepository.State) {
-        val bar = findViewById<View>(R.id.player_bar) ?: return
+    // Bottom inset matching the floating chrome stack (visible player bar
+    // + bottom nav; rail variant has no bottom_nav so only the bar counts).
+    // Compare-before-write: layout changes can fire repeatedly.
+    private var lastContentInset = -1
+    private fun syncContentInset() {
+        val content = findViewById<View>(R.id.content) ?: return
+        val bar = findViewById<View>(R.id.player_bar)
+        val nav = findViewById<View>(R.id.bottom_nav)
+        val inset =
+            (if (bar?.visibility == View.VISIBLE) bar.height else 0) + (nav?.height ?: 0)
+        if (inset != lastContentInset) {
+            lastContentInset = inset
+            content.setPadding(
+                content.paddingLeft,
+                content.paddingTop,
+                content.paddingRight,
+                inset,
+            )
+        }
+    }
+
+    private fun renderPlayerBar(s: PlayerRepository.State) {        val bar = findViewById<View>(R.id.player_bar) ?: return
         // Single owner for bar visibility: it shows if and only if a track
         // exists (restored or playing). The old gated-only toggling left it
         // hidden after cold starts that never passed a second syncNav.
