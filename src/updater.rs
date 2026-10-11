@@ -686,11 +686,11 @@ pub fn apply_staged_update() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Build and fire the ACTION_VIEW install intent for the staged APK using a
-/// FileProvider-backed content URI (wired up in `SpotifyDxUpdater.kt`/manifest
-/// by `scripts/stage-updater.sh`). Runs through wry's safe `dispatch`, so no
-/// `unsafe` is needed to reach the Android context. Returns Ok once the intent
-/// is handed to the system. Dioxus renderers only; the Kotlin app calls
-/// [`request_android_install_with`] with its own JNI context instead.
+/// FileProvider-backed content URI (wired up in `SpotifyDxUpdater.kt`/manifest).
+/// Runs through wry's safe `dispatch`, so no `unsafe` is needed to reach the
+/// Android context. Returns Ok once the intent is handed to the system.
+/// Dioxus renderers only; the Kotlin app calls [`request_android_install_with`]
+/// with its own JNI context instead.
 #[cfg(all(target_os = "android", feature = "native"))]
 pub fn request_android_install() -> Result<(), String> {
     let Some(dir) = updates_dir() else {

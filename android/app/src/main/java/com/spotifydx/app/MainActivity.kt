@@ -677,7 +677,6 @@ class MainActivity : AppCompatActivity() {
     // -- Player bar (Echo floating mini-player: transport + titles + scrub) -------------------------
     private fun bindPlayerBar() {
         val bar = findViewById<View>(R.id.player_bar) ?: return
-        // Swipe up opens the full-screen player sheet (Spotify parity).
         // Taps still hit the bar's own controls (buttons/SeekBars consume
         // their own streams first — this listener only sees background
         // Follow-the-finger drag: the BAR ITSELF rises with the finger and
@@ -689,7 +688,6 @@ class MainActivity : AppCompatActivity() {
         // needs its own DOWN bookkeeping and silently drops streams whose
         // DOWN it never saw, which made opens flaky.
         // A 500ms debounce covers the async fragment-commit window.
-        // TEMP-DIAG gestures.
         var lastRawY = 0f
         var lastOpenMs = 0L
         var downRawY = 0f
@@ -729,8 +727,12 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                 )
-                lp.leftMargin = (12 * density).toInt()
-                lp.rightMargin = (12 * density).toInt()
+                // Side margins mirror the rest position: read them back
+                // from the saved params (12dp literals would silently drift
+                // from the layout the next time it changes).
+                val margins = origParams as? ViewGroup.MarginLayoutParams
+                lp.leftMargin = margins?.leftMargin ?: (12 * density).toInt()
+                lp.rightMargin = margins?.rightMargin ?: (12 * density).toInt()
                 lp.topMargin = loc[1] - rootLoc[1]
                 root.addView(bar, lp)
                 dragRoot = root
@@ -856,7 +858,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderPlayerBar(s: PlayerRepository.State) {        val bar = findViewById<View>(R.id.player_bar) ?: return
+    private fun renderPlayerBar(s: PlayerRepository.State) {
+        val bar = findViewById<View>(R.id.player_bar) ?: return
         // Single owner for bar visibility: it shows if and only if a track
         // exists (restored or playing). The old gated-only toggling left it
         // hidden after cold starts that never passed a second syncNav.
@@ -888,8 +891,8 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
-        // Transport is core-driven; until Phase 4 wires it the buttons show
-        // state but issue no fake commands (PlayerRepository reverts).
+        // Transport is core-driven: the buttons issue real commands and
+        // PlayerRepository reverts on failure (no fake state).
         val scrub = barScrub
         if (scrub != null && s.durationMs > 0) {
             val max = s.durationMs.toInt()

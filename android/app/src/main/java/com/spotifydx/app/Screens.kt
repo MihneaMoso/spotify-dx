@@ -123,7 +123,8 @@ class GateFragment : Fragment() {
             vm.starting.collect { starting ->
                 progress.visibility = if (starting) View.VISIBLE else View.GONE
                 retry.visibility = if (starting) View.GONE else View.VISIBLE
-                status.text = if (starting) "Opening login…" else "Sign in with Spotify to continue."
+                status.text = if (starting) getString(R.string.gate_opening)
+                else getString(R.string.gate_sign_in)
             }
         }
         // The core hands over the sign-in URL; showing the page consumes it

@@ -28,6 +28,14 @@
 //!   return `PHASE_2_PLUS` until their phase lands — Kotlin is written against
 //!   the final contract from day one.
 
+/// Data-surface exports (Phase 3 + resolveStream + PHASE_2_PLUS stubs).
+/// Moved out verbatim; symbol names and envelopes unchanged.
+#[path = "bridge_data.rs"]
+mod bridge_data;
+/// SDK-transport + lyrics exports (Phase 5). Moved out verbatim.
+#[path = "bridge_sdk.rs"]
+mod bridge_sdk;
+
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::sys::{jboolean, jint};
 use jni::JNIEnv;
@@ -43,10 +51,6 @@ use crate::{adblock, auth, profile, settings, updater, util};
 /// major version.
 pub const BRIDGE_VERSION: jint = 1;
 
-/// Error code for §6.1 calls whose core phase has not landed yet. Kotlin maps
-/// it to its own error hierarchy like any other typed core error.
-const PHASE_CODE: &str = "PHASE_2_PLUS";
-const PHASE_MSG: &str = "wired in a later migration phase (see docs/KOTLIN_MIGRATION.md)";
 
 /// Full-screen sign-in address (return parameter points at the web player, so
 /// an already-signed-in user bounces straight through). Owned by the core so
@@ -127,7 +131,7 @@ fn set_update_status(s: String) {
 /// Dedicated Tokio runtime for blocking bridge calls. Separate from any
 /// renderer runtime (none exists in the Kotlin app); two threads are plenty —
 /// bridge calls are thin wrappers over the core's own background workers.
-fn rt() -> &'static tokio::runtime::Runtime {
+pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -143,15 +147,15 @@ fn rt() -> &'static tokio::runtime::Runtime {
 // JSON envelopes
 // ---------------------------------------------------------------------------
 
-fn ok_data(data_json: &str) -> String {
+pub(crate) fn ok_data(data_json: &str) -> String {
     format!("{{\"ok\":true,\"data\":{data_json}}}")
 }
 
-fn ok_str(s: &str) -> String {
+pub(crate) fn ok_str(s: &str) -> String {
     ok_data(&serde_json::Value::String(s.to_string()).to_string())
 }
 
-fn err(code: &str, message: impl std::fmt::Display) -> String {
+pub(crate) fn err(code: &str, message: impl std::fmt::Display) -> String {
     let msg = serde_json::Value::String(message.to_string()).to_string();
     format!("{{\"ok\":false,\"code\":\"{code}\",\"message\":{msg}}}")
 }
@@ -160,13 +164,13 @@ fn err(code: &str, message: impl std::fmt::Display) -> String {
 // JNI plumbing (safe `jni` API only)
 // ---------------------------------------------------------------------------
 
-fn rust_str(env: &mut JNIEnv<'_>, s: &JString<'_>) -> String {
+pub(crate) fn rust_str(env: &mut JNIEnv<'_>, s: &JString<'_>) -> String {
     env.get_string(s)
         .map(|j| j.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-fn java_str<'x, 'a>(env: &'x JNIEnv<'a>, s: &str) -> JString<'a> {
+pub(crate) fn java_str<'x, 'a>(env: &'x JNIEnv<'a>, s: &str) -> JString<'a> {
     // Allocation failure here means the JVM is already OOM-dying; the expect
     // converts it into a bridge panic envelope via `guarded`'s caller path.
     // (This runs outside `guarded`, so keep the input small — envelopes only.)
@@ -178,7 +182,7 @@ fn java_str<'x, 'a>(env: &'x JNIEnv<'a>, s: &str) -> JString<'a> {
 /// A Rust panic becomes `BRIDGE_PANIC` instead of unwinding into the JVM.
 /// Takes `env` by value: `JString` is a raw-pointer wrapper (its lifetime is
 /// the JNI frame's, not a borrow of `env`), so moving `env` is sound.
-fn guarded<'a>(mut env: JNIEnv<'a>, f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a> {
+pub(crate) fn guarded<'a>(mut env: JNIEnv<'a>, f: impl FnOnce(&mut JNIEnv<'a>) -> String) -> JString<'a> {
     let out =
         std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut env))).unwrap_or_else(|payload| {
             // Extract the panic message (String / &str / unknown) so the envelope
@@ -718,15 +722,13 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_pollEvents<'a>(
     })
 }
 
-// ---------------------------------------------------------------------------
-// §6.1 data surface, Phase 3 (real)
-// ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
 /// Mirror freshness gate shared by every data call: the bridge upholds the
 /// same 60s skew as `ensure_token`. Stale/missing → `NEEDS_PAGE` (Kotlin
 /// revives the session page through `SessionRefresher` and retries) instead
 /// of a doomed network call.
-fn need_fresh_token() -> Result<String, String> {
+pub(crate) fn need_fresh_token() -> Result<String, String> {
     // Cold-start ordering: initCore returns before the bootstrap worker
     // seeds the mirror, but shell-first screens fire data calls within ms.
     // Without this wait they all fail NEEDS_PAGE against an empty-but-
@@ -769,7 +771,7 @@ fn await_bootstrap_blocking() {
 /// revoked-session arm, which now runs headless-safe through `auth::logout`)
 /// is the first-class expiry transition; rate limits stay typed for the
 /// banner + timed auto-retry contract.
-fn map_data_err(e: crate::app_error::AppError) -> String {
+pub(crate) fn map_data_err(e: crate::app_error::AppError) -> String {
     // Revoked sessions expire the mirror + provider slot HERE (not just the
     // store, which `auth::logout` already cleared): otherwise the next data
     // call would reuse the dead token and 401-loop. Kotlin gates on the code
@@ -798,269 +800,13 @@ fn map_data_err(e: crate::app_error::AppError) -> String {
     }
 }
 
-fn to_json<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> String {
     match serde_json::to_string(v) {
         Ok(j) => ok_data(&j),
         Err(e) => err("IO", e),
     }
 }
 
-/// `getHome(arg) -> envelope<HomeData>`. Playlists + liked tracks fanned out
-/// concurrently in core; partial legs default (never a hard failure).
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getHome<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    _arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |_env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        match rt().block_on(crate::spotify::api::get_home()) {
-            Ok(home) => to_json(&home),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `search(arg) -> envelope<SearchResults>`. `{query, limit?}`; multi-type
-/// GQL search, same operation the desktop Search page uses.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_search<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let v: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => return err("INVALID_ARGS", format!("bad arg JSON: {e}")),
-        };
-        let q = v.get("query").and_then(|q| q.as_str()).unwrap_or_default();
-        if q.is_empty() {
-            return err("INVALID_ARGS", "arg.query must be non-empty");
-        }
-        let limit = v
-            .get("limit")
-            .and_then(|l| l.as_u64())
-            .unwrap_or(20)
-            .min(50)
-            .max(1) as u32;
-        match rt().block_on(crate::spotify::api::search(
-            q,
-            &["track", "album", "artist"],
-            limit,
-        )) {
-            Ok(results) => to_json(&results),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `getPlaylist(arg) -> envelope<Playlist>`. `{id}`; detail + tracks.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getPlaylist<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let id = match crate::util::arg_id(&raw) {
-            Ok(id) => id,
-            Err(e) => return err("INVALID_ARGS", e),
-        };
-        match rt().block_on(crate::spotify::gql::gql_playlist(&id)) {
-            Ok(playlist) => to_json(&playlist),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `getAlbum(arg) -> envelope<{album, tracks}>`. `{id}`; detail + track
-/// listing merged (the GQL album shape carries metadata; tracks come from
-/// the companion call, same as the desktop detail page).
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getAlbum<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let id = match crate::util::arg_id(&raw) {
-            Ok(id) => id,
-            Err(e) => return err("INVALID_ARGS", e),
-        };
-        let outcome = rt().block_on(async {
-            let album = crate::spotify::api::get_album(&id).await?;
-            // Tracks are best-effort: a failing leg yields the header with an
-            // empty listing, never a crash (partial-failure tolerance).
-            let tracks = crate::spotify::api::get_album_tracks(&id)
-                .await
-                .unwrap_or_default();
-            Ok::<_, crate::app_error::AppError>((album, tracks))
-        });
-        match outcome {
-            Ok((album, tracks)) => to_json(&serde_json::json!({
-                "album": album,
-                "tracks": tracks,
-            })),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `getArtistPage(arg) -> envelope<ArtistPage>`. `{id}`; hero + discography
-/// + popular tracks + related in minimal round trips.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getArtistPage<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let id = match crate::util::arg_id(&raw) {
-            Ok(id) => id,
-            Err(e) => return err("INVALID_ARGS", e),
-        };
-        match rt().block_on(crate::spotify::api::get_artist_page(&id)) {
-            Ok(page) => to_json(&page),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `getLikedTracks(arg) -> envelope<Paged<SavedTrack>>`. `{limit, offset}`;
-/// fixed page sizes, `null`-track skipping for region-blocked items happens
-/// Kotlin-side (the envelope preserves them).
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getLikedTracks<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let (limit, offset) = match crate::util::arg_page(&raw) {
-            Ok(p) => p,
-            Err(e) => return err("INVALID_ARGS", e),
-        };
-        match rt().block_on(crate::spotify::api::get_user_saved_tracks(limit, offset)) {
-            Ok(paged) => to_json(&paged),
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `getLibrary(arg) -> envelope`. `{kind: playlists|albums|liked, limit,
-/// offset}`; one bridge call per collection leg (Kotlin fans the trio out
-/// concurrently, any-leg failure surfaces).
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_getLibrary<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        if let Err(e) = need_fresh_token() {
-            return e;
-        }
-        let raw = rust_str(&mut *env, &arg);
-        let v: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => return err("INVALID_ARGS", format!("bad arg JSON: {e}")),
-        };
-        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or_default();
-        if !matches!(kind, "playlists" | "albums" | "liked") {
-            return err("INVALID_ARGS", "arg.kind must be playlists|albums|liked");
-        }
-        let (limit, offset) = match crate::util::arg_page(&raw) {
-            Ok(p) => p,
-            Err(e) => return err("INVALID_ARGS", e),
-        };
-        let outcome = rt().block_on(async {
-            match kind {
-                "playlists" => crate::spotify::gql::gql_user_playlists(limit, offset)
-                    .await
-                    .map(|items| to_json(&items)),
-                "albums" => crate::spotify::gql::gql_user_albums(limit, offset)
-                    .await
-                    .map(|items| to_json(&items)),
-                _ => crate::spotify::api::get_user_saved_tracks(limit, offset)
-                    .await
-                    .map(|paged| to_json(&paged)),
-            }
-        });
-        match outcome {
-            Ok(envelope) => envelope,
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-/// `fetchArtwork(arg) -> envelope<string>`. `{url}`; base64 bytes through the
-/// core's hash-keyed disk cache + ad-filter gate (zero JNI traffic on repeat
-/// hits is Kotlin's memory layer; the core cache is the disk tier). Empty
-/// URLs fail fast with `INVALID_ARGS`.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_fetchArtwork<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        let raw = rust_str(&mut *env, &arg);
-        let v: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => return err("INVALID_ARGS", format!("bad arg JSON: {e}")),
-        };
-        let url = v.get("url").and_then(|u| u.as_str()).unwrap_or_default();
-        if url.is_empty() {
-            return err("INVALID_ARGS", "arg.url must be non-empty");
-        }
-        match rt().block_on(crate::media::images::load(url)) {
-            Ok(bytes) => {
-                use base64::Engine;
-                ok_data(
-                    &serde_json::Value::String(
-                        base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()),
-                    )
-                    .to_string(),
-                )
-            }
-            Err(e) => err("NET", e.to_string()),
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
 // §6.1 session surface, Phase 2 (real)
 // ---------------------------------------------------------------------------
 
@@ -1200,277 +946,3 @@ pub extern "C" fn Java_com_spotifydx_app_CoreBridge_currentUser<'a>(
         }
     })
 }
-
-// ---------------------------------------------------------------------------
-// §6.1 later-phase surface: exact signatures, PHASE_2_PLUS until wired
-// ---------------------------------------------------------------------------
-
-/// Generate a `PHASE_2_PLUS` stub with the exact §6.1 signature. All stubs
-/// take an optional JSON arg (empty string when the call needs none) so the
-/// Kotlin declaration never changes when the real implementation lands.
-macro_rules! phase_stub {
-    ($java:ident) => {
-        #[allow(unsafe_code)]
-        #[no_mangle]
-        pub extern "C" fn $java<'a>(
-            env: JNIEnv<'a>,
-            _cls: JClass<'a>,
-            _arg: JString<'a>,
-        ) -> JString<'a> {
-            guarded(env, |_| err(PHASE_CODE, PHASE_MSG))
-        }
-    };
-}
-
-/// `resolveStream(arg) -> envelope<{url,format,provider}>`. `{track}` as a
-/// core `Track` object (rows/cards always pass the visible object —
-/// play-with-metadata, zero network). Stream-URL cache first, ordered
-/// provider failover behind it (sole active provider: YouTube-muxed,
-/// §6.9). Deliberately NOT gated on a fresh Spotify token: resolution is
-/// token-free (no Spotify API call), so an expired session must never
-/// block playback — the previous gate turned every post-expiry tap into
-/// an instant NEEDS_PAGE that the player couldn't heal (only screens
-/// heal), forcing the user through a manual sign-in + retry loop before
-/// any new song would play.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_resolveStream<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        // No need_fresh_token gate (see doc above): token-free resolution.
-        let raw = rust_str(&mut *env, &arg);
-        let v: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => return err("INVALID_ARGS", format!("bad arg JSON: {e}")),
-        };
-        let track: crate::spotify::models::Track = match serde_json::from_value(
-            v.get("track").cloned().unwrap_or(serde_json::Value::Null),
-        ) {
-            Ok(t) => t,
-            Err(e) => return err("INVALID_ARGS", format!("arg.track is not a Track: {e}")),
-        };
-        // Advisory quality ceiling from the Android wifi/metered
-        // preference; absent/unknown = unconstrained (legacy behavior).
-        let hint = crate::streaming::provider::Quality::parse_hint(
-            v.get("quality").and_then(|q| q.as_str()),
-        );
-        match rt().block_on(crate::streaming::resolver::resolve(&track, hint)) {
-            Ok(Some(r)) => ok_data(
-                &serde_json::json!({
-                    "url": r.url,
-                    "format": format!("{:?}", r.format).to_lowercase(),
-                    "provider": r.provider,
-                    "quality": format!("{:?}", r.quality).to_lowercase(),
-                })
-                .to_string(),
-            ),
-            Ok(None) => err("NOT_FOUND", "no playable source found"),
-            Err(e) => err("NET", e),
-        }
-    })
-}
-
-// -- SDK path (Phase 5, §9.2 migration): Connect transport against the
-// -- Kotlin-hosted SDK device. The device itself lives in a hidden platform
-// -- WebView driven from Kotlin (`SdkWebViewDriver`); these calls are the
-// -- "transport commands map to the Connect control calls the core already
-// -- makes" half — thin arg parsing over `spotify::player_api`, whose
-// -- `require_premium` gate stays intact (tier folded into AUTH_STATE by
-// -- `currentUser` above). The Dioxus-era `playTrack/pause/...` stubs below
-// -- are a different (dead) surface and stay untouched.
-fn sdk_str_arg(v: &serde_json::Value, key: &str) -> Result<String, String> {
-    v.get(key)
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_owned())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| err("INVALID_ARGS", format!("arg.{key} missing or empty")))
-}
-
-fn sdk_json_arg(env: &mut JNIEnv<'_>, arg: &JString<'_>) -> Result<serde_json::Value, String> {
-    let raw = rust_str(env, arg);
-    serde_json::from_str(&raw).map_err(|e| err("INVALID_ARGS", format!("bad arg JSON: {e}")))
-}
-
-/// `sdkDocument("") -> envelope{data: JSON-encoded SDK_HTML}`. Single-sourced:
-/// Kotlin must never duplicate the document (`player::playback_sdk::SDK_HTML`
-/// is the only copy). No token needed — the document carries no credentials.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkDocument<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    _arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |_| {
-        ok_data(
-            &serde_json::Value::String(crate::player::playback_sdk::SDK_HTML.to_owned())
-                .to_string(),
-        )
-    })
-}
-
-macro_rules! sdk_transport {
-    ($java:ident, $op:expr) => {
-        #[allow(unsafe_code)]
-        #[no_mangle]
-        pub extern "C" fn $java<'a>(
-            env: JNIEnv<'a>,
-            _cls: JClass<'a>,
-            arg: JString<'a>,
-        ) -> JString<'a> {
-            guarded(env, |env| {
-                if let Err(e) = need_fresh_token() {
-                    return e;
-                }
-                let v = match sdk_json_arg(env, &arg) {
-                    Ok(v) => v,
-                    Err(e) => return e,
-                };
-                let device_id = match sdk_str_arg(&v, "device_id") {
-                    Ok(d) => d,
-                    Err(e) => return e,
-                };
-                // `$op(device_id, v)` builds the future inline so its borrows
-                // stay concrete (a closure-returned future trips higher-ranked
-                // lifetime errors against `block_on`).
-                match rt().block_on($op(&device_id, &v)) {
-                    Ok(()) => ok_str("ok"),
-                    Err(e) => map_data_err(e),
-                }
-            })
-        }
-    };
-}
-
-async fn sdk_do_play(
-    device: &str,
-    v: &serde_json::Value,
-) -> Result<(), crate::app_error::AppError> {
-    let uri = sdk_str_arg(v, "uri").map_err(crate::app_error::AppError::Playback)?;
-    let pos = v.get("position_ms").and_then(|n| n.as_u64());
-    crate::spotify::player_api::play(device, &uri, pos).await
-}
-
-async fn sdk_do_pause(
-    device: &str,
-    _v: &serde_json::Value,
-) -> Result<(), crate::app_error::AppError> {
-    crate::spotify::player_api::pause(device).await
-}
-
-async fn sdk_do_skip(
-    device: &str,
-    v: &serde_json::Value,
-) -> Result<(), crate::app_error::AppError> {
-    let next = v.get("next").and_then(|b| b.as_bool()).unwrap_or(true);
-    crate::spotify::player_api::skip(device, next).await
-}
-
-async fn sdk_do_seek(
-    device: &str,
-    v: &serde_json::Value,
-) -> Result<(), crate::app_error::AppError> {
-    let ms = v.get("position_ms").and_then(|n| n.as_u64()).unwrap_or(0);
-    crate::spotify::player_api::seek(device, ms).await
-}
-
-async fn sdk_do_volume(
-    device: &str,
-    v: &serde_json::Value,
-) -> Result<(), crate::app_error::AppError> {
-    // Clamp contract (0–100): u64 clamps as before; negatives clamp to 0
-    // instead of silently becoming the 80 default; non-numeric/missing
-    // keeps the legacy 80.
-    let pct = match v.get("volume") {
-        Some(n) if n.as_u64().is_some() => n.as_u64().unwrap_or(80).min(100),
-        Some(n) if n.as_i64().is_some() => n.as_i64().unwrap_or(80).max(0).min(100) as u64,
-        _ => 80,
-    } as u8;
-    crate::spotify::player_api::set_volume(device, pct).await
-}
-
-sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkPlay, sdk_do_play);
-sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkPause, sdk_do_pause);
-sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkSkip, sdk_do_skip);
-sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkSeek, sdk_do_seek);
-sdk_transport!(Java_com_spotifydx_app_CoreBridge_sdkVolume, sdk_do_volume);
-
-/// `sdkParseState(payload) -> envelope{data: SdkState JSON}`. Reuses the
-/// tested core parser (`playback_sdk::parse_sdk_state`); unknown shapes
-/// degrade to defaults, never errors.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_sdkParseState<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        let v = match sdk_json_arg(env, &arg) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let state = crate::player::playback_sdk::parse_sdk_state(&v);
-        match serde_json::to_value(&state) {
-            Ok(json) => ok_data(&json.to_string()),
-            Err(e) => err("NET", format!("state encode failed: {e}")),
-        }
-    })
-}
-
-/// `fetchLyrics(arg) -> envelope<LyricsResult>`.
-/// `{artist, title, album?, duration_ms?}`. Misses are normal (many tracks
-/// have no lyrics) and return `found: false`, never an error.
-#[allow(unsafe_code)]
-#[no_mangle]
-pub extern "C" fn Java_com_spotifydx_app_CoreBridge_fetchLyrics<'a>(
-    env: JNIEnv<'a>,
-    _cls: JClass<'a>,
-    arg: JString<'a>,
-) -> JString<'a> {
-    guarded(env, |env| {
-        let v = match sdk_json_arg(env, &arg) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let str_field = |key: &str| {
-            v.get(key)
-                .and_then(|s| s.as_str())
-                .unwrap_or_default()
-                .to_string()
-        };
-        let artist = str_field("artist");
-        let title = str_field("title");
-        if artist.is_empty() || title.is_empty() {
-            return err("INVALID_ARGS", "arg.artist and arg.title are required");
-        }
-        let album = str_field("album");
-        let duration_ms = v.get("duration_ms").and_then(|n| n.as_u64()).unwrap_or(0);
-        match rt().block_on(crate::streaming::lyrics::fetch_lyrics(
-            &artist,
-            &title,
-            &album,
-            duration_ms,
-        )) {
-            Ok(lyrics) => match serde_json::to_value(&lyrics) {
-                Ok(json) => ok_data(&json.to_string()),
-                Err(e) => err("NET", format!("lyrics encode failed: {e}")),
-            },
-            Err(e) => map_data_err(e),
-        }
-    })
-}
-
-phase_stub!(Java_com_spotifydx_app_CoreBridge_playTrack);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_playUri);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_pause);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_resume);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_next);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_prev);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_seek);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_setVolume);
-phase_stub!(Java_com_spotifydx_app_CoreBridge_enqueue);
-

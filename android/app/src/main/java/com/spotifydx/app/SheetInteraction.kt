@@ -66,7 +66,4 @@ object SheetInteraction {
      * bottom nav; the rail variant has no bottom nav). */
     fun contentInset(barVisible: Boolean, barH: Int, navH: Int): Int =
         (if (barVisible) barH else 0) + navH
-
-    /** The queue size describes the queue view: header count only there. */
-    fun queueCountVisible(isQueueTab: Boolean): Boolean = isQueueTab
 }

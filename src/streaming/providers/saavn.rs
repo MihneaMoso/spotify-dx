@@ -12,15 +12,14 @@
 //! `rights.code`) and duration-gates like every other provider.
 //! `explicit_content` is informational only — never filtered.
 
-use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cipher::{BlockDecrypt, KeyInit};
 use des::Des;
 
-use super::common::urlencode;
+use super::common::{urlencode, CooldownGate};
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -36,17 +35,11 @@ const DES_KEY: &[u8] = b"38346591";
 /// Consecutive failures before the provider cools down (single host — no
 /// pool to rotate, so this only gates total-outage storms).
 #[cfg(not(target_arch = "wasm32"))]
-const COOL_AFTER_FAILURES: u32 = 3;
-#[cfg(not(target_arch = "wasm32"))]
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
-#[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct SaavnProvider {
     client: reqwest::Client,
-    failures: Mutex<u32>,
-    #[cfg(not(target_arch = "wasm32"))]
-    cooling_until: Mutex<Option<Instant>>,
+    gate: CooldownGate,
 }
 
 impl Default for SaavnProvider {
@@ -65,27 +58,7 @@ impl SaavnProvider {
                 let builder = builder.timeout(REQUEST_TIMEOUT);
                 builder.build().unwrap_or_default()
             },
-            failures: Mutex::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            cooling_until: Mutex::new(None),
-        }
-    }
-
-    fn note_success(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f = 0;
-        }
-    }
-
-    fn note_failure(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f += 1;
-            #[cfg(not(target_arch = "wasm32"))]
-            if *f >= COOL_AFTER_FAILURES {
-                if let Ok(mut c) = self.cooling_until.lock() {
-                    *c = Some(Instant::now() + COOLDOWN);
-                }
-            }
+            gate: CooldownGate::new(),
         }
     }
 
@@ -112,21 +85,21 @@ impl SaavnProvider {
         let resp = match self.client.get(&url).send().await {
             Ok(r) => r,
             Err(_) => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("saavn search request failed".into());
             }
         };
         let val: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(_) => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("saavn search parse failed".into());
             }
         };
         let results = match val.get("results").and_then(|r| r.as_array()) {
             Some(r) => r,
             None => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("saavn search shape changed".into());
             }
         };
@@ -180,7 +153,7 @@ impl SaavnProvider {
             } else {
                 Self::swap_quality_token(&base, token)
             };
-            self.note_success();
+            self.gate.note_success();
             return Resolution::Success {
                 url: stream_url,
                 format: AudioFormat::Unknown,
@@ -261,17 +234,14 @@ fn item_names_track(
         })
         .unwrap_or_default();
     let duration = item_secs(item);
-    if super::common::duration_tight(track_ms, duration) {
-        super::common::title_matches_fuzzy(title, artist, ititle, &artists)
-    } else {
-        super::common::title_matches(title, artist, ititle, &artists)
-    }
+    super::common::match_title(title, artist, ititle, &artists, track_ms, duration)
 }
 
 /// Availability gate: item-level rights, not just presence.
 /// Skips label-withdrawn entries (`disabled`, non-zero `rights.code`) that
 /// would 403/404 at playback. Pure (unit-tested).
-fn playable_item(item: &serde_json::Value) -> bool {    if item.get("disabled").and_then(|d| d.as_str()) == Some("true") {
+fn playable_item(item: &serde_json::Value) -> bool {
+    if item.get("disabled").and_then(|d| d.as_str()) == Some("true") {
         return false;
     }
     if let Some(code) = item.get("rights").and_then(|r| r.get("code")) {
@@ -310,7 +280,6 @@ fn decrypt_media_url(enc: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Minimal percent-encoding for query params (mirrors piped.rs; no new deps).
 #[async_trait(?Send)]
 impl Provider for SaavnProvider {
     fn name(&self) -> &'static str {
@@ -320,8 +289,7 @@ impl Provider for SaavnProvider {
     fn is_available(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let cooling = self.cooling_until.lock().unwrap_or_else(|e| e.into_inner());
-            if cooling.map(|u| Instant::now() < u).unwrap_or(false) {
+            if self.gate.is_cooling() {
                 return false;
             }
         }

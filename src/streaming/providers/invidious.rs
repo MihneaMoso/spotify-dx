@@ -27,14 +27,13 @@
 //! re-resolved per play like every other upstream URL (never persisted
 //! beyond the in-memory upstream map).
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::common::{fanout_queries, title_matches, urlencode, Fetch};
+use super::common::{fanout_queries, urlencode, Fetch, InstancePool};
 use super::youtube;
 use crate::streaming::provider::{Provider, Quality, Resolution, TrackQuery};
 
@@ -53,42 +52,21 @@ const SEED_INSTANCES: &[&str] = &[
 /// Public instance list for best-effort pool refresh.
 const INSTANCES_JSON: &str = "https://api.invidious.io/instances.json?sort_by=health";
 
-/// Consecutive transport failures before an instance cools down.
-const COOL_AFTER_FAILURES: u32 = 2;
-/// Cooldown for an unhealthy instance.
-#[cfg(not(target_arch = "wasm32"))]
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
-/// wasm has no `Instant`-based cooldown state, so recovery rides on
-/// call-count probation instead (same pattern as Piped).
-#[cfg(target_arch = "wasm32")]
-const PROBATION_CALLS: u64 = 64;
-/// Per-request budget: dead hosts fail fast instead of stalling the chain.
-#[cfg(not(target_arch = "wasm32"))]
 /// Per-request timeout: dead instances must fail fast (a 4-seed pool at
 /// 8s each is most of a Curve-style hang; cooldowns only help within a
 /// process lifetime, restarts repay everything).
+#[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Browsers-ish UA: instances bolt on anti-bot walls against default
 /// library UAs; a platform UA passes where `reqwest/x.y` does not.
 const UA: &str = "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/131.0 Safari/537.36";
 
-#[derive(Default)]
-struct InstanceHealth {
-    consecutive_failures: u32,
-    #[cfg(not(target_arch = "wasm32"))]
-    cooling_until: Option<Instant>,
-    #[cfg(target_arch = "wasm32")]
-    checks: u64,
-    #[cfg(target_arch = "wasm32")]
-    cooled_at: u64,
-}
-
 pub struct InvidiousProvider {
     client: reqwest::Client,
-    health: Mutex<HashMap<String, InstanceHealth>>,
+    pool: InstancePool,
     /// Owned pool (seeds + refreshed) so discovery can extend it.
-    pool: Mutex<Vec<String>>,
+    instances: Mutex<Vec<String>>,
 }
 
 impl Default for InvidiousProvider {
@@ -106,69 +84,27 @@ impl InvidiousProvider {
                 let builder = builder.timeout(REQUEST_TIMEOUT);
                 builder.build().unwrap_or_default()
             },
-            health: Mutex::new(HashMap::new()),
-            pool: Mutex::new(SEED_INSTANCES.iter().map(|s| s.to_string()).collect()),
+            pool: InstancePool::new(),
+            instances: Mutex::new(SEED_INSTANCES.iter().map(|s| s.to_string()).collect()),
         }
     }
 
     /// Healthy pool members in pool order (cooling ones skipped).
     fn healthy(&self) -> Vec<String> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = Instant::now();
-        let mut health = self.health.lock().unwrap_or_else(|e| e.into_inner());
-        let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        pool.into_iter()
-            .filter(|api| match health.get_mut(api) {
-                None => true,
-                Some(h) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        if h.cooling_until.map(|u| now >= u).unwrap_or(false) {
-                            // Expired cooldown: forgive and retry.
-                            *h = InstanceHealth::default();
-                            true
-                        } else if h.cooling_until.is_some() {
-                            false
-                        } else {
-                            h.consecutive_failures < COOL_AFTER_FAILURES
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        h.checks = h.checks.saturating_add(1);
-                        if h.consecutive_failures < COOL_AFTER_FAILURES {
-                            true
-                        } else if h.checks.saturating_sub(h.cooled_at) >= PROBATION_CALLS {
-                            *h = InstanceHealth::default();
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
-            })
-            .collect()
+        let instances = self
+            .instances
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.pool.healthy(&instances)
     }
 
     fn note_success(&self, api: &str) {
-        if let Ok(mut health) = self.health.lock() {
-            health.remove(api);
-        }
+        self.pool.note_success(api);
     }
 
     fn note_failure(&self, api: &str) {
-        if let Ok(mut health) = self.health.lock() {
-            let h = health.entry(api.to_string()).or_default();
-            h.consecutive_failures += 1;
-            #[cfg(not(target_arch = "wasm32"))]
-            if h.consecutive_failures >= COOL_AFTER_FAILURES {
-                h.cooling_until = Some(Instant::now() + COOLDOWN);
-            }
-            #[cfg(target_arch = "wasm32")]
-            if h.consecutive_failures >= COOL_AFTER_FAILURES && h.cooled_at == 0 {
-                h.cooled_at = h.checks;
-            }
-        }
+        self.pool.note_failure(api);
     }
 
     /// Best-effort pool refresh from the public instance list. Additive
@@ -188,10 +124,10 @@ impl InvidiousProvider {
         if domains.is_empty() {
             return;
         }
-        if let Ok(mut pool) = self.pool.lock() {
+        if let Ok(mut instances) = self.instances.lock() {
             for d in domains {
-                if !pool.iter().any(|p| p == &d) {
-                    pool.push(d);
+                if !instances.iter().any(|p| p == &d) {
+                    instances.push(d);
                 }
             }
         }
@@ -303,12 +239,14 @@ impl InvidiousProvider {
         // the next video, a false accept plays the wrong song.
         let title = val.get("title").and_then(|t| t.as_str()).unwrap_or("");
         let author = val.get("author").and_then(|a| a.as_str()).unwrap_or("");
-        let gate = if super::common::duration_tight(query.duration_ms, secs) {
-            super::common::title_matches_fuzzy(&query.title, &query.artist, title, author)
-        } else {
-            title_matches(&query.title, &query.artist, title, author)
-        };
-        if !gate {
+        if !super::common::match_title(
+            &query.title,
+            &query.artist,
+            title,
+            author,
+            query.duration_ms,
+            secs
+        ) {
             return StreamsOutcome::Miss;
         }
         let pick = match pick_proxied_audio(&val, query.max_quality) {
@@ -374,17 +312,11 @@ struct AudioPick {
     mime: String,
 }
 
-/// Search query variants, rank order (same shape as the direct provider:
-/// legacy query first, sanitized bare-words fallback last — punctuation
-/// blinds search, so the stripped form rides as the final variant).
-/// Pure (unit-tested).
+/// Search query variants, rank order. Shared definition (see
+/// `common::search_queries`): the YouTube and Invidious copies drifted in
+/// lockstep. Pure (unit-tested).
 fn search_queries(title: &str, artist: &str) -> [String; 4] {
-    [
-        format!("{artist} {title} audio"),
-        format!("{title} {artist}"),
-        format!("{title} {artist} topic"),
-        super::common::sanitize_query(&format!("{artist} {title}")),
-    ]
+    super::common::search_queries(title, artist)
 }
 
 /// Extract a video ID from an Invidious search item. Non-video items and
@@ -429,7 +361,7 @@ fn pick_proxied_audio(val: &serde_json::Value, cap: Option<Quality>) -> Option<A
         Some(Quality::Normal) => Some(255_999),
         _ => None,
     };
-    let mut cands: Vec<(i64, u64, String, String)> = Vec::new();
+    let mut cands: Vec<(Option<i64>, u64, String, String)> = Vec::new();
     for f in formats {
         let url = match f.get("url").and_then(|u| u.as_str()) {
             Some(u) if !u.is_empty() && !youtube::is_throttled_url(u) => u.to_string(),
@@ -441,7 +373,7 @@ fn pick_proxied_audio(val: &serde_json::Value, cap: Option<Quality>) -> Option<A
         }
         let itag = f.get("itag").and_then(as_u64).map(|i| i as i64);
         let bitrate = f.get("bitrate").and_then(as_u64).unwrap_or(0);
-        cands.push((itag.unwrap_or(-1), bitrate, url, mime.to_string()));
+        cands.push((itag, bitrate, url, mime.to_string()));
     }
     if cands.is_empty() {
         return None;
@@ -457,7 +389,7 @@ fn pick_proxied_audio(val: &serde_json::Value, cap: Option<Quality>) -> Option<A
         in_cap
     };
     pool.into_iter()
-        .max_by_key(|(itag, bitrate, _, _)| (rank(Some(*itag).filter(|i| *i >= 0)), *bitrate))
+        .max_by_key(|(itag, bitrate, _, _)| (rank(*itag), *bitrate))
         .map(|(_, bitrate, url, mime)| AudioPick {
             url: url.clone(),
             bitrate: *bitrate,

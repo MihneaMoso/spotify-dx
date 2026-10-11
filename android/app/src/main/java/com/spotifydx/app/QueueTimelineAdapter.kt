@@ -145,8 +145,8 @@ class QueueTimelineAdapter(
             more.setOnClickListener { onMenu(t) }
             HoldToOpen.arm(itemView) { onMenu(t) }
             when (e.kind) {
-                // NOW: highlighted, tap toggles (Echo: tapping the current
-                // row toggles play/pause). Draggable like every other row —
+                // NOW: highlighted, tap restarts from the top (tapping any
+                // row means play, never a pause toggle). Draggable like every other row —
                 // the commit re-splits around the current track id, so the
                 // player object is never touched by reorder.
                 RowKind.NOW -> {

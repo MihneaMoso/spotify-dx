@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Echo-port dimension tokens (Phase 1). House radii + component metrics
      distilled from Echo's Theme.kt / Dimensions.kt (24/28dp rule, pill
-     shapes, artwork radii). Layout files adopt these in later phases. -->
+     shapes, artwork radii). -->
 <resources>
     <!-- House corner radii (Echo: 24dp/28dp/Circle, elevation 0). -->
     <dimen name="echo_radius_card">24dp</dimen>
@@ -17,11 +17,5 @@
     <dimen name="echo_handle_width">40dp</dimen>
     <dimen name="echo_handle_height">4dp</dimen>
 
-    <!-- Transport buttons (Echo full-player: 68dp circle, 32dp icon;
-         play 84dp / 36dp icon — sizes stay as-is, visuals change). -->
-    <dimen name="echo_transport_icon">32dp</dimen>
 
-    <!-- Mini-player title scale (Echo: 14sp Medium / 12sp). -->
-    <dimen name="echo_mini_title">14sp</dimen>
-    <dimen name="echo_mini_artist">12sp</dimen>
 </resources>

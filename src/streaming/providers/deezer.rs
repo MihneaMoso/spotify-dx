@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 
-use super::common::{duration_tight, http_client, title_matches, title_matches_fuzzy, urlencode};
+use super::common::{http_client, match_title, urlencode};
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -72,12 +72,7 @@ impl DeezerProvider {
                 .unwrap_or("");
             let duration = t.get("duration").and_then(|d| d.as_u64());
             // Exact gate, else drift forgiveness on tight durations only.
-            let gate = if duration_tight(track_ms, duration) {
-                title_matches_fuzzy(title, artist, ttitle, tartist)
-            } else {
-                title_matches(title, artist, ttitle, tartist)
-            };
-            if !gate {
+            if !match_title(title, artist, ttitle, tartist, track_ms, duration) {
                 continue;
             }
             if !youtube::duration_accepts(track_ms, duration) {

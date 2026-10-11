@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::common::urlencode;
+use super::common::{urlencode, CooldownGate};
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -46,10 +46,6 @@ const KEY_MAX_USES: u64 = 50;
 #[cfg(not(target_arch = "wasm32"))]
 const SCRAPE_BUDGET: Duration = Duration::from_secs(20);
 #[cfg(not(target_arch = "wasm32"))]
-const COOL_AFTER_FAILURES: u32 = 3;
-#[cfg(not(target_arch = "wasm32"))]
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
-#[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct SoundcloudProvider {
@@ -59,9 +55,7 @@ pub struct SoundcloudProvider {
     /// wasm key-use counter (see KEY_MAX_USES); unused on native.
     #[cfg(target_arch = "wasm32")]
     key_uses: Mutex<u64>,
-    failures: Mutex<u32>,
-    #[cfg(not(target_arch = "wasm32"))]
-    cooling_until: Mutex<Option<Instant>>,
+    gate: CooldownGate,
 }
 
 impl Default for SoundcloudProvider {
@@ -82,27 +76,7 @@ impl SoundcloudProvider {
             key: Mutex::new(None),
             #[cfg(target_arch = "wasm32")]
             key_uses: Mutex::new(0),
-            failures: Mutex::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            cooling_until: Mutex::new(None),
-        }
-    }
-
-    fn note_success(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f = 0;
-        }
-    }
-
-    fn note_failure(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f += 1;
-            #[cfg(not(target_arch = "wasm32"))]
-            if *f >= COOL_AFTER_FAILURES {
-                if let Ok(mut c) = self.cooling_until.lock() {
-                    *c = Some(Instant::now() + COOLDOWN);
-                }
-            }
+            gate: CooldownGate::new(),
         }
     }
 
@@ -177,13 +151,13 @@ impl SoundcloudProvider {
         let cid = match self.client_id().await {
             Some(id) => id,
             None => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("soundcloud client_id scrape failed".into());
             }
         };
         match self.search_and_resolve(&cid, query).await {
             Ok(res) => {
-                self.note_success();
+                self.gate.note_success();
                 res
             }
             Err(SearchError::Auth) => {
@@ -192,23 +166,23 @@ impl SoundcloudProvider {
                 let cid = match self.client_id().await {
                     Some(id) => id,
                     None => {
-                        self.note_failure();
+                        self.gate.note_failure();
                         return Resolution::Error("soundcloud client_id refresh failed".into());
                     }
                 };
                 match self.search_and_resolve(&cid, query).await {
                     Ok(res) => {
-                        self.note_success();
+                        self.gate.note_success();
                         res
                     }
                     Err(_) => {
-                        self.note_failure();
+                        self.gate.note_failure();
                         Resolution::Error("soundcloud request failed".into())
                     }
                 }
             }
             Err(SearchError::Other) => {
-                self.note_failure();
+                self.gate.note_failure();
                 Resolution::Error("soundcloud request failed".into())
             }
         }
@@ -367,11 +341,7 @@ fn item_acceptable(
         .and_then(|u| u.get("username"))
         .and_then(|n| n.as_str())
         .unwrap_or("");
-    if super::common::duration_tight(track_ms, duration) {
-        super::common::title_matches_fuzzy(title, artist, ititle, iauthor)
-    } else {
-        super::common::title_matches(title, artist, ititle, iauthor)
-    }
+    super::common::match_title(title, artist, ititle, iauthor, track_ms, duration)
 }
 
 /// Search failure classes: dead key (retry once fresh) vs terminal.
@@ -427,7 +397,6 @@ async fn scrape_client_id(client: &reqwest::Client) -> Option<String> {
     None
 }
 
-/// Minimal percent-encoding for query params (mirrors piped.rs).
 #[async_trait(?Send)]
 impl Provider for SoundcloudProvider {
     fn name(&self) -> &'static str {
@@ -437,11 +406,7 @@ impl Provider for SoundcloudProvider {
     fn is_available(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let cooling = self.cooling_until.lock().unwrap_or_else(|e| e.into_inner());
-            if cooling
-                .map(|u| std::time::Instant::now() < u)
-                .unwrap_or(false)
-            {
+            if self.gate.is_cooling() {
                 return false;
             }
         }

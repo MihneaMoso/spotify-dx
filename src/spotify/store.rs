@@ -123,9 +123,7 @@ impl Slot {
             Slot::Failed(fail) => SlotResolution::Failed(fail.clone()),
         }
     }
-}
 
-impl Slot {
     fn is_pending(&self) -> bool {
         matches!(self, Slot::Pending)
     }

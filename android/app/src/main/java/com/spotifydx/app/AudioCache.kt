@@ -58,6 +58,12 @@ object AudioCache {
     private const val UA = "stagefright/1.2 (Linux;Android 14)"
     private const val MAX_REDIRECTS = 5
     private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+    // Single shared sanitizer (compiled once): keyFor and the request-path
+    // re-sanitize previously compiled near-identical patterns per call —
+    // and had already drifted (one allowed '.', the other didn't). The
+    // dot-allowing form is exact for every key keyFor can produce (dots
+    // never survive keyFor), so outputs are byte-identical.
+    private val KEY_SANITIZER = Regex("[^A-Za-z0-9_.-]")
 
     sealed interface Source {
         data class Disk(val path: String) : Source
@@ -107,7 +113,7 @@ object AudioCache {
     private fun fileFor(key: String): File = dir().resolve("$key.audio")
 
     private fun keyFor(track: Track): String {
-        val clean = track.id.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
+        val clean = track.id.replace(KEY_SANITIZER, "_").take(80)
         return clean.ifEmpty { "noid" }
     }
 
@@ -258,7 +264,7 @@ object AudioCache {
                 // loopback, so path traversal ("../") must die here even
                 // though only our player should ever connect. Replace-only
                 // (no trim): legit keys pass through byte-identical.
-                .replace(Regex("[^A-Za-z0-9_.-]"), "_")
+                .replace(KEY_SANITIZER, "_")
             var rangeSpec: String? = null
             while (true) {
                 val line = input.readLine() ?: break

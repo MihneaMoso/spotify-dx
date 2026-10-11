@@ -16,14 +16,12 @@
 //! cool an instance for 5 minutes; `is_available` is false only when every
 //! instance is cooling. A short client timeout bounds dead hosts.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::common::urlencode;
+use super::common::{urlencode, InstancePool};
 use super::youtube;
 use crate::streaming::provider::{Provider, Resolution, TrackQuery};
 
@@ -37,35 +35,13 @@ pub(crate) const INSTANCES: &[&str] = &[
     "https://pipedapi.reallyaweso.me",
 ];
 
-/// Consecutive transport failures before an instance cools down.
-const COOL_AFTER_FAILURES: u32 = 2;
-/// Cooldown for an unhealthy instance.
-#[cfg(not(target_arch = "wasm32"))]
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
-/// wasm has no `Instant`-based cooldown state (`cooling_until` is
-/// native-only), so recovery rides on call-count probation instead —
-/// without it a twice-failed instance stayed parked until restart.
-#[cfg(target_arch = "wasm32")]
-const PROBATION_CALLS: u64 = 64;
 /// Per-request budget: dead hosts fail fast instead of stalling the chain.
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
-#[derive(Default)]
-struct InstanceHealth {
-    consecutive_failures: u32,
-    #[cfg(not(target_arch = "wasm32"))]
-    cooling_until: Option<Instant>,
-    /// wasm probation bookkeeping (see PROBATION_CALLS).
-    #[cfg(target_arch = "wasm32")]
-    checks: u64,
-    #[cfg(target_arch = "wasm32")]
-    cooled_at: u64,
-}
-
 pub struct PipedProvider {
     client: reqwest::Client,
-    health: Mutex<HashMap<&'static str, InstanceHealth>>,
+    pool: InstancePool,
 }
 
 impl Default for PipedProvider {
@@ -83,76 +59,18 @@ impl PipedProvider {
                 let builder = builder.timeout(REQUEST_TIMEOUT);
                 builder.build().unwrap_or_default()
             },
-            health: Mutex::new(HashMap::new()),
+            pool: InstancePool::new(),
         }
     }
 
     /// Healthy instances in pinned order (cooling ones skipped).
-    fn healthy(&self) -> Vec<&'static str> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = Instant::now();
-        let mut health = self.health.lock().unwrap_or_else(|e| e.into_inner());
-        INSTANCES
-            .iter()
-            .copied()
-            .filter(|api| match health.get_mut(api) {
-                None => true,
-                Some(h) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        if h.cooling_until.map(|u| now >= u).unwrap_or(false) {
-                            // Expired cooldown: forgive and retry.
-                            *h = InstanceHealth::default();
-                            true
-                        } else if h.cooling_until.is_some() {
-                            false
-                        } else {
-                            h.consecutive_failures < COOL_AFTER_FAILURES
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        h.checks = h.checks.saturating_add(1);
-                        if h.consecutive_failures < COOL_AFTER_FAILURES {
-                            true
-                        } else if h.checks.saturating_sub(h.cooled_at) >= PROBATION_CALLS {
-                            // Probation retry: forgive and try again instead
-                            // of parking the instance until process restart.
-                            *h = InstanceHealth::default();
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
-            })
-            .collect()
-    }
-
-    fn note_success(&self, api: &'static str) {
-        if let Ok(mut health) = self.health.lock() {
-            health.remove(api);
-        }
-    }
-
-    fn note_failure(&self, api: &'static str) {
-        if let Ok(mut health) = self.health.lock() {
-            let h = health.entry(api).or_default();
-            h.consecutive_failures += 1;
-            #[cfg(not(target_arch = "wasm32"))]
-            if h.consecutive_failures >= COOL_AFTER_FAILURES {
-                h.cooling_until = Some(Instant::now() + COOLDOWN);
-            }
-            #[cfg(target_arch = "wasm32")]
-            if h.consecutive_failures >= COOL_AFTER_FAILURES && h.cooled_at == 0 {
-                h.cooled_at = h.checks;
-            }
-        }
+    fn healthy(&self) -> Vec<String> {
+        self.pool.healthy(INSTANCES)
     }
 
     /// Search one instance: transport failure vs content gap distinguished
     /// so dead hosts cool down while live-but-empty hosts don't get blamed.
-    async fn search_one(&self, api: &'static str, query: &TrackQuery) -> SearchOutcome {
+    async fn search_one(&self, api: &str, query: &TrackQuery) -> SearchOutcome {
         let url = format!(
             "{api}/search?q={}+{}&filter=videos",
             urlencode(&query.artist),
@@ -198,20 +116,20 @@ impl PipedProvider {
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,
                 Err(_) => {
-                    self.note_failure(api);
+                    self.pool.note_failure(&api);
                     continue;
                 }
             };
             let val: serde_json::Value = match resp.json().await {
                 Ok(v) => v,
                 Err(_) => {
-                    self.note_failure(api);
+                    self.pool.note_failure(&api);
                     continue;
                 }
             };
             match youtube::pick_piped_audio(&val) {
                 Some(pick) => {
-                    self.note_success(api);
+                    self.pool.note_success(&api);
                     return Some(pick);
                 }
                 // Answered but content-less: instance is alive; stop here
@@ -245,8 +163,6 @@ fn video_id_from_url(url: &str) -> Option<String> {
     })
 }
 
-/// Minimal percent-encoding for query params (no extra deps).
-/// Pure (unit-tested).
 #[async_trait(?Send)]
 impl Provider for PipedProvider {
     fn name(&self) -> &'static str {
@@ -265,9 +181,9 @@ impl Provider for PipedProvider {
         let mut searched_any = false;
         for api in self.healthy() {
             searched_any = true;
-            match self.search_one(api, query).await {
+            match self.search_one(&api, query).await {
                 SearchOutcome::Hit(id) => {
-                    self.note_success(api);
+                    self.pool.note_success(&api);
                     video_id = Some(id);
                     break;
                 }
@@ -275,7 +191,7 @@ impl Provider for PipedProvider {
                     // Live host, region gap — try the next instance.
                 }
                 SearchOutcome::TransportFail => {
-                    self.note_failure(api);
+                    self.pool.note_failure(&api);
                 }
             }
         }

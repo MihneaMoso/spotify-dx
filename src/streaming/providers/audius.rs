@@ -14,13 +14,12 @@
 //! Sits after `saavn`: keyless and reliable, but catalog-first for indie
 //! rather than mainstream backfill.
 
-use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::common::urlencode;
+use super::common::{urlencode, CooldownGate};
 use super::youtube;
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
@@ -29,10 +28,6 @@ const APP_NAME: &str = "SpotifyDX";
 
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-#[cfg(not(target_arch = "wasm32"))]
-const COOL_AFTER_FAILURES: u32 = 3;
-#[cfg(not(target_arch = "wasm32"))]
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
 pub struct AudiusProvider {
     client: reqwest::Client,
@@ -40,9 +35,7 @@ pub struct AudiusProvider {
     /// redirect control (browser fetch follows automatically) — absent there.
     #[cfg(not(target_arch = "wasm32"))]
     bare_client: reqwest::Client,
-    failures: Mutex<u32>,
-    #[cfg(not(target_arch = "wasm32"))]
-    cooling_until: Mutex<Option<std::time::Instant>>,
+    gate: CooldownGate,
 }
 
 impl Default for AudiusProvider {
@@ -66,27 +59,7 @@ impl AudiusProvider {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
-            failures: Mutex::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            cooling_until: Mutex::new(None),
-        }
-    }
-
-    fn note_success(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f = 0;
-        }
-    }
-
-    fn note_failure(&self) {
-        if let Ok(mut f) = self.failures.lock() {
-            *f += 1;
-            #[cfg(not(target_arch = "wasm32"))]
-            if *f >= COOL_AFTER_FAILURES {
-                if let Ok(mut c) = self.cooling_until.lock() {
-                    *c = Some(std::time::Instant::now() + COOLDOWN);
-                }
-            }
+            gate: CooldownGate::new(),
         }
     }
 
@@ -99,21 +72,21 @@ impl AudiusProvider {
         let resp = match self.client.get(&url).send().await {
             Ok(r) => r,
             Err(_) => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("audius search request failed".into());
             }
         };
         let val: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(_) => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("audius search parse failed".into());
             }
         };
         let items = match val.get("data").and_then(|d| d.as_array()) {
             Some(i) => i,
             None => {
-                self.note_failure();
+                self.gate.note_failure();
                 return Resolution::Error("audius search shape changed".into());
             }
         };
@@ -122,7 +95,7 @@ impl AudiusProvider {
         };
         match self.stream_url(&id).await {
             Some(url) => {
-                self.note_success();
+                self.gate.note_success();
                 Resolution::Success {
                     url,
                     format: AudioFormat::Unknown,
@@ -219,12 +192,7 @@ fn pick_track(
                     .or_else(|| u.get("handle").and_then(|h| h.as_str()))
             })
             .unwrap_or("");
-        let gate = if super::common::duration_tight(track_ms, duration) {
-            super::common::title_matches_fuzzy(title, artist, ititle, iauthor)
-        } else {
-            super::common::title_matches(title, artist, ititle, iauthor)
-        };
-        if !gate {
+        if !super::common::match_title(title, artist, ititle, iauthor, track_ms, duration) {
             continue;
         }
         return Some(id.to_string());
@@ -240,11 +208,7 @@ impl Provider for AudiusProvider {
     fn is_available(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let cooling = self.cooling_until.lock().unwrap_or_else(|e| e.into_inner());
-            if cooling
-                .map(|u| std::time::Instant::now() < u)
-                .unwrap_or(false)
-            {
+            if self.gate.is_cooling() {
                 return false;
             }
         }

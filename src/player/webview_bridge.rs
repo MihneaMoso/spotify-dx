@@ -348,7 +348,7 @@ pub async fn request_token_refresh() -> tokio::sync::oneshot::Receiver<Result<St
     let session_ok = crate::auth::webview_login::refresh_token().await;
     #[cfg(not(feature = "native"))]
     let session_ok = false;
-    let mut guard = REFRESH_TX.lock().unwrap();
+    let mut guard = REFRESH_TX.lock().unwrap_or_else(|e| e.into_inner());
     if session_ok {
         guard.push(tx);
         return rx;

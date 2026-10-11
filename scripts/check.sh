@@ -5,8 +5,8 @@
 #
 # Covers: Rust tests (both feature sets), clippy with warnings DENIED,
 # wasm-target check (the Send-bound class CI caught, never local cargo),
-# Kotlin compile, and both hand-rolled JVM suites (RangeServe +
-# policy/TOTP/capture-JS regressions).
+# Kotlin compile, and the three hand-rolled JVM suites (RangeServe +
+# policy/TOTP/capture-JS regressions + sheet-interaction math).
 #
 # Deliberately NOT covered (stay CI-only): `dx bundle` packaging layout,
 # the desktop release matrix link, macOS/Windows builds, Pages deploy.

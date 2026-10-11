@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Spotify DX</string>
     <string name="gate_title">Spotify DX</string>
     <string name="gate_sign_in">Sign in with Spotify to continue.</string>
     <string name="gate_opening">Opening login…</string>
@@ -27,7 +26,6 @@
     <string name="sort_artist">Sort: Artist</string>
     <string name="sort_album">Sort: Album</string>
     <string name="sort_recent">Sort: Recently added</string>
-    <string name="shuffle">Shuffle</string>
     <string name="clear">Clear</string>
     <string name="menu_artists">Artists</string>
     <string name="menu_album">Album</string>

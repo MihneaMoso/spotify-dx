@@ -6,7 +6,7 @@
 //!
 //! * `redirect_to_spotify` — takes the whole tab to `open.spotify.com` so the
 //!   user can sign in there (the app tab is where the browser keeps the
-//!   `sp_dc` HttpOnly cookie afte logging in).
+//!   `sp_dc` HttpOnly cookie after logging in).
 //! * `capture_session` — fetches Spotify's internal `get_access_token` endpoint
 //!   with `credentials: include`, the same way the desktop WebView's `fetchAccessToken`
 //!   does. This relies on Spotify permitting a credentialed cross-origin fetch

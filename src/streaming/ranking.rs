@@ -76,7 +76,7 @@ pub fn rank_key(name: &str, stats: &ProviderStats) -> (u8, impl Ord, impl Ord) {
     (tier(name), std::cmp::Reverse(rate_mille), latency)
 }
 
-/// Halve failure counts (and streaks): recovered legs climb back without
+/// Halve failure counts: recovered legs climb back without
 /// waiting out a full TTL, while chronic failures stay buried. Pure.
 pub fn decay_table(table: &mut HashMap<&'static str, ProviderStats>) {
     for stats in table.values_mut() {

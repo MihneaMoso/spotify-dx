@@ -27,10 +27,10 @@ use crate::streaming::provider::Provider;
 ///
 /// NOTE: this static order is the cold-start/first-resolve order only. The
 /// resolver re-sorts available providers per resolve by live score (see
-/// `provider_ranking` in the resolver) within two policy tiers —
-/// full-track first, preview last — so a dead-then-recovered leg finds its
-/// place without code changes. `CACHE_PROBE_ORDER` must still name every
-/// member (test-enforced below).
+/// `streaming::ranking`) within two policy tiers — full-track first,
+/// preview last — so a dead-then-recovered leg finds its place without
+/// code changes. `CACHE_PROBE_ORDER` must still name every member
+/// (test-enforced below).
 pub fn build_provider_chain() -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(tidal::TidalProvider::new()),

@@ -102,7 +102,6 @@ pub fn Search() -> Element {
     let navigator = use_navigator();
 
     // Top result priority: artist > album > track, materialized as owned data.
-    #[allow(dead_code)]
     enum Top {
         Artist {
             id: String,

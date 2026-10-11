@@ -6,8 +6,8 @@ import java.util.List;
 /**
  * Regression tests for the sheet/mini-player interaction layer added after
  * the provider-matching overhaul: drag follow + release thresholds, the
- * lyrics preview window + box height, the history highlight rebind, the
- * floating-chrome content inset, and the queue-count placement.
+ * lyrics preview window + box height, the history highlight rebind, and
+ * the floating-chrome content inset.
  *
  * Same hand-rolled harness as LogicRegressionTest (plain JVM, no JUnit):
  * {@code check()} calls driven from {@code main()}. Every case encodes a
@@ -39,7 +39,6 @@ public class SheetInteractionTest {
         previewHeight();
         highlightRebinds();
         contentInset();
-        queueCount();
         System.out.println("SheetInteractionTest: " + passed + " checks passed");
     }
 
@@ -167,13 +166,5 @@ public class SheetInteractionTest {
         // Rail variant (no bottom nav): bar alone.
         check(SheetInteraction.INSTANCE.contentInset(true, 200, 0) == 200,
             "inset covers rail variant");
-    }
-
-    // -- Queue count lives in the top menu, queue tab only -----------------
-    static void queueCount() {
-        check(SheetInteraction.INSTANCE.queueCountVisible(true),
-            "count shows on queue tab");
-        check(!SheetInteraction.INSTANCE.queueCountVisible(false),
-            "count hides elsewhere");
     }
 }

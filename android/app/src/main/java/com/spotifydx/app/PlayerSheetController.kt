@@ -324,8 +324,8 @@ class PlayerSheetController(private val activity: FragmentActivity) {
 
     // -- Sheet drag (follow-the-finger bottom sheet) -----------------------
     // The open sheet follows downward drags and can be HELD mid-screen.
-    // Release past half the screen dismisses, above it springs back.
-    // `openFromDrag` completes a bar-drag handoff from the finger.
+    // Release past a quarter of the screen dismisses, above it springs
+    // back. `openFromDrag` completes a bar-drag handoff from the finger.
 
     /** Full sheet travel in px (measured height, screen fallback). */
     fun sheetHeight(): Int {
@@ -415,10 +415,9 @@ class PlayerSheetController(private val activity: FragmentActivity) {
             val nowPos = queueAdapter.nowPosition()
             if (nowPos >= 0) queueList.scrollToPosition(nowPos)
         }
-        // Queue size describes the queue view: only there (suite-pinned).
+        // Queue size describes the queue view: only there.
         topCount.visibility =
-            if (SheetInteraction.queueCountVisible(tab == Tab.QUEUE)) View.VISIBLE
-            else View.GONE
+            if (tab == Tab.QUEUE) View.VISIBLE else View.GONE
     }
 
     /** In-queue mini player state: mirrors the floating bar (titles, art,

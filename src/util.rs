@@ -70,6 +70,18 @@ pub fn arg_page(raw: &str) -> Result<(u32, u32), String> {
     Ok((limit, offset))
 }
 
+/// Bridge event envelope (`{"kind":…,"payload":…}`). The kind goes through
+/// serde, never raw interpolation — a future dynamic kind containing a
+/// quote would otherwise break the envelope and the `pollEvents` parse.
+/// Pure, unit-tested.
+pub fn json_event(kind: &str, payload_json: &str) -> String {
+    let kind = serde_json::Value::String(kind.to_string());
+    format!(
+        "{{\"kind\":{},\"payload\":{payload_json}}}",
+        serde_json::to_string(&kind).unwrap_or_default()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,19 +106,6 @@ mod tests {
         assert!(arg_id(r#"{"id": ""}"#).is_err());
         assert_eq!(arg_id(r#"{"id": "abc"}"#).unwrap(), "abc");
     }
-}
-
-/// Bridge event envelope (`{"kind":…,"payload":…}`). The kind goes through
-/// serde, never raw interpolation — a future dynamic kind containing a
-/// quote would otherwise break the envelope and the `pollEvents` parse.
-/// Pure, unit-tested.
-pub fn json_event(kind: &str, payload_json: &str) -> String {
-    let kind = serde_json::Value::String(kind.to_string());
-    format!(
-        "{{\"kind\":{},\"payload\":{payload_json}}}",
-        serde_json::to_string(&kind).unwrap_or_default()
-    )
-}
 
     /// Regression: raw kind interpolation is a latent envelope injection —
     /// any future dynamic kind breaks parsing. Serde escaping must hold.
@@ -120,4 +119,5 @@ pub fn json_event(kind: &str, payload_json: &str) -> String {
             json_event("we\"ird", "{}"),
             "{\"kind\":\"we\\\"ird\",\"payload\":{}}"
         );
+    }
 }

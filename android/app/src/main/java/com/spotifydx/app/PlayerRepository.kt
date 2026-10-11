@@ -321,30 +321,6 @@ object PlayerRepository {
         return false
     }
 
-    /** 1-based occurrence rank of the id at pos within list. */
-    private fun occurrenceRank(list: List<QueueEntry>, pos: Int, id: String): Int {
-        if (pos !in list.indices) return 0
-        return list.subList(0, pos + 1).count { it.track.id == id }
-    }
-
-    /** Index of the rank-th occurrence of id, or -1. */
-    private fun findOccurrence(list: List<QueueEntry>, id: String, rank: Int): Int {
-        if (rank <= 0) return -1
-        var c = 0
-        list.forEachIndexed { i, e ->
-            if (e.track.id == id) {
-                c++
-                if (c == rank) return i
-            }
-        }
-        return -1
-    }
-
-    private fun sameIdMultiset(a: List<QueueEntry>, b: List<QueueEntry>): Boolean {
-        if (a.size != b.size) return false
-        return a.map { it.track.id }.sorted() == b.map { it.track.id }.sorted()
-    }
-
     /** Membership split at an explicit current index (dupe-proof). */
     private fun splitByIndex(tracks: List<Track>, nowIdx: Int) {
         val idx = nowIdx.coerceIn(0, tracks.size)
@@ -896,7 +872,7 @@ object PlayerRepository {
     }
 
     fun seekTo(ms: Long) {
-        update { _state.value.copy(positionMs = ms) }
+        update { it.copy(positionMs = ms) }
         val s = _state.value
         PlaybackStore.saveLastSoon(s.track, ms, s.source)
         if (s.sdkActive) {

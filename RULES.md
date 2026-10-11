@@ -2149,6 +2149,21 @@ the phase-by-phase design record.)
 - **Player sheet sections (2026-10-10, added):** lyrics preview window replaced the one-liner (5 rows prev2..next2 via previewWindow, wrapped maxLines=2, edge-fade alphas, 220ms crossfade on line change only, box height screen/5 clamped 112-160dp); queue header replaced by a borderless in-queue mini player (full transport, same tag-guarded state as the floating bar) with the queue count moved to the sheet header left of the dots (queue tab only).
 - **Mini-player floating + status bar (2026-10-10, fixed/added):** bar/nav overlay the content (transparent gaps, 8dp elevation) with a layout-listener-driven bottom inset so list tails aren't buried (contentInset helper); 1dp accent stroke on the floating pill only; statusBarColor pinned black in the base theme (both themes inherit; targetSdk 34 still honors it).
 - **History highlight (2026-10-09/10, fixed):** wash is lighten(accent,0.15) at 0.35 alpha (discrete); dual-highlight on track change was DiffUtil moves never rebinding — commit callback now rebinds old-head slot + head (highlightRebinds helper).
+- **Codebase review pass (2026-10-11, done):** 20 findings + cleanup, all
+  addressed in listed order. Merged: shared `search_queries`, `InstancePool`
+  (piped/invidious), `match_title` gate (6 sites), `CooldownGate`
+  (audius/saavn/soundcloud); `Slot` impl merge; itag `Option`; shared
+  audio-sanitizer Regex; lock-poison tolerance; seekTo lambda param; gate
+  copy from resources; drag margins from saved params; bridge.rs split into
+  `bridge_data.rs`/`bridge_sdk.rs` (verify with `check-android.sh` — host
+  check.sh cannot see android-only code); PlayerRepository pure-math split
+  (`QueueTimelineMath.kt`, dispatch stays: entangled with private state).
+  Left untouched as out-of-scope (behavior-changing): greeting bands,
+  errorRes rename, piped/qobuz title gates, desktop artists-only empty
+  state, Saavn nested rights, card-art crop, serial downloads, Room triple
+  entities. Deleted after verification: 3 dead drawables, 7 dead dimens,
+  `app_name`/`shuffle` strings. Out-of-scope findings are documented in
+  the review, not the code — do not "fix" them without a product decision.
 - **Provider matching overhaul (2026-10-10, fixed):** niche tracks regressed two ways: Focu played an instrumental (duration-only Audius/SoundCloud/Saavn picks grabbed any same-length upload; verified live Audius returns junk for "Ian Focu"), Curve hung ~20s then preview (official C*RVE video retrieved first yet rejected on 1-letter drift curve/c*rve; Invidious then burned ~10s on dead 8s-timeout instances). Fixes: shared textual gate + version veto now enforced in Audius/SoundCloud/Saavn picks; diacritic folding + 1-edit fuzzy squash in the gate, fuzzy ONLY on tight durations (duration_tight +-8s, artist still exact, short squashes never fuzz, veto always wins); punctuation-stripped 4th query variant (a 'Curve,' query returns zero YT results); Invidious timeout 8->5s; Piped-recovery attempts capped 5s each. Drive-by repairs: SoundCloud full_duration is MS not s (leg always missed), Saavn fields nest under more_info (leg always missed). Verified: Curve 20s-preview -> 3.3s full YouTube; Focu 1.8s official. Rule: correctness is gated per provider, never scored; fuzzy never flies without duration_tight.
 - **Pure-black AMOLED toggle (2026-10-05, added; corrected same day):**
   FIRST shipped as a third theme radio — wrong model, reverted. It is a

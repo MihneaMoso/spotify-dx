@@ -4,6 +4,9 @@
 //! byte-identical move of the four copies that lived in
 //! audius/piped/saavn/soundcloud.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 /// Percent-encode a query component (`+` for space, RFC 3986 unreserved
 /// set left bare). Matches all four former per-provider copies exactly.
 pub fn urlencode(s: &str) -> String {
@@ -114,6 +117,179 @@ pub fn sanitize_query(s: &str) -> String {
         .join(" ")
 }
 
+/// Ranked search queries for YouTube-catalog providers (legacy query
+/// first, sanitized bare-words fallback last). Shared by YouTube-direct
+/// and Invidious — the two copies drifted in lockstep, so one definition
+/// owns the order. Pure (unit-tested via both callers' suites).
+pub fn search_queries(title: &str, artist: &str) -> [String; 4] {
+    [
+        format!("{artist} {title} audio"),
+        format!("{title} {artist}"),
+        format!("{title} {artist} topic"),
+        sanitize_query(&format!("{artist} {title}")),
+    ]
+}
+
+/// Shared instance-pool health gating for proxied providers (Piped,
+/// Invidious): consecutive transport failures cool an instance, and a
+/// provider is available only while some instance stays healthy. One
+/// definition so cooldown/probation policy can't drift between providers
+/// (it already did once: timeouts diverged unnoticed). Candidates ride in
+/// per call so static pools (Piped) and discovered pools (Invidious)
+/// share the state machine; per-provider timeouts stay per-provider.
+#[derive(Default)]
+pub struct InstancePool {
+    health: Mutex<HashMap<String, InstanceHealth>>,
+}
+
+/// Consecutive transport failures before an instance cools down.
+const POOL_COOL_AFTER_FAILURES: u32 = 2;
+/// Cooldown for an unhealthy instance.
+#[cfg(not(target_arch = "wasm32"))]
+const POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// wasm has no `Instant`-based cooldown state, so recovery rides on
+/// call-count probation instead (same pattern both providers used).
+#[cfg(target_arch = "wasm32")]
+const POOL_PROBATION_CALLS: u64 = 64;
+
+#[derive(Default)]
+struct InstanceHealth {
+    consecutive_failures: u32,
+    #[cfg(not(target_arch = "wasm32"))]
+    cooling_until: Option<std::time::Instant>,
+    #[cfg(target_arch = "wasm32")]
+    checks: u64,
+    #[cfg(target_arch = "wasm32")]
+    cooled_at: u64,
+}
+
+impl InstancePool {
+    pub fn new() -> Self {
+        Self {
+            health: Mutex::new(HashMap::new()),
+        }
+    }
+    /// Healthy candidates in pool order (cooling ones skipped).
+    pub fn healthy<S: AsRef<str>>(&self, pool: &[S]) -> Vec<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::Instant::now();
+        let mut health = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        pool.iter()
+            .map(|s| s.as_ref())
+            .filter(|api| match health.get_mut(*api) {
+                None => true,
+                Some(h) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        if h.cooling_until.map(|u| now >= u).unwrap_or(false) {
+                            // Expired cooldown: forgive and retry.
+                            *h = InstanceHealth::default();
+                            true
+                        } else if h.cooling_until.is_some() {
+                            false
+                        } else {
+                            h.consecutive_failures < POOL_COOL_AFTER_FAILURES
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        h.checks = h.checks.saturating_add(1);
+                        if h.consecutive_failures < POOL_COOL_AFTER_FAILURES {
+                            true
+                        } else if h.checks.saturating_sub(h.cooled_at) >= POOL_PROBATION_CALLS {
+                            // Probation retry: forgive and try again instead
+                            // of parking the instance until process restart.
+                            *h = InstanceHealth::default();
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            })
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    pub fn note_success(&self, api: &str) {
+        if let Ok(mut health) = self.health.lock() {
+            health.remove(api);
+        }
+    }
+
+    pub fn note_failure(&self, api: &str) {
+        if let Ok(mut health) = self.health.lock() {
+            let h = health.entry(api.to_string()).or_default();
+            h.consecutive_failures += 1;
+            #[cfg(not(target_arch = "wasm32"))]
+            if h.consecutive_failures >= POOL_COOL_AFTER_FAILURES {
+                h.cooling_until = Some(std::time::Instant::now() + POOL_COOLDOWN);
+            }
+            #[cfg(target_arch = "wasm32")]
+            if h.consecutive_failures >= POOL_COOL_AFTER_FAILURES && h.cooled_at == 0 {
+                h.cooled_at = h.checks;
+            }
+        }
+    }
+}
+
+/// Shared cooldown gate for single-host providers (Audius, Saavn,
+/// SoundCloud): consecutive failures cool the provider, success resets.
+/// One definition so thresholds and reset semantics can't drift between
+/// providers. Native only needs the clock; wasm callers simply never cool
+/// (each provider's `is_available` keeps its own cfg gate).
+#[derive(Default)]
+pub struct CooldownGate {
+    failures: Mutex<u32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    cooling_until: Mutex<Option<std::time::Instant>>,
+}
+
+/// Consecutive failures before cooling down.
+const GATE_COOL_AFTER_FAILURES: u32 = 3;
+/// Cooldown for an unhealthy provider.
+#[cfg(not(target_arch = "wasm32"))]
+const GATE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+impl CooldownGate {
+    pub fn new() -> Self {
+        Self {
+            failures: Mutex::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            cooling_until: Mutex::new(None),
+        }
+    }
+
+    pub fn note_success(&self) {
+        if let Ok(mut f) = self.failures.lock() {
+            *f = 0;
+        }
+    }
+
+    pub fn note_failure(&self) {
+        if let Ok(mut f) = self.failures.lock() {
+            *f += 1;
+            #[cfg(not(target_arch = "wasm32"))]
+            if *f >= GATE_COOL_AFTER_FAILURES {
+                if let Ok(mut c) = self.cooling_until.lock() {
+                    *c = Some(std::time::Instant::now() + GATE_COOLDOWN);
+                }
+            }
+        }
+    }
+
+    /// True while cooling (native). Wasm has no clock gate here — callers
+    /// keep their existing behavior.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn is_cooling(&self) -> bool {
+        self.cooling_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|u| std::time::Instant::now() < u)
+            .unwrap_or(false)
+    }
+}
+
 /// Strips parenthetical/bracketed segments ("(Official Video)",
 /// "[Remix]", "(feat. X)") — they describe the upload, not the song.
 /// Unbalanced closers are kept (never eat the whole title). Pure.
@@ -192,6 +368,24 @@ pub fn duration_tight(track_ms: u64, candidate_secs: Option<u64>) -> bool {
     match candidate_secs {
         Some(secs) if track_ms != 0 => track_ms.abs_diff(secs.saturating_mul(1000)) <= 8_000,
         _ => false,
+    }
+}
+
+/// The full title verdict in one call: exact gate first, drift forgiveness
+/// only on tight durations (see `duration_tight`). Six provider call sites
+/// shared this branch inline; one definition owns the policy. Pure.
+pub fn match_title(
+    track_title: &str,
+    artist: &str,
+    candidate_title: &str,
+    candidate_author: &str,
+    track_ms: u64,
+    candidate_secs: Option<u64>,
+) -> bool {
+    if duration_tight(track_ms, candidate_secs) {
+        title_matches_fuzzy(track_title, artist, candidate_title, candidate_author)
+    } else {
+        title_matches(track_title, artist, candidate_title, candidate_author)
     }
 }
 
@@ -655,6 +849,23 @@ mod tests {
         assert!(!duration_tight(163_000, Some(172))); // instrumental: 9s off
         assert!(!duration_tight(163_000, None));
         assert!(!duration_tight(0, Some(163)));
+    }
+
+    /// The shared verdict: exact always, fuzzy only on tight durations,
+    /// veto always wins — every provider's gate is this one function.
+    #[test]
+    fn match_title_unifies_exact_and_fuzzy() {
+        // Exact passes with any duration relationship.
+        assert!(match_title("Focu", "Ian", "IAN x AZTECA - FOCU'", "Ocult", 163_000, Some(200)));
+        // Drift needs tightness.
+        assert!(match_title(
+            "CURVE, HOTI SI LAUTARI", "Radu Guran",
+            "C*RVE, HOTI SI LAUTARI", "Radu Guran", 154_000, Some(160)));
+        assert!(!match_title(
+            "CURVE, HOTI SI LAUTARI", "Radu Guran",
+            "C*RVE, HOTI SI LAUTARI", "Radu Guran", 154_000, Some(200)));
+        // Veto wins even when tight.
+        assert!(!match_title("Focu", "Ian", "Focu (Instrumental)", "Ian", 163_000, Some(163)));
     }
 
     #[test]

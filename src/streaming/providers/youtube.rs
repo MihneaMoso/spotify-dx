@@ -1,37 +1,35 @@
-//! YouTube provider: InnerTube audio-only fallback.
+//! YouTube provider: InnerTube direct streams (primary leg).
 //!
 //! Uses YouTube's private InnerTube API to search for a track by title +
-//! artist and extract a streamable audio URL. This is the "always available"
-//! fallback — lower quality but very reliable.
+//! artist and extract a streamable URL. First full-track leg of the chain:
+//! self-contained (no key, no JS footprint, no Odesli mapping).
 //!
 //! Resolution flow:
-//! 1. Search YouTube via InnerTube (ANDROID client) with ordered query
-//!    variants (`artist title audio` → `title artist` → `title artist topic,
-//!    catching auto-generated/Topic uploads the first query misses).
-//! 2. Collect candidate video IDs in rank order (deduplicated).
-//! 3. For each candidate: duration-match against the track (±15s; candidates
-//!    without a duration are accepted — legacy behavior), then the InnerTube
-//!    player endpoint for the progressive muxed stream URL.
-//! 4. Ciphered URLs (no direct `url`) recover through Piped `/streams` for
-//!    the same video ID instead of failing.
+//! 1. Search via InnerTube (ANDROID client) with ordered query variants
+//!    (`artist title audio` → `title artist` → `title artist topic` →
+//!    sanitized bare words, catching punctuation-blinded and
+//!    auto-generated/Topic uploads).
+//! 2. Collect candidates in rank order (deduplicated), re-sorted
+//!    exact-duration-first (stable — search rank decides ties).
+//! 3. For each candidate: duration gate (±30s) + usable-duration rule,
+//!    then the player endpoint for the progressive muxed URL (preferred)
+//!    or best audio-only adaptive within the advisory cap.
+//! 4. Textual verification over `videoDetails` (exact, else 1-edit fuzzy
+//!    on tight durations only) with a version-word veto.
+//! 5. Ciphered URLs (no direct `url`) recover through Piped `/streams`.
 //!
-//! The ANDROID client returns direct (non-signature-encrypted) stream URLs and
-//! does not require a JS footprint or Odesli mapping, so it is fully
-//! self-contained.
+//! The ANDROID client returns direct (non-signature-encrypted) stream URLs.
 //!
-//! We deliberately prefer the progressive muxed format over the audio-only
-//! adaptive formats — and exclude `gir=yes` URLs from candidacy entirely:
-//! they enforce a per-(IP, content) transfer budget (~0.5–1MB, then hard
-//! 403s with no refill, measured live) plus a sequential-from-zero
-//! frontier, so serving one freezes the proxy prefix and skips mid-track.
-//! The muxed URL serves the entire file with a plain GET.
+//! `gir=yes` googlevideo URLs are excluded from candidacy entirely (per-IP
+//! transfer budget then hard 403s, measured live); the muxed URL serves the
+//! entire file with a plain GET.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::common::{fanout_queries, title_matches, Fetch};
+use super::common::{fanout_queries, Fetch};
 use crate::streaming::provider::{AudioFormat, Provider, Quality, Resolution, TrackQuery};
 
 /// InnerTube API endpoints.
@@ -100,16 +98,10 @@ impl YoutubeProvider {
     /// Search queries in rank order. The first is the legacy query (unchanged
     /// behavior for the common case); later variants only run when earlier
     /// ones yield nothing, so the happy path still costs one search call.
-    /// Last is the punctuation-stripped form: punctuation blinds search
-    /// (a `Curve,` query returns zero results), so the bare words ride as
-    /// the final fallback. Pure (unit-tested).
+    /// Shared definition (see `common::search_queries`): the YouTube and
+    /// Invidious copies drifted in lockstep. Pure (unit-tested).
     fn search_queries(title: &str, artist: &str) -> [String; 4] {
-        [
-            format!("{artist} {title} audio"),
-            format!("{title} {artist}"),
-            format!("{title} {artist} topic"),
-            super::common::sanitize_query(&format!("{artist} {title}")),
-        ]
+        super::common::search_queries(title, artist)
     }
 
     /// One search call; returns ranked `(video_id, duration_secs)` candidates.
@@ -423,11 +415,7 @@ fn details_match(val: &serde_json::Value, title: &str, artist: &str, track_ms: u
         .and_then(|d| d.get("lengthSeconds"))
         .and_then(|l| l.as_str())
         .and_then(|s| s.parse::<u64>().ok());
-    if super::common::duration_tight(track_ms, secs) {
-        super::common::title_matches_fuzzy(title, artist, vtitle, vauthor)
-    } else {
-        title_matches(title, artist, vtitle, vauthor)
-    }
+    super::common::match_title(title, artist, vtitle, vauthor, track_ms, secs)
 }
 
 /// Best non-video audio stream from a Piped `/streams` payload as
@@ -1074,9 +1062,4 @@ mod tests {
         assert_eq!(url, CLEAN);
         assert_eq!(quality, Quality::Normal);
     }
-
-
-
-
-
 }
